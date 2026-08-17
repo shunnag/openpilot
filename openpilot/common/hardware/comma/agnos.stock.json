@@ -56,14 +56,14 @@
   },
   {
     "name": "boot",
-    "url": "https://github.com/shunnag/openpilot/releases/download/agnos-19.8-wpa3.2/boot-862b653d80c9d7ac933a60d2bb748371a3267f658194e6ca7273f33c2973de94.img.xz",
-    "hash": "862b653d80c9d7ac933a60d2bb748371a3267f658194e6ca7273f33c2973de94",
-    "hash_raw": "862b653d80c9d7ac933a60d2bb748371a3267f658194e6ca7273f33c2973de94",
-    "size": 46962688,
+    "url": "https://commadist.azureedge.net/agnosupdate/boot-b30f5eef65ec3878f3aa3dcaf2cc95c09e2c1e661cd3a38e94da37dee76f68bd.img.xz",
+    "hash": "b30f5eef65ec3878f3aa3dcaf2cc95c09e2c1e661cd3a38e94da37dee76f68bd",
+    "hash_raw": "b30f5eef65ec3878f3aa3dcaf2cc95c09e2c1e661cd3a38e94da37dee76f68bd",
+    "size": 46897152,
     "sparse": false,
     "full_check": true,
     "has_ab": true,
-    "ondevice_hash": "110c69bcdbb4c559c31662f0bfbfebe615e33578be382d7f286bdeb73c57ed87"
+    "ondevice_hash": "6650e4c46df99ae6dfd6ee895a34b8a2a3cc490a8ce18e16cc3c451c3f822b6e"
   },
   {
     "name": "system",

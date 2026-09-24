@@ -1,17 +1,21 @@
-# openpilot nightly-chestnut + WPA3
+# openpilot nightly / nightly-chestnut + WPA3
 
 **個人利用向けの非公式カーネルです。comma 公式のサポート対象ではありません。**
 対象は comma four（mici）、現在の pin は AGNOS 19.8 です。
 
 この `wpa3-ci` ブランチには配布用 openpilot 本体ではなく、生成用 workflow・スクリプト・パッチを置きます。
 毎日 20:00 JST（11:00 UTC）と、取りこぼし確認用の 21:30 JST（12:30 UTC）に、
-commaai/openpilot のその時点の `nightly-chestnut` を親とする WPA3 対応コミットを作り、
-この fork の `nightly-chestnut` を更新します。upstream は毎回置き換わる orphan コミットなので、履歴の merge は行いません。
+commaai/openpilot のその時点の `nightly` と `nightly-chestnut` をそれぞれ親とする WPA3 対応コミットを作り、
+この fork の同名ブランチを更新します。upstream は毎回置き換わる orphan コミットなので、履歴の merge は行いません。
 同じ入力の再実行は同じコミット SHA になります。upstream が更新されなかった日は変更しません。
 
 ## インストール
 
-インストール URL: **https://installer.comma.ai/shunnag/nightly-chestnut**
+両ブランチは同じソース・同じ WPA3 変更を使います。**chestnut を使わない comma four には `nightly` を推奨します。**
+
+- `nightly`: **https://installer.comma.ai/shunnag/nightly** — LFS ファイルがなく、大きなモデルのダウンロードは不要です。
+- `nightly-chestnut`: **https://installer.comma.ai/shunnag/nightly-chestnut** — 外付け GPU アクセサリ chestnut 向けの大きなモデル
+  （Hugging Face LFS 経由、約 773 MB）と debug panda ビルド（`PANDA_DEBUG_BUILD=1`）を追加します。
 
 **初回インストールには WPA3-only 以外の通信手段が必要です。**
 WPA2、WPA2/WPA3 mixed、WPA2 のスマートフォン hotspot、または利用可能な LTE を用意してください。
@@ -41,15 +45,15 @@ manifest の boot ハッシュが変われば回数をリセットし、タグ�
 1. release `agnos-19.8-wpa3.1` に `agnos/pins.json` の URL と一致する boot `.img.xz` を配置します。
    raw SHA-256 は `18c888b86f8846cd49bf3312b2c02fb60fc3f5e2f165d3a77417a7ad4e2c5549`、raw サイズは 46,962,688 bytes です。
 2. `wpa3-ci` を fork の default branch に設定し、Actions と Issues を有効にします。
-   schedule は default branch 上で動作します。`nightly-chestnut` と `nightly-chestnut-lastgood` に対する bot の force-push を許可してください。
+   schedule は default branch 上で動作します。`nightly`・`nightly-chestnut` と各 `<branch>-lastgood` に対する bot の force-push を許可してください。
 3. Actions の **Nightly WPA3** を手動実行して最初の公開を確認します。
-   `force=true` は入力一致によるスキップを解除しますが、ゲートは省略しません。
+   手動実行も両ブランチを処理します。`force=true` は入力一致によるスキップを解除しますが、ゲートは省略しません。
 
 追加トリガーはカーネル cmdline のタグで判定します。同じ AGNOS バージョンの boot を差し替える場合も、
 新しいタグ（例: `wpa3.sae=2`）をイメージに設定し、新しい `release_tag` と対応する pin を用意してください。
 同じタグのままでは、既にタグ付きカーネルで動く端末は再フラッシュしません。
 
-公開処理は upstream `nightly-chestnut` が親を持たない orphan コミットであることを前提とし、
+公開処理は upstream の各ブランチが親を持たない orphan コミットであることを前提とし、
 この条件が変わった場合は公開を保留して issue を作成・更新します。
 comma 3X は同じカーネル／ファームウェア系統ですが未検証です。実機確認済みなのは comma four のみです。
 
@@ -64,16 +68,20 @@ nightly が止まったら Actions 画面で状態を確認し、必要に応じ
 - G4: boot URL をリダイレクト込みで取得し、xz 展開後の SHA-256 とサイズが一致する。
 - G5: UI パッチが適用できる、または既に適用済みである。
 
-AGNOS のバージョン更新などでゲート／合成が失敗すると公開を止め、`nightly-hold` ラベルの issue を 1 件作成・更新します。
+AGNOS のバージョン更新などでゲート／合成が失敗すると、そのブランチの公開を止め、
+`nightly-hold` と `branch:<branch>` の両ラベルを持つ issue をブランチごとに 1 件作成・更新します。
 現在の配布ブランチはそのまま残ります。新しい AGNOS 用にカーネルを用意・検証し、対応する pin と必要なパッチ更新を入れるまで保留します。
-成功時に hold issue をコメント付きで閉じます。インストーラーの HTTP/ELF チェックだけが失敗した場合は
-`nightly-smoke` issue と warning に留め、公開済みブランチを自動では戻しません。
+成功時は同じブランチの hold issue だけをコメント付きで閉じます。インストーラーの HTTP/ELF チェックだけが失敗した場合は
+`nightly-smoke` と `branch:<branch>` の両ラベルを持つ issue と warning に留め、公開済みブランチを自動では戻しません。
+smoke チェックの成功時も同じブランチの smoke issue だけを閉じます。
 
 ## ロールバック・公式版へ戻す
 
-Actions の **Roll back WPA3 nightly** を実行すると、`nightly-chestnut-lastgood` を
-lease 付きで `nightly-chestnut` に戻し、その後 `nightly.yml` を無効化します。
-lastgood は直前の配布コミットです。最初の公開直後などで存在しなければ、ロールバックは何も変更せず失敗します。
+Actions の **Roll back WPA3 nightly** で `branch` に `nightly` または `nightly-chestnut` を選んで実行すると、
+`<branch>-lastgood` を lease 付きで選択した `<branch>` に戻し、その後 `nightly.yml` を無効化します。
+これにより、再有効化するまで **両ブランチの自動公開が停止します**。
+各 `<branch>-lastgood` はそのブランチの直前の配布コミットです。ブランチごとの初回公開時にはまだ存在しません。
+lastgood が存在しなければ、ロールバックは何も変更せず失敗します。
 原因を修正して再開するときは `gh workflow enable nightly.yml --repo shunnag/openpilot` または Actions の画面で再有効化します。
 
 公式版へ戻すには nightly の自動公開を止め、端末を comma 公式の配布先・インストール手順へ戻してください。

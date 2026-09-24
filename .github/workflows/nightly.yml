@@ -15,10 +15,6 @@ permissions:
   contents: write
   issues: write
 
-concurrency:
-  group: publish
-  cancel-in-progress: false
-
 env:
   GIT_LFS_SKIP_SMUDGE: '1'
   GIT_LFS_SKIP_PUSH: '1'
@@ -28,6 +24,15 @@ env:
 
 jobs:
   publish:
+    strategy:
+      fail-fast: false
+      matrix:
+        branch: [nightly, nightly-chestnut]
+    concurrency:
+      group: publish-${{ matrix.branch }}
+      cancel-in-progress: false
+    env:
+      BRANCH: ${{ matrix.branch }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     defaults:
@@ -50,18 +55,18 @@ jobs:
           echo "NIGHTLY_LOG=$NIGHTLY_LOG" >> "$GITHUB_ENV"
           {
             gh auth setup-git --hostname github.com
-            U=$(git ls-remote https://github.com/commaai/openpilot refs/heads/nightly-chestnut | awk '{print $1}')
+            U=$(git ls-remote https://github.com/commaai/openpilot "refs/heads/$BRANCH" | awk '{print $1}')
             [[ "$U" =~ ^[0-9a-f]{40}$ ]]
             echo "UPSTREAM=$U" >> "$GITHUB_ENV"
             echo "Upstream: $U"
-            F=$(git ls-remote "https://github.com/$GH_REPO.git" refs/heads/nightly-chestnut | awk '{print $1}')
+            F=$(git ls-remote "https://github.com/$GH_REPO.git" "refs/heads/$BRANCH" | awk '{print $1}')
             [[ -z "$F" || "$F" =~ ^[0-9a-f]{40}$ ]]
             echo "FORK=$F" >> "$GITHUB_ENV"
             echo "Current fork: ${F:-absent}"
             git init --bare "$BARE_REPO"
             git -C "$BARE_REPO" remote add origin "https://github.com/$GH_REPO.git"
             if ! [ "$(gh api "repos/commaai/openpilot/commits/$U" --jq '.parents | length')" = 0 ]; then
-              echo "::error::Upstream nightly-chestnut is no longer an orphan commit; this fork's publish design assumes one."
+              echo "::error::Upstream $BRANCH is no longer an orphan commit; this fork's publish design assumes one."
               exit 1
             fi
             # --depth=1 marks even a root shallow; receive-pack rejects "shallow update not allowed".
@@ -119,9 +124,9 @@ jobs:
           fi
           {
             if [ -n "$FORK" ]; then
-              git -C "$BARE_REPO" push --force origin "$FORK:refs/heads/nightly-chestnut-lastgood"
+              git -C "$BARE_REPO" push --force origin "$FORK:refs/heads/$BRANCH-lastgood"
             fi
-            git -C "$BARE_REPO" push --force-with-lease="refs/heads/nightly-chestnut:$FORK" origin "$NEW:refs/heads/nightly-chestnut"
+            git -C "$BARE_REPO" push --force-with-lease="refs/heads/$BRANCH:$FORK" origin "$NEW:refs/heads/$BRANCH"
             echo 'published=true' >> "$GITHUB_OUTPUT"
           } 2>&1 | tee -a "$NIGHTLY_LOG"
 
@@ -130,11 +135,11 @@ jobs:
         env:
           REASON: ${{ steps.gates.outcome == 'failure' && 'gate checks failed' || steps.compose.outcome == 'failure' && 'compose failed' || steps.push.outcome == 'failure' && 'publish failed' || 'fetch or inputs failed' }}
         run: |
-          python3 scripts/issues.py hold --upstream "${UPSTREAM:-unknown}" --reason "$REASON" --log "$NIGHTLY_LOG"
+          python3 scripts/issues.py hold --branch "$BRANCH" --upstream "${UPSTREAM:-unknown}" --reason "$REASON" --log "$NIGHTLY_LOG"
           exit 1
 
       - name: Close resolved hold issues
-        run: python3 scripts/issues.py hold --close --upstream "$UPSTREAM"
+        run: python3 scripts/issues.py hold --branch "$BRANCH" --close --upstream "$UPSTREAM"
 
       - name: Smoke test installer (warning only; never roll back)
         id: smoke
@@ -145,7 +150,7 @@ jobs:
         run: |
           {
             STATUS=$(curl -sS --connect-timeout 20 --max-time 120 -A 'AGNOSSetup-19.8' -H 'X-openpilot-device-type: mici' \
-              -o "$RUNNER_TEMP/installer.elf" -w '%{http_code}' "https://installer.comma.ai/$OWNER/nightly-chestnut")
+              -o "$RUNNER_TEMP/installer.elf" -w '%{http_code}' "https://installer.comma.ai/$OWNER/$BRANCH")
             echo "Installer HTTP $STATUS"
             [ "$STATUS" = 200 ]
             python3 - <<'PY'
@@ -164,9 +169,9 @@ jobs:
         continue-on-error: true
         run: |
           echo '::warning::Installer smoke test failed. Published nightly is retained.'
-          python3 scripts/issues.py smoke --upstream "$UPSTREAM" --reason 'installer smoke test failed' --log "$RUNNER_TEMP/smoke.log"
+          python3 scripts/issues.py smoke --branch "$BRANCH" --upstream "$UPSTREAM" --reason 'installer smoke test failed' --log "$RUNNER_TEMP/smoke.log"
 
       - name: Close resolved installer warning
         if: steps.smoke.outcome == 'success'
         continue-on-error: true
-        run: python3 scripts/issues.py smoke --close --upstream "$UPSTREAM"
+        run: python3 scripts/issues.py smoke --branch "$BRANCH" --close --upstream "$UPSTREAM"

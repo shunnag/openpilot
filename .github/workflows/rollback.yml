@@ -2,13 +2,23 @@ name: Roll back WPA3 nightly
 
 on:
   workflow_dispatch:
+    inputs:
+      branch:
+        description: Branch to restore from lastgood
+        required: true
+        type: choice
+        default: select-a-branch
+        options:
+          - select-a-branch
+          - nightly
+          - nightly-chestnut
 
 permissions:
   contents: write
   actions: write
 
 concurrency:
-  group: publish
+  group: publish-${{ inputs.branch }}
   cancel-in-progress: false
 
 env:
@@ -17,6 +27,7 @@ env:
   GIT_TERMINAL_PROMPT: '0'
   GH_TOKEN: ${{ github.token }}
   GH_REPO: ${{ github.repository }}
+  BRANCH: ${{ inputs.branch }}
 
 jobs:
   rollback:
@@ -28,18 +39,26 @@ jobs:
     steps:
       - name: Restore lastgood with lease, then disable nightly publishing
         run: |
+          case "$BRANCH" in
+            nightly|nightly-chestnut) ;;
+            *)
+              echo '::error::Choose nightly or nightly-chestnut; nothing was changed.'
+              exit 1
+              ;;
+          esac
           gh auth setup-git --hostname github.com
           URL="https://github.com/$GH_REPO.git"
-          F=$(git ls-remote "$URL" refs/heads/nightly-chestnut | awk '{print $1}')
-          GOOD=$(git ls-remote "$URL" refs/heads/nightly-chestnut-lastgood | awk '{print $1}')
+          F=$(git ls-remote "$URL" "refs/heads/$BRANCH" | awk '{print $1}')
+          GOOD=$(git ls-remote "$URL" "refs/heads/$BRANCH-lastgood" | awk '{print $1}')
           [[ -z "$F" || "$F" =~ ^[0-9a-f]{40}$ ]]
           if [[ ! "$GOOD" =~ ^[0-9a-f]{40}$ ]]; then
-            echo '::error::nightly-chestnut-lastgood is missing; nothing was changed.'
+            echo "::error::$BRANCH-lastgood is missing; nothing was changed."
             exit 1
           fi
           BARE_REPO="$RUNNER_TEMP/rollback.git"
           git init --bare "$BARE_REPO"
           git -C "$BARE_REPO" remote add origin "$URL"
           git -C "$BARE_REPO" fetch --depth=1 --no-tags --no-recurse-submodules origin "$GOOD"
-          git -C "$BARE_REPO" push --force-with-lease="refs/heads/nightly-chestnut:$F" origin "$GOOD:refs/heads/nightly-chestnut"
+          git -C "$BARE_REPO" push --force-with-lease="refs/heads/$BRANCH:$F" origin "$GOOD:refs/heads/$BRANCH"
           gh workflow disable nightly.yml --repo "$GH_REPO"
+          echo '::notice::nightly.yml is disabled; publishing for BOTH nightly and nightly-chestnut is paused until re-enabled.'

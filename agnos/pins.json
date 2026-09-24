@@ -1,0 +1,22 @@
+{
+  "19.8": {
+    "release_tag": "agnos-19.8-wpa3.1",
+    "tag": "wpa3.sae=1",
+    "derived_from": {
+      "boot_hash_raw": "335c17579879614a3b6f9b58c867aa2e66609530258e12d9174d6007494fdb11",
+      "system_hash_raw": "20d7a522190ba8b6351364beca9702f40303651577d7c3f6c2c1cb6b34e5db6b",
+      "agnos_py_blob": "de0fb24551b38b26a916d7e6c06b1d0b6c05a2c4"
+    },
+    "boot": {
+      "name": "boot",
+      "url": "https://github.com/shunnag/openpilot/releases/download/agnos-19.8-wpa3.1/boot-18c888b86f8846cd49bf3312b2c02fb60fc3f5e2f165d3a77417a7ad4e2c5549.img.xz",
+      "hash": "18c888b86f8846cd49bf3312b2c02fb60fc3f5e2f165d3a77417a7ad4e2c5549",
+      "hash_raw": "18c888b86f8846cd49bf3312b2c02fb60fc3f5e2f165d3a77417a7ad4e2c5549",
+      "size": 46962688,
+      "sparse": false,
+      "full_check": true,
+      "has_ab": true,
+      "ondevice_hash": "b0ea8d26efe7659bfcaa0d498eddfeda8f7fec59d3f4bcadaddb41ca3d7689b2"
+    }
+  }
+}

@@ -1,0 +1,4 @@
+ref/
+.tmp/
+__pycache__/
+*.pyc

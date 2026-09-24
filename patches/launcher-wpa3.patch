@@ -1,0 +1,102 @@
+diff --git a/launch_chffrplus.sh b/launch_chffrplus.sh
+--- a/launch_chffrplus.sh
++++ b/launch_chffrplus.sh
+@@ -3,6 +3,39 @@
+ DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null && pwd )"
+ 
+ source "$DIR/launch_env.sh"
++
++function wpa3_boot_needed {
++  [ -n "${WPA3_BOOT_TAG:-}" ] || return 1
++  local cmdline_path="${WPA3_CMDLINE_PATH:-/proc/cmdline}"
++  local attempts_path="${WPA3_ATTEMPTS_PATH:-/data/wpa3_boot_attempts}"
++  local token saved_hash="" count=0
++  local -a tokens
++
++  [ -r "$cmdline_path" ] || return 1
++  IFS=$' \t\n' read -r -a tokens <<< "$(< "$cmdline_path")"
++  for token in "${tokens[@]}"; do
++    if [ "$token" = "$WPA3_BOOT_TAG" ]; then
++      rm -f "$attempts_path"
++      return 1
++    fi
++  done
++  [ -n "${WPA3_BOOT_HASH:-}" ] || return 1
++
++  if [ -f "$attempts_path" ]; then
++    read -r saved_hash count < "$attempts_path" || true
++  fi
++  [ "$saved_hash" = "$WPA3_BOOT_HASH" ] || count=0
++  # Invalid counts for this hash also stop retries (fail closed).
++  case "$count" in
++    0|1|2) ;;
++    *) echo "WPA3 boot retry limit reached for $WPA3_BOOT_HASH"; return 1 ;;
++  esac
++  count=$((count + 1))
++  printf '%s %s\n' "$WPA3_BOOT_HASH" "$count" > "$attempts_path" || return 1
++  sync || return 1
++  echo "WPA3 boot tag missing; attempt $count/3 for $WPA3_BOOT_HASH"
++  return 0
++}
+ 
+ function agnos_init {
+   # TODO: move this to agnos
+@@ -18,7 +51,7 @@
+   sudo chmod 660 /dev/adsprpc-smd /dev/ion /dev/kgsl-3d0
+ 
+   # Check if AGNOS update is required
+-  if [ "$(< /VERSION)" != "$AGNOS_VERSION" ]; then
++  if [ "$(< /VERSION)" != "$AGNOS_VERSION" ] || wpa3_boot_needed; then
+     AGNOS_PY="$DIR/openpilot/common/hardware/comma/agnos.py"
+     MANIFEST="$DIR/openpilot/system/hardware/comma/agnos.json"
+     if "$AGNOS_PY" --verify "$MANIFEST"; then
+diff --git a/launch_env.sh b/launch_env.sh
+--- a/launch_env.sh
++++ b/launch_env.sh
+@@ -19,4 +19,7 @@
+   export AGNOS_VERSION="19.8"
+ fi
+ 
++export WPA3_BOOT_TAG="__WPA3_BOOT_TAG__"
++export WPA3_BOOT_HASH="__WPA3_BOOT_HASH__"
++
+ export STAGING_ROOT="/data/safe_staging"
+diff --git a/openpilot/system/updated/updated.py b/openpilot/system/updated/updated.py
+--- a/openpilot/system/updated/updated.py
++++ b/openpilot/system/updated/updated.py
+@@ -209,14 +209,32 @@
+   updated_version = run(["bash", "-c", r"unset AGNOS_VERSION && source launch_env.sh && \
+                           echo -n $AGNOS_VERSION"], OVERLAY_MERGED).strip()
+ 
+-  cloudlog.info(f"AGNOS version check: {cur_version} vs {updated_version}")
+-  if cur_version == updated_version:
++  wpa3_tag = run(["bash", "-c", 'unset WPA3_BOOT_TAG && source launch_env.sh && echo -n "$WPA3_BOOT_TAG"'], OVERLAY_MERGED).strip()
++  wpa3_hash = run(["bash", "-c", 'unset WPA3_BOOT_HASH && source launch_env.sh && echo -n "$WPA3_BOOT_HASH"'], OVERLAY_MERGED).strip()
++  wpa3_needed = False
++  if wpa3_tag and wpa3_hash:
++    try:
++      wpa3_needed = wpa3_tag not in Path("/proc/cmdline").read_text().split()
++      try:
++        attempts = Path("/data/wpa3_boot_attempts").read_text().split()
++      except FileNotFoundError:
++        attempts = []
++      # Read only: the launcher counts attempts immediately before the A/B path.
++      if wpa3_needed and attempts and attempts[0] == wpa3_hash and attempts[1:] not in (["0"], ["1"], ["2"]):
++        cloudlog.warning(f"WPA3 boot retry limit reached for {wpa3_hash}")
++        wpa3_needed = False
++    except OSError:
++      cloudlog.exception("Unable to check WPA3 boot state; skipping extra boot trigger")
++      wpa3_needed = False
++
++  cloudlog.info(f"AGNOS version check: {cur_version} vs {updated_version}; WPA3 boot needed: {wpa3_needed}")
++  if cur_version == updated_version and not wpa3_needed:
+     return
+ 
+   # prevent an openpilot getting swapped in with a mismatched or partially downloaded agnos
+   set_consistent_flag(False)
+ 
+-  cloudlog.info(f"Beginning background installation for AGNOS {updated_version}")
++  cloudlog.info(f"Beginning background installation for AGNOS {updated_version}; WPA3 boot needed: {wpa3_needed}")
+ 
+   manifest_path = os.path.join(OVERLAY_MERGED, "openpilot/system/hardware/comma/agnos.json")
+   target_slot_number = get_target_slot_number()

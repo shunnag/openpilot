@@ -1,0 +1,45 @@
+name: Roll back WPA3 nightly
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: publish
+  cancel-in-progress: false
+
+env:
+  GIT_LFS_SKIP_SMUDGE: '1'
+  GIT_LFS_SKIP_PUSH: '1'
+  GIT_TERMINAL_PROMPT: '0'
+  GH_TOKEN: ${{ github.token }}
+  GH_REPO: ${{ github.repository }}
+
+jobs:
+  rollback:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Restore lastgood with lease, then disable nightly publishing
+        run: |
+          gh auth setup-git --hostname github.com
+          URL="https://github.com/$GH_REPO.git"
+          F=$(git ls-remote "$URL" refs/heads/nightly-chestnut | awk '{print $1}')
+          GOOD=$(git ls-remote "$URL" refs/heads/nightly-chestnut-lastgood | awk '{print $1}')
+          [[ -z "$F" || "$F" =~ ^[0-9a-f]{40}$ ]]
+          if [[ ! "$GOOD" =~ ^[0-9a-f]{40}$ ]]; then
+            echo '::error::nightly-chestnut-lastgood is missing; nothing was changed.'
+            exit 1
+          fi
+          BARE_REPO="$RUNNER_TEMP/rollback.git"
+          git init --bare "$BARE_REPO"
+          git -C "$BARE_REPO" remote add origin "$URL"
+          git -C "$BARE_REPO" fetch --depth=1 --no-tags --no-recurse-submodules origin "$GOOD"
+          git -C "$BARE_REPO" push --force-with-lease="refs/heads/nightly-chestnut:$F" origin "$GOOD:refs/heads/nightly-chestnut"
+          gh workflow disable nightly.yml --repo "$GH_REPO"

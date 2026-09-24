@@ -1,0 +1,172 @@
+name: Nightly WPA3
+
+on:
+  schedule:
+    - cron: '0 11 * * *'
+    - cron: '30 12 * * *'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Run gates and compose even if inputs are unchanged
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: publish
+  cancel-in-progress: false
+
+env:
+  GIT_LFS_SKIP_SMUDGE: '1'
+  GIT_LFS_SKIP_PUSH: '1'
+  GIT_TERMINAL_PROMPT: '0'
+  GH_TOKEN: ${{ github.token }}
+  GH_REPO: ${{ github.repository }}
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: wpa3-ci
+          lfs: false
+          submodules: false
+          persist-credentials: false
+
+      - name: Resolve and fetch upstream and current fork (no checkout)
+        id: fetch
+        run: |
+          BARE_REPO="$RUNNER_TEMP/wpa3.git"
+          NIGHTLY_LOG="$RUNNER_TEMP/nightly.log"
+          echo "BARE_REPO=$BARE_REPO" >> "$GITHUB_ENV"
+          echo "NIGHTLY_LOG=$NIGHTLY_LOG" >> "$GITHUB_ENV"
+          {
+            gh auth setup-git --hostname github.com
+            U=$(git ls-remote https://github.com/commaai/openpilot refs/heads/nightly-chestnut | awk '{print $1}')
+            [[ "$U" =~ ^[0-9a-f]{40}$ ]]
+            echo "UPSTREAM=$U" >> "$GITHUB_ENV"
+            echo "Upstream: $U"
+            F=$(git ls-remote "https://github.com/$GH_REPO.git" refs/heads/nightly-chestnut | awk '{print $1}')
+            [[ -z "$F" || "$F" =~ ^[0-9a-f]{40}$ ]]
+            echo "FORK=$F" >> "$GITHUB_ENV"
+            echo "Current fork: ${F:-absent}"
+            git init --bare "$BARE_REPO"
+            git -C "$BARE_REPO" remote add origin "https://github.com/$GH_REPO.git"
+            if ! [ "$(gh api "repos/commaai/openpilot/commits/$U" --jq '.parents | length')" = 0 ]; then
+              echo "::error::Upstream nightly-chestnut is no longer an orphan commit; this fork's publish design assumes one."
+              exit 1
+            fi
+            # --depth=1 marks even a root shallow; receive-pack rejects "shallow update not allowed".
+            git -C "$BARE_REPO" fetch --no-tags --no-recurse-submodules https://github.com/commaai/openpilot "$U"
+            if [ -n "$F" ]; then
+              git -C "$BARE_REPO" fetch --depth=1 --no-tags --no-recurse-submodules origin "$F"
+            fi
+            if [ -f "$BARE_REPO/shallow" ] && grep -Fxq "$U" "$BARE_REPO/shallow"; then
+              echo '::error::Upstream commit is recorded as shallow; publishing would be rejected.'
+              exit 1
+            fi
+          } 2>&1 | tee "$NIGHTLY_LOG"
+
+      - name: Skip identical published inputs
+        id: inputs
+        env:
+          FORCE: ${{ inputs.force || false }}
+        run: |
+          # An unknown pin is diagnosed by G1 below, rather than treated as unchanged.
+          if INPUTS=$(python3 scripts/compose.py --repo "$BARE_REPO" --upstream "$UPSTREAM" --inputs-only 2>> "$NIGHTLY_LOG"); then
+            if [ -n "$FORK" ]; then
+              PREVIOUS=$(git -C "$BARE_REPO" show -s --format='%(trailers:key=WPA3-Inputs,valueonly)' "$FORK")
+              if [ "$PREVIOUS" = "$INPUTS" ] && [ "$FORCE" != true ]; then
+                echo 'unchanged'
+                echo 'unchanged=true' >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+            fi
+          fi
+
+      - name: Gate upstream and download-verify pinned boot
+        id: gates
+        if: steps.inputs.outputs.unchanged != 'true'
+        run: |
+          python3 scripts/gates.py --repo "$BARE_REPO" --upstream "$UPSTREAM" 2>&1 | tee -a "$NIGHTLY_LOG"
+
+      - name: Compose and validate deterministic commit
+        id: compose
+        if: steps.inputs.outputs.unchanged != 'true'
+        run: |
+          python3 scripts/compose.py --repo "$BARE_REPO" --upstream "$UPSTREAM" 2>&1 | tee "$RUNNER_TEMP/composed.txt" | tee -a "$NIGHTLY_LOG"
+          mapfile -t RESULT < "$RUNNER_TEMP/composed.txt"
+          [[ "${RESULT[0]}" =~ ^[0-9a-f]{40}$ ]]
+          echo "new=${RESULT[0]}" >> "$GITHUB_OUTPUT"
+
+      - name: Back up previous nightly and publish with lease
+        id: push
+        if: steps.inputs.outputs.unchanged != 'true'
+        env:
+          NEW: ${{ steps.compose.outputs.new }}
+        run: |
+          if [ "$NEW" = "$FORK" ]; then
+            echo 'unchanged (deterministic commit already published)'
+            exit 0
+          fi
+          {
+            if [ -n "$FORK" ]; then
+              git -C "$BARE_REPO" push --force origin "$FORK:refs/heads/nightly-chestnut-lastgood"
+            fi
+            git -C "$BARE_REPO" push --force-with-lease="refs/heads/nightly-chestnut:$FORK" origin "$NEW:refs/heads/nightly-chestnut"
+            echo 'published=true' >> "$GITHUB_OUTPUT"
+          } 2>&1 | tee -a "$NIGHTLY_LOG"
+
+      - name: Report publication hold
+        if: failure()
+        env:
+          REASON: ${{ steps.gates.outcome == 'failure' && 'gate checks failed' || steps.compose.outcome == 'failure' && 'compose failed' || steps.push.outcome == 'failure' && 'publish failed' || 'fetch or inputs failed' }}
+        run: |
+          python3 scripts/issues.py hold --upstream "${UPSTREAM:-unknown}" --reason "$REASON" --log "$NIGHTLY_LOG"
+          exit 1
+
+      - name: Close resolved hold issues
+        run: python3 scripts/issues.py hold --close --upstream "$UPSTREAM"
+
+      - name: Smoke test installer (warning only; never roll back)
+        id: smoke
+        if: steps.push.outputs.published == 'true'
+        continue-on-error: true
+        env:
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          {
+            STATUS=$(curl -sS --connect-timeout 20 --max-time 120 -A 'AGNOSSetup-19.8' -H 'X-openpilot-device-type: mici' \
+              -o "$RUNNER_TEMP/installer.elf" -w '%{http_code}' "https://installer.comma.ai/$OWNER/nightly-chestnut")
+            echo "Installer HTTP $STATUS"
+            [ "$STATUS" = 200 ]
+            python3 - <<'PY'
+          import os
+          from pathlib import Path
+          data = (Path(os.environ['RUNNER_TEMP']) / 'installer.elf').read_bytes()
+          assert data.startswith(b'\x7fELF'), 'installer response is not ELF'
+          expected = f"github.com/{os.environ['OWNER']}/openpilot.git".encode()
+          assert expected in data, f'installer ELF does not contain {expected!r}'
+          print('Installer ELF and fork URL verified')
+          PY
+          } 2>&1 | tee "$RUNNER_TEMP/smoke.log"
+
+      - name: Record installer warning
+        if: always() && steps.smoke.outcome == 'failure'
+        continue-on-error: true
+        run: |
+          echo '::warning::Installer smoke test failed. Published nightly is retained.'
+          python3 scripts/issues.py smoke --upstream "$UPSTREAM" --reason 'installer smoke test failed' --log "$RUNNER_TEMP/smoke.log"
+
+      - name: Close resolved installer warning
+        if: steps.smoke.outcome == 'success'
+        continue-on-error: true
+        run: python3 scripts/issues.py smoke --close --upstream "$UPSTREAM"

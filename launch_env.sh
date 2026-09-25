@@ -19,4 +19,8 @@ if [ -z "$AGNOS_VERSION" ]; then
   export AGNOS_VERSION="19.8"
 fi
 
+export WPA3_BOOT_TAG="wpa3.sae=2"
+export WPA3_BOOT_HASH="862b653d80c9d7ac933a60d2bb748371a3267f658194e6ca7273f33c2973de94"
+export WPA3_SUPPLICANT_STOCK_SHA256="b0f1c8ee9bb32153faed468c68390db4691b252ffd6a90e6d3d7b49f4d106bdd"
+
 export STAGING_ROOT="/data/safe_staging"

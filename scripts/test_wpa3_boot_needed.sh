@@ -101,3 +101,13 @@ wpa3_update_manifest
 [ "$MANIFEST" = "$WPA3" ] || fail "equal-version retry chose stock"
 [ "$(cat "$WPA3_ATTEMPTS_PATH")" = 'hash-a 1' ] || fail "equal-version retry counted twice"
 echo 'PASS: wpa3_update_manifest (version mismatch, proven tag, attempts 1/2/3, stock fallback, malformed, missing stock)'
+
+# Native SAE/H2E uses the launcher patch with both boot placeholders disabled.
+export WPA3_BOOT_TAG='' WPA3_BOOT_HASH=''
+printf '19.8\n' > "$WPA3_VERSION_PATH"
+printf 'hash-a 3\n' > "$WPA3_ATTEMPTS_PATH"
+not_needed
+wpa3_update_manifest
+[ "$MANIFEST" = "$WPA3" ] || fail "native mode must update with the upstream manifest"
+[ "$(cat "$WPA3_ATTEMPTS_PATH")" = 'hash-a 3' ] || fail "native version update changed retry count"
+echo 'PASS: native boot placeholders (no boot trigger or version retry counting)'

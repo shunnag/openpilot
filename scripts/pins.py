@@ -9,7 +9,7 @@ import sys
 
 from boot_download import fetch_boot
 from compose import AGNOS_PY, MANIFEST, ROOT, blob, error_text, git, launch_values, pin_description, resolve_commit, validate_pin
-from kernel_equiv import equivalent, native_sae
+from kernel_equiv import equivalent, has_rsnxe, native_sae
 
 
 def version_key(version):
@@ -49,13 +49,20 @@ def resolve(repo, upstream, pins, fetch):
   manifest = json.loads(blob(repo, upstream, MANIFEST))
   boot = partition(manifest, "boot")
   stock = download(fetch, f"upstream AGNOS {version}", boot["url"], boot["hash_raw"], boot["size"])
+  bases = sorted(pins, key=version_key, reverse=True)
   sae, counts = native_sae(stock)
   if sae == "all":
-    return {"mode": "native", "version": version}
+    if not has_rsnxe(stock):
+      raise ValueError("stock kernel has SAE but no RSNXE (H2E); add a pin")
+    resolved = {"mode": "native", "version": version}
+    if bases:
+      resolved["base"] = bases[0]
+      if "wpa_supplicant" in pins[bases[0]]:
+        resolved["wpa_supplicant"] = deepcopy(pins[bases[0]]["wpa_supplicant"])
+    return resolved
   if sae == "partial":
     raise ValueError(f"partial SAE markers in AGNOS {version}: {counts}")
 
-  bases = sorted(pins, key=version_key, reverse=True)
   reasons = []
   for base in bases:
     pin = pins[base]

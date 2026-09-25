@@ -23,10 +23,15 @@ UI_ALLOWED = {
   "openpilot/system/ui/lib/wifi_manager.py",
   "openpilot/system/ui/lib/tests/test_security_type.py",
 }
+SUPPLICANT_FILES = {
+  "wpa3/wpa_supplicant": ("path", "100755"),
+  "wpa3/wpa_supplicant.copyright": ("copyright", "100644"),
+}
 ALLOWED = UI_ALLOWED | {
   "launch_chffrplus.sh", "launch_env.sh", MANIFEST, STOCK_MANIFEST,
   "openpilot/system/updated/updated.py",
-}
+} | SUPPLICANT_FILES.keys()
+NATIVE_ALLOWED = ALLOWED - {MANIFEST, STOCK_MANIFEST}
 LFS_ENV = {"GIT_LFS_SKIP_SMUDGE": "1", "GIT_LFS_SKIP_PUSH": "1"}
 BOOT_KEYS = ("name", "url", "hash", "hash_raw", "size", "sparse", "full_check", "has_ab", "ondevice_hash")
 
@@ -57,8 +62,8 @@ def blob(repo, tree, path):
 
 
 def launch_values(script):
-  command = ('unset AGNOS_VERSION WPA3_BOOT_TAG WPA3_BOOT_HASH; source "$1"; '
-             'printf "%s\\0" "$AGNOS_VERSION" "$WPA3_BOOT_TAG" "$WPA3_BOOT_HASH"')
+  command = ('unset AGNOS_VERSION WPA3_BOOT_TAG WPA3_BOOT_HASH WPA3_SUPPLICANT_STOCK_SHA256; source "$1"; '
+             'printf "%s\\0" "$AGNOS_VERSION" "$WPA3_BOOT_TAG" "$WPA3_BOOT_HASH" "$WPA3_SUPPLICANT_STOCK_SHA256"')
   # macOS bash 3.2 can read an empty /dev/stdin when sourcing a pipe under load.
   with tempfile.NamedTemporaryFile(prefix="wpa3-launch-", suffix=".sh") as source:
     source.write(script)
@@ -67,9 +72,9 @@ def launch_values(script):
                             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                             env={**os.environ, "BASH_ENV": "/dev/null"})
   values = result.stdout.decode().split("\0")
-  if len(values) != 4 or values[-1] != "":
+  if len(values) != 5 or values[-1] != "":
     raise ValueError("launch_env.sh must source quietly and export the expected values")
-  return tuple(values[:3])
+  return tuple(values[:4])
 
 
 def pin_description(resolved):
@@ -112,6 +117,47 @@ def validate_pin_values(pin):
     raise ValueError("derived_from.agnos_py_blob must be a Git blob id")
   if not isinstance(origin["boot_url"], str) or not origin["boot_url"]:
     raise ValueError("derived_from.boot_url must be a nonempty URL")
+  if "wpa_supplicant" in pin:
+    validate_supplicant(pin["wpa_supplicant"])
+
+
+def validate_supplicant(supplicant):
+  if not isinstance(supplicant, dict):
+    raise ValueError("wpa_supplicant must be an object")
+  keys = ("path", "sha256", "copyright", "stock_sha256")
+  for key in keys:
+    if key not in supplicant:
+      raise ValueError(f"missing wpa_supplicant.{key}")
+  if set(supplicant) != set(keys):
+    raise ValueError("unexpected wpa_supplicant keys")
+  for key in ("sha256", "stock_sha256"):
+    if not isinstance(supplicant[key], str) or not re.fullmatch(r"[0-9a-f]{64}", supplicant[key]):
+      raise ValueError(f"wpa_supplicant.{key} must be a SHA-256 hash")
+  for key in ("path", "copyright"):
+    repo_path(supplicant[key])
+
+
+def repo_path(value):
+  if (not isinstance(value, str) or not value or "\0" in value or Path(value).is_absolute()
+      or ".." in Path(value).parts or Path(value) == Path(".")):
+    raise ValueError("wpa_supplicant paths must be relative files inside the repo")
+  path = (ROOT / value).resolve()
+  if not path.is_relative_to(ROOT.resolve()) or path == ROOT.resolve():
+    raise ValueError("wpa_supplicant paths must stay inside the repo")
+  return path
+
+
+def supplicant_files(pin):
+  if "wpa_supplicant" not in pin:
+    return {}
+  supplicant = pin["wpa_supplicant"]
+  binary = repo_path(supplicant["path"]).read_bytes()
+  if hashlib.sha256(binary).hexdigest() != supplicant["sha256"]:
+    raise ValueError("wpa_supplicant SHA-256 differs from pin")
+  return {
+    path: (mode, binary if key == "path" else repo_path(supplicant[key]).read_bytes())
+    for path, (key, mode) in SUPPLICANT_FILES.items()
+  }
 
 
 def load_pin(repo, upstream, pin_file):
@@ -122,6 +168,10 @@ def load_pin(repo, upstream, pin_file):
   if resolved["version"] != version:
     raise ValueError(f"resolved pin version {resolved['version']!r} does not match upstream AGNOS {version!r}")
   if resolved["mode"] == "native":
+    if "wpa_supplicant" in resolved:
+      if not resolved.get("base"):
+        raise ValueError("native supplicant has no base version")
+      validate_supplicant(resolved["wpa_supplicant"])
     return resolved
   if resolved["mode"] == "derived" and not resolved.get("base"):
     raise ValueError("derived pin has no base version")
@@ -139,6 +189,11 @@ def inputs_hash(upstream, resolved):
     "pin": resolved,
     "compose.py": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
   }
+  pin = resolved if resolved["mode"] == "native" else resolved["pin"]
+  if "wpa_supplicant" in pin:
+    # The binary digest is in the pin; the accompanying license also affects the tree.
+    copyright_file = repo_path(pin["wpa_supplicant"]["copyright"])
+    inputs["wpa_supplicant.copyright"] = hashlib.sha256(copyright_file.read_bytes()).hexdigest()
   return hashlib.sha256(json.dumps(inputs, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
@@ -179,7 +234,10 @@ def manifest_bytes(entries):
 
 def post_checks(repo, upstream, tree, resolved, scratch):
   native = resolved["mode"] == "native"
-  allowed = UI_ALLOWED if native else ALLOWED
+  pin = resolved if native else resolved["pin"]
+  allowed = NATIVE_ALLOWED if native else ALLOWED
+  if "wpa_supplicant" not in pin:
+    allowed = allowed - SUPPLICANT_FILES.keys()
   changed = git(repo, "diff-tree", "--no-commit-id", "-r", "--name-only", "-z", upstream, tree).decode().split("\0")
   for path in filter(None, changed):
     if path not in allowed and not path.startswith(".github/workflows/"):
@@ -190,20 +248,27 @@ def post_checks(repo, upstream, tree, resolved, scratch):
       py_compile.compile(str(source), cfile=str(source) + "c", doraise=True)
   if git(repo, "ls-tree", "-r", tree, "--", ".github/workflows"):
     raise ValueError("composed tree still contains upstream workflows")
-  if native:
-    return
-
-  version, pin = resolved["version"], resolved["pin"]
+  version = resolved["version"]
   for path in ("launch_chffrplus.sh", "launch_env.sh"):
     subprocess.run(["bash", "-n"], input=blob(repo, tree, path), check=True,
                    stdout=subprocess.PIPE, stderr=subprocess.PIPE)
   launch_env = blob(repo, tree, "launch_env.sh")
-  if b"__WPA3_BOOT_" in launch_env:
+  if b"__WPA3_" in launch_env:
     raise ValueError("unfilled launch_env.sh placeholders")
-  if launch_values(launch_env) != (version, pin["tag"], pin["boot"]["hash_raw"]):
+  stock_sha256 = pin.get("wpa_supplicant", {}).get("stock_sha256", "")
+  tag, boot_hash = ("", "") if native else (pin["tag"], pin["boot"]["hash_raw"])
+  if launch_values(launch_env) != (version, tag, boot_hash, stock_sha256):
     raise ValueError("composed launch_env.sh values do not match the pin")
+  for path, (mode, data) in supplicant_files(pin).items():
+    oid = git(repo, "hash-object", "--stdin", data=data).decode().strip()
+    if git(repo, "ls-tree", tree, "--", path).decode().strip() != f"{mode} blob {oid}\t{path}":
+      raise ValueError(f"composed {path} must match the pinned file with mode {mode}")
 
   original = blob(repo, upstream, MANIFEST)
+  if native:
+    if blob(repo, tree, MANIFEST) != original or git(repo, "ls-tree", tree, "--", STOCK_MANIFEST):
+      raise ValueError("native mode must retain the upstream manifest without agnos.stock.json")
+    return
   if blob(repo, tree, STOCK_MANIFEST) != original:
     raise ValueError("stock manifest differs from upstream manifest bytes")
   if not git(repo, "ls-tree", tree, "--", STOCK_MANIFEST).startswith(b"100644 blob "):
@@ -222,20 +287,24 @@ def post_checks(repo, upstream, tree, resolved, scratch):
 
 
 def compose(repo, upstream, resolved):
-  inputs = inputs_hash(upstream, resolved)
   native = resolved["mode"] == "native"
+  pin = resolved if native else resolved["pin"]
+  files = supplicant_files(pin)
+  inputs = inputs_hash(upstream, resolved)
   with temporary_index(repo, upstream) as (env, scratch):
-    if not native:
-      pin = resolved["pin"]
-      git(repo, "apply", "--cached", "--whitespace=error", str(LAUNCHER_PATCH), env=env)
-      launch_env = git(repo, "show", ":launch_env.sh", env=env)
-      for name, value in (("TAG", pin["tag"]), ("HASH", pin["boot"]["hash_raw"])):
-        placeholder = f"__WPA3_BOOT_{name}__".encode()
-        if launch_env.count(placeholder) != 1:
-          raise ValueError(f"expected exactly one {placeholder.decode()} placeholder")
-        launch_env = launch_env.replace(placeholder, value.encode())
-      put_blob(repo, env, "launch_env.sh", launch_env)
+    git(repo, "apply", "--cached", "--whitespace=error", str(LAUNCHER_PATCH), env=env)
+    launch_env = git(repo, "show", ":launch_env.sh", env=env)
+    for name, value in (("BOOT_TAG", "" if native else pin["tag"]), ("BOOT_HASH", "" if native else pin["boot"]["hash_raw"]),
+                        ("SUPPLICANT_STOCK_SHA256", pin.get("wpa_supplicant", {}).get("stock_sha256", ""))):
+      placeholder = f"__WPA3_{name}__".encode()
+      if launch_env.count(placeholder) != 1:
+        raise ValueError(f"expected exactly one {placeholder.decode()} placeholder")
+      launch_env = launch_env.replace(placeholder, value.encode())
+    put_blob(repo, env, "launch_env.sh", launch_env)
+    for path, (mode, data) in files.items():
+      put_blob(repo, env, path, data, mode=mode)
 
+    if not native:
       original = blob(repo, upstream, MANIFEST)
       entries = json.loads(original)
       assert manifest_bytes(entries) == original, "upstream manifest no longer round-trips byte-for-byte"

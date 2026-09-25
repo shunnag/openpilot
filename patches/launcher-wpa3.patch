@@ -1,7 +1,7 @@
 diff --git a/launch_chffrplus.sh b/launch_chffrplus.sh
 --- a/launch_chffrplus.sh
 +++ b/launch_chffrplus.sh
-@@ -3,6 +3,60 @@
+@@ -3,6 +3,155 @@
  DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null && pwd )"
  
  source "$DIR/launch_env.sh"
@@ -59,10 +59,105 @@ diff --git a/launch_chffrplus.sh b/launch_chffrplus.sh
 +  fi
 +  echo "AGNOS update manifest: $MANIFEST"
 +}
++
++function wpa3_supplicant_override {
++  local sys="${WPA3_SUPPLICANT_SYS:-/usr/sbin/wpa_supplicant}"
++  local bin="${WPA3_SUPPLICANT_BIN:-$DIR/wpa3/wpa_supplicant}"
++  local failed="${WPA3_SUPPLICANT_FAILED:-/data/wpa3_supplicant_failed}"
++  local dropin_dir="${WPA3_SUPPLICANT_DROPIN_DIR:-/run/systemd/system/wpa_supplicant.service.d}"
++  local bin_hash sys_hash deadline arg stop_post pid exe_hash
++  local -a dropin_args
++  [ -n "${WPA3_SUPPLICANT_STOCK_SHA256:-}" ] || return 0
++  [ -f "$bin" ] && [ -x "$bin" ] || return 0
++  if ! bin_hash=$(sha256sum < "$bin") || ! sys_hash=$(sha256sum < "$sys"); then
++    echo "WPA3: cannot hash wpa_supplicant; not overriding"
++    return 0
++  fi
++  bin_hash="${bin_hash%% *}"
++  sys_hash="${sys_hash%% *}"
++  if [ "$sys_hash" = "$bin_hash" ]; then
++    echo "WPA3: patched wpa_supplicant already active"
++    return 0
++  fi
++  if [ "$sys_hash" != "$WPA3_SUPPLICANT_STOCK_SHA256" ]; then
++    echo "WPA3: stock wpa_supplicant differs; not overriding"
++    return 0
++  fi
++  if ! "$bin" -v; then
++    echo "WPA3: patched wpa_supplicant -v failed; not overriding"
++    return 0
++  fi
++  if [ -f "$failed" ] && awk -v hash="$bin_hash" '
++    NF == 2 && $1 == hash { count++; if ($2 == "start") start = 1 }
++    END { exit !(start || count >= 3) }
++  ' "$failed"; then
++    echo "WPA3: this wpa_supplicant failed to start or failed three times; not overriding"
++    return 0
++  fi
++
++  # Escape unit arguments separately from the shell command. systemd consumes
++  # $$ and %% itself; the shell must receive the literal dollars and percent.
++  for arg in "$sys" "$bin_hash" "$failed" "$WPA3_SUPPLICANT_STOCK_SHA256" "$dropin_dir/wpa3.conf"; do
++    arg="${arg//\\/\\\\}"
++    arg="${arg//\"/\\\"}"
++    arg="${arg//$/\$\$}"
++    arg="${arg//%/%%}"
++    dropin_args+=("\"$arg\"")
++  done
++  printf -v stop_post '%s' \
++    'if [ "$$SERVICE_RESULT" != "success" ]; then ' \
++    'umount -l "$$1"; printf "%%s %%s\\n" "$$2" "$$SERVICE_RESULT" >> "$$3"; ' \
++    'stock=$$(sha256sum < "$$1" | cut -d " " -f 1); if [ "$$stock" = "$$4" ]; then ' \
++    'rm -f "$$5"; systemctl daemon-reload; echo "WPA3: reverted to stock wpa_supplicant after service failure"; ' \
++    'else echo "WPA3: ERROR: stock wpa_supplicant not restored; crash hook remains armed"; fi; fi'
++  # /run is tmpfs. A later crash removes the bind before D-Bus reactivation,
++  # so NetworkManager's next activation runs stock without launcher involvement.
++  if ! sudo mkdir -p "$dropin_dir"; then
++    echo "WPA3: cannot create wpa_supplicant drop-in; not overriding"
++    return 0
++  fi
++  if ! {
++    printf '%s\n' '[Service]'
++    printf "ExecStopPost=/bin/sh -c '%s' wpa3 %s\n" "$stop_post" "${dropin_args[*]}"
++  } | sudo tee "$dropin_dir/wpa3.conf" >/dev/null; then
++    sudo rm -f "$dropin_dir/wpa3.conf" || true
++    sudo systemctl daemon-reload || true
++    echo "WPA3: cannot install wpa_supplicant drop-in; not overriding"
++    return 0
++  fi
++  if ! sudo systemctl daemon-reload || ! sudo mount --bind "$bin" "$sys"; then
++    sudo rm -f "$dropin_dir/wpa3.conf" || true
++    sudo systemctl daemon-reload || true
++    echo "WPA3: cannot bind wpa_supplicant; not overriding"
++    return 0
++  fi
++
++  sudo systemctl --no-block restart wpa_supplicant || echo "WPA3: wpa_supplicant restart request failed"
++  deadline=$((SECONDS + 15))
++  while [ "$SECONDS" -lt "$deadline" ]; do
++    if sudo systemctl is-active --quiet wpa_supplicant && pid=$(systemctl show -p MainPID --value wpa_supplicant) && [ "${pid:-0}" != 0 ] && exe_hash=$(sudo sha256sum "/proc/$pid/exe") && [ "${exe_hash%% *}" = "$bin_hash" ]; then
++      echo "WPA3: patched wpa_supplicant active"
++      return 0
++    fi
++    sleep 1 || break
++  done
++  sudo umount -l "$sys" || echo "WPA3: lazy unmount of wpa_supplicant failed"
++  printf '%s start\n' "$bin_hash" | sudo tee -a "$failed" >/dev/null || echo "WPA3: cannot record failed wpa_supplicant"
++  if sys_hash=$(sha256sum < "$sys") && [ "${sys_hash%% *}" = "$WPA3_SUPPLICANT_STOCK_SHA256" ]; then
++    sudo rm -f "$dropin_dir/wpa3.conf" || true
++    sudo systemctl daemon-reload || true
++    echo "WPA3: reverted to stock wpa_supplicant"
++  else
++    echo "WPA3: ERROR: stock wpa_supplicant not restored; crash hook remains armed"
++  fi
++  sudo systemctl reset-failed wpa_supplicant || true
++  sudo systemctl --no-block restart wpa_supplicant || true
++  return 0
++}
  
  function agnos_init {
    # TODO: move this to agnos
-@@ -18,9 +72,9 @@
+@@ -18,9 +167,9 @@
    sudo chmod 660 /dev/adsprpc-smd /dev/ion /dev/kgsl-3d0
  
    # Check if AGNOS update is required
@@ -74,14 +169,21 @@ diff --git a/launch_chffrplus.sh b/launch_chffrplus.sh
      if "$AGNOS_PY" --verify "$MANIFEST"; then
        sudo reboot
      fi
+@@ -30,3 +179,5 @@
+     done
+   fi
++
++  wpa3_supplicant_override
+ }
 diff --git a/launch_env.sh b/launch_env.sh
 --- a/launch_env.sh
 +++ b/launch_env.sh
-@@ -20,3 +20,6 @@
+@@ -20,3 +20,7 @@
  fi
  
 +export WPA3_BOOT_TAG="__WPA3_BOOT_TAG__"
 +export WPA3_BOOT_HASH="__WPA3_BOOT_HASH__"
++export WPA3_SUPPLICANT_STOCK_SHA256="__WPA3_SUPPLICANT_STOCK_SHA256__"
 +
  export STAGING_ROOT="/data/safe_staging"
 diff --git a/openpilot/system/updated/updated.py b/openpilot/system/updated/updated.py

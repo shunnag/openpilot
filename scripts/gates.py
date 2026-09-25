@@ -6,11 +6,18 @@ from pathlib import Path
 import sys
 
 from boot_download import fetch_boot
-from compose import AGNOS_PY, LAUNCHER_PATCH, MANIFEST, apply_ui, blob, error_text, git, launch_values, load_pin, resolve_commit, temporary_index
+from compose import AGNOS_PY, LAUNCHER_PATCH, MANIFEST, apply_ui, blob, error_text, git, launch_values, load_pin, resolve_commit, supplicant_files, temporary_index
 
 
 def check_download(boot):
   fetch_boot(boot["url"], boot["hash_raw"], boot["size"])
+
+
+def check_supplicant(pin):
+  data = supplicant_files(pin)["wpa3/wpa_supplicant"][1]
+  if (len(data) < 64 or data[:7] != b"\x7fELF\x02\x01\x01" or data[18:20] != b"\xb7\x00"
+      or int.from_bytes(data[16:18], "little") not in (2, 3)):
+    raise ValueError("wpa_supplicant must be an ELF64 little-endian aarch64 executable")
 
 
 def run_gates(repo, upstream, pin_file, skip_download=False, published=None):
@@ -20,13 +27,12 @@ def run_gates(repo, upstream, pin_file, skip_download=False, published=None):
     resolved = load_pin(repo, upstream, pin_file)
     version = resolved["version"]
     native = resolved["mode"] == "native"
+    pin = resolved if native else resolved["pin"]
     if native:
-      print(f"G1: OK: AGNOS {version}: native SAE in stock boot", flush=True)
+      print(f"G1: OK: AGNOS {version}: native SAE/H2E in stock boot", flush=True)
       print("G2: SKIP: native stock manifest is retained", flush=True)
-      print("G3: SKIP: native SAE needs no launcher patch or pinned agnos.py", flush=True)
       print("G4: SKIP: native stock boot was download-verified by the pin resolver", flush=True)
     else:
-      pin = resolved["pin"]
       print(f"G1: OK: AGNOS {version} has pin {pin['release_tag']}", flush=True)
 
       gate = "G2"
@@ -43,10 +49,12 @@ def run_gates(repo, upstream, pin_file, skip_download=False, published=None):
       if oid != pin["derived_from"]["agnos_py_blob"]:
         raise ValueError(f"upstream agnos.py blob changed: {oid}")
 
-    gate = "G5" if native else "G3"
+    gate = "G3"
     with temporary_index(repo, upstream) as (env, _):
-      if not native:
-        git(repo, "apply", "--cached", "--check", str(LAUNCHER_PATCH), env=env)
+      git(repo, "apply", "--cached", "--check", str(LAUNCHER_PATCH), env=env)
+      if native:
+        print("G3: SKIP: pinned agnos.py check in native mode; launcher patch applies", flush=True)
+      else:
         print("G3: OK: agnos.py blob matches and launcher patch applies", flush=True)
 
         gate = "G4"
@@ -66,7 +74,7 @@ def run_gates(repo, upstream, pin_file, skip_download=False, published=None):
       print("G6: SKIP: no published commit", flush=True)
     else:
       published = resolve_commit(repo, published)
-      _, old_tag, old_hash = launch_values(blob(repo, published, "launch_env.sh"))
+      _, old_tag, old_hash, _ = launch_values(blob(repo, published, "launch_env.sh"))
       if not old_tag:
         print("G6: SKIP: published build has no WPA3 boot tag", flush=True)
       else:
@@ -74,6 +82,13 @@ def run_gates(repo, upstream, pin_file, skip_download=False, published=None):
         if (old_tag == tag) != (old_hash == digest):
           raise ValueError(f"published {published} tag/hash {old_tag!r}/{old_hash} conflicts with AGNOS {version} {tag!r}/{digest}")
         print("G6: OK: published and resolved WPA3 tag/hash identities are consistent", flush=True)
+
+    gate = "G7"
+    if "wpa_supplicant" not in pin:
+      print("G7: SKIP: pin has no wpa_supplicant", flush=True)
+    else:
+      check_supplicant(pin)
+      print("G7: OK: pinned wpa_supplicant SHA-256, aarch64 ELF and copyright verified", flush=True)
   except Exception as error:
     print(f"{gate}: FAIL: {error_text(error)}", file=sys.stderr, flush=True)
     return 1

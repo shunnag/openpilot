@@ -2,7 +2,7 @@
 import gzip
 import struct
 
-from kernel_equiv import BUILD_ID, CERT_MARKER, FDT, SAE_MARKERS
+from kernel_equiv import BUILD_ID, CERT_MARKER, FDT, RSNXE_MARKER, SAE_MARKERS
 
 PAGE = 4096
 IMAGE_SIZE = 128 * 1024
@@ -44,7 +44,7 @@ def fdt(payload):
   return FDT + struct.pack(">9I", 64, 56, 60, 40, 17, 16, 0, 4, 4) + bytes(16) + payload.ljust(8, b"\0")
 
 
-def boot_image(*, mtime=1, date="Sep 2", identity=1, config=b"CONFIG_TEST=y\n", sae=0, cpio=None):
+def boot_image(*, mtime=1, date="Sep 2", identity=1, config=b"CONFIG_TEST=y\n", sae=0, rsnxe=False, cpio=None):
   img = bytearray(b"\xa5" * IMAGE_SIZE)
 
   def put(offset, data, reserve=None):
@@ -65,6 +65,7 @@ def boot_image(*, mtime=1, date="Sep 2", identity=1, config=b"CONFIG_TEST=y\n", 
   put((INITRAMFS + len(ram) + 3) & ~3, struct.pack("<Q", len(ram)))
   put(SYMBOL, struct.pack("<I", INITRAMFS + len(ram) - 0x14))
   put(6656, b"\0".join(SAE_MARKERS[:sae]) + b"\0", 512)
+  put(7168, RSNXE_MARKER + b" %d)\0" if rsnxe else b"", 256)
   kernel = bytes(img) + fdt(b"dtb one") + fdt(b"dtb two")
   header = bytearray(PAGE)
   header[:8] = b"ANDROID!"

@@ -260,6 +260,15 @@ class TestKernelEquiv(unittest.TestCase):
         self.assertEqual(state, expected)
         self.assertEqual(list(counts.values()), [1] * number + [0] * (4 - number))
 
+  def test_rsnxe_marker_in_kernel(self):
+    for sae in (0, 1, 4):
+      for rsnxe in (False, True):
+        with self.subTest(sae=sae, rsnxe=rsnxe):
+          self.assertEqual(ke.has_rsnxe(boot_image(sae=sae, rsnxe=rsnxe)), rsnxe)
+    boot = bytearray(boot_image(sae=4))
+    boot[64:64 + len(ke.RSNXE_MARKER)] = ke.RSNXE_MARKER
+    self.assertFalse(ke.has_rsnxe(boot), "a command-line string is not kernel support")
+
   def test_cli(self):
     root = Path(__file__).resolve().parents[1]
     (root / ".tmp").mkdir(exist_ok=True)
@@ -301,8 +310,10 @@ class TestRealBoots(unittest.TestCase):
 
   def test_real_sae_markers(self):
     self.assertEqual(ke.native_sae(self.wpa3), ("all", {marker.decode(): 1 for marker in ke.SAE_MARKERS}))
+    self.assertFalse(ke.has_rsnxe(self.wpa3), "v1 has SAE but no RSNXE")
     for stock in self.stock:
       self.assertEqual(ke.native_sae(stock), ("none", {marker.decode(): 0 for marker in ke.SAE_MARKERS}))
+      self.assertFalse(ke.has_rsnxe(stock))
 
 
 if __name__ == "__main__":

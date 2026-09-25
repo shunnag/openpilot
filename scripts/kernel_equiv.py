@@ -16,6 +16,7 @@ SAE_MARKERS = (
   b"SAE: sent cmd",
   b"Received SAE Auth frame",
 )
+RSNXE_MARKER = b"Set RSNXE(len"
 MAX_INFLATED = 64 * 1024 * 1024
 
 
@@ -299,6 +300,11 @@ def native_sae(boot_bytes):
   counts = {marker.decode(): img.count(marker) for marker in SAE_MARKERS}
   state = "all" if all(counts.values()) else "partial" if any(counts.values()) else "none"
   return state, counts
+
+
+def has_rsnxe(boot_bytes):
+  _, img, _ = split(boot_bytes)
+  return RSNXE_MARKER in img
 
 
 def main():

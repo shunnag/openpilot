@@ -1,7 +1,7 @@
 {
   "19.8": {
-    "release_tag": "agnos-19.8-wpa3.1",
-    "tag": "wpa3.sae=1",
+    "release_tag": "agnos-19.8-wpa3.2",
+    "tag": "wpa3.sae=2",
     "derived_from": {
       "boot_hash_raw": "335c17579879614a3b6f9b58c867aa2e66609530258e12d9174d6007494fdb11",
       "boot_url": "https://commadist.azureedge.net/agnosupdate/boot-335c17579879614a3b6f9b58c867aa2e66609530258e12d9174d6007494fdb11.img.xz",
@@ -10,14 +10,20 @@
     },
     "boot": {
       "name": "boot",
-      "url": "https://github.com/shunnag/openpilot/releases/download/agnos-19.8-wpa3.1/boot-18c888b86f8846cd49bf3312b2c02fb60fc3f5e2f165d3a77417a7ad4e2c5549.img.xz",
-      "hash": "18c888b86f8846cd49bf3312b2c02fb60fc3f5e2f165d3a77417a7ad4e2c5549",
-      "hash_raw": "18c888b86f8846cd49bf3312b2c02fb60fc3f5e2f165d3a77417a7ad4e2c5549",
+      "url": "https://github.com/shunnag/openpilot/releases/download/agnos-19.8-wpa3.2/boot-862b653d80c9d7ac933a60d2bb748371a3267f658194e6ca7273f33c2973de94.img.xz",
+      "hash": "862b653d80c9d7ac933a60d2bb748371a3267f658194e6ca7273f33c2973de94",
+      "hash_raw": "862b653d80c9d7ac933a60d2bb748371a3267f658194e6ca7273f33c2973de94",
       "size": 46962688,
       "sparse": false,
       "full_check": true,
       "has_ab": true,
-      "ondevice_hash": "b0ea8d26efe7659bfcaa0d498eddfeda8f7fec59d3f4bcadaddb41ca3d7689b2"
+      "ondevice_hash": "110c69bcdbb4c559c31662f0bfbfebe615e33578be382d7f286bdeb73c57ed87"
+    },
+    "wpa_supplicant": {
+      "path": "userspace/wpa_supplicant",
+      "sha256": "139be31dde5f000d99af5f2692b792989bb3d6cbe332d662b2ddf822de89fd93",
+      "copyright": "userspace/wpa_supplicant.copyright",
+      "stock_sha256": "b0f1c8ee9bb32153faed468c68390db4691b252ffd6a90e6d3d7b49f4d106bdd"
     }
   }
 }

@@ -83,7 +83,7 @@ class TestCompose(unittest.TestCase):
 
   def test_offline_gates(self):
     result = self.cli("gates.py", self.upstream, "--skip-download")
-    for gate in ("G1", "G2", "G3", "G5"):
+    for gate in ("G1", "G2", "G3", "G5", "G7"):
       self.assertIn(f"{gate}: OK:", result.stdout)
     self.assertIn("G4: SKIP:", result.stdout)
     self.assertIn("G6: SKIP: no published commit", result.stdout)
@@ -92,7 +92,8 @@ class TestCompose(unittest.TestCase):
     tag, digest = self.pin["tag"], self.pin["boot"]["hash_raw"]
     for old_tag, old_hash, expected in (
       (tag, digest, "OK"), (tag, "f" * 64, "FAIL"),
-      ("wpa3.sae=2", digest, "FAIL"), ("wpa3.sae=2", "f" * 64, "OK"), ("", "", "SKIP"),
+      ("wpa3.sae=1", digest, "FAIL"),
+      ("wpa3.sae=1", "18c888b86f8846cd49bf3312b2c02fb60fc3f5e2f165d3a77417a7ad4e2c5549", "OK"), ("", "", "SKIP"),
     ):
       with self.subTest(old_tag=old_tag, old_hash=old_hash):
         script = compose.blob(self.repo, self.upstream, "launch_env.sh")
@@ -163,14 +164,112 @@ class TestCompose(unittest.TestCase):
 
   def test_launch_environment_and_runtime_patch(self):
     script = compose.blob(self.repo, self.commit, "launch_env.sh")
-    self.assertEqual(compose.launch_values(script), ("19.8", self.pin["tag"], self.pin["boot"]["hash_raw"]))
-    self.assertNotIn(b"__WPA3_BOOT_", script)
+    self.assertEqual(compose.launch_values(script), ("19.8", self.pin["tag"], self.pin["boot"]["hash_raw"],
+                                                   self.pin["wpa_supplicant"]["stock_sha256"]))
+    self.assertNotIn(b"__WPA3_", script)
     launcher = compose.blob(self.repo, self.commit, "launch_chffrplus.sh")
     self.assertIn(b'if [ "$(< "${WPA3_VERSION_PATH:-/VERSION}")" != "$AGNOS_VERSION" ] || wpa3_boot_needed; then', launcher)
+    self.assertIn(b'    done\n  fi\n\n  wpa3_supplicant_override\n}\n\nfunction launch {', launcher)
     updated = compose.blob(self.repo, self.commit, UPDATED)
     self.assertIn(b"cur_version == updated_version and not wpa3_needed", updated)
     self.assertIn(b"unset WPA3_BOOT_TAG", updated)
     self.assertIn(b"unset WPA3_BOOT_HASH", updated)
+
+  def assert_supplicant_files(self, commit):
+    for path, (key, mode) in compose.SUPPLICANT_FILES.items():
+      data = (ROOT / self.pin["wpa_supplicant"][key]).read_bytes()
+      oid = compose.git(self.repo, "hash-object", "--stdin", data=data).decode().strip()
+      self.assertEqual(compose.git(self.repo, "ls-tree", commit, "--", path).decode(), f"{mode} blob {oid}\t{path}\n")
+      self.assertEqual(compose.blob(self.repo, commit, path), data)
+      if key == "path":
+        self.assertEqual(hashlib.sha256(data).hexdigest(), self.pin["wpa_supplicant"]["sha256"])
+
+  def test_supplicant_files(self):
+    self.assert_supplicant_files(self.commit)
+
+  def test_supplicant_post_checks_reject_content_and_mode_drift(self):
+    for path, (key, mode) in compose.SUPPLICANT_FILES.items():
+      original = (ROOT / self.pin["wpa_supplicant"][key]).read_bytes()
+      for data, wrong_mode in ((original + b"drift", mode), (original, "100644" if mode == "100755" else "100755")):
+        with self.subTest(path=path, mode=wrong_mode), compose.temporary_index(self.repo, self.commit) as (env, scratch):
+          compose.put_blob(self.repo, env, path, data, mode=wrong_mode)
+          tree = compose.git(self.repo, "write-tree", env=env).decode().strip()
+          with self.assertRaisesRegex(ValueError, f"composed {path} must match"):
+            compose.post_checks(self.repo, self.upstream, tree, self.resolved, scratch)
+
+  def test_supplicant_launch_value_post_check(self):
+    with compose.temporary_index(self.repo, self.commit) as (env, scratch):
+      data = compose.blob(self.repo, self.commit, "launch_env.sh")
+      data = data.replace(self.pin["wpa_supplicant"]["stock_sha256"].encode(), b"0" * 64)
+      compose.put_blob(self.repo, env, "launch_env.sh", data)
+      tree = compose.git(self.repo, "write-tree", env=env).decode().strip()
+      with self.assertRaisesRegex(ValueError, "values do not match"):
+        compose.post_checks(self.repo, self.upstream, tree, self.resolved, scratch)
+
+  def write_resolved(self, resolved, name="supplicant-pin.json"):
+    pin_file = self.work / name
+    pin_file.write_text(json.dumps(resolved))
+    return pin_file
+
+  def test_pin_without_supplicant(self):
+    resolved = deepcopy(self.resolved)
+    del resolved["pin"]["wpa_supplicant"]
+    pin_file = self.write_resolved(resolved)
+    result = self.cli("gates.py", self.upstream, "--skip-download", pin_file=pin_file)
+    self.assertIn("G7: SKIP: pin has no wpa_supplicant", result.stdout)
+    commit = self.cli("compose.py", self.upstream, pin_file=pin_file).stdout.splitlines()[0]
+    self.assertEqual(compose.launch_values(compose.blob(self.repo, commit, "launch_env.sh"))[-1], "")
+    self.assertEqual(compose.git(self.repo, "ls-tree", "-r", commit, "--", "wpa3"), b"")
+
+  def supplicant_variant(self, data, digest=None):
+    binary = self.work / "variant-supplicant"
+    binary.write_bytes(data)
+    resolved = deepcopy(self.resolved)
+    resolved["pin"]["wpa_supplicant"].update(path=str(binary.relative_to(ROOT)),
+                                            sha256=digest or hashlib.sha256(data).hexdigest())
+    return resolved
+
+  def test_wrong_supplicant_sha_fails_compose(self):
+    resolved = self.supplicant_variant(b"wrong binary", self.pin["wpa_supplicant"]["sha256"])
+    result = self.cli("compose.py", self.upstream, pin_file=self.write_resolved(resolved), check=False)
+    self.assertEqual(result.returncode, 1)
+    self.assertIn("wpa_supplicant SHA-256 differs from pin", result.stderr)
+
+  def test_g7_rejects_invalid_supplicant(self):
+    binary = (ROOT / self.pin["wpa_supplicant"]["path"]).read_bytes()
+    for label, data, digest, reason in (
+      ("digest", binary, "0" * 64, "SHA-256 differs"),
+      ("non-ELF", b"#!/bin/sh\nexit 0\n", None, "ELF64"),
+      ("truncated", binary[:32], None, "ELF64"),
+      ("ELF32", binary[:4] + b"\x01" + binary[5:], None, "ELF64"),
+      ("big-endian", binary[:5] + b"\x02" + binary[6:], None, "ELF64"),
+      ("machine", binary[:18] + b"\x3e\x00" + binary[20:], None, "aarch64"),
+      ("relocatable", binary[:16] + b"\x01\x00" + binary[18:], None, "executable"),
+    ):
+      with self.subTest(label=label):
+        resolved = self.supplicant_variant(data, digest)
+        result = self.cli("gates.py", self.upstream, "--skip-download", pin_file=self.write_resolved(resolved), check=False)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("G7: FAIL:", result.stderr)
+        self.assertIn(reason, result.stderr)
+    resolved = deepcopy(self.resolved)
+    resolved["pin"]["wpa_supplicant"]["copyright"] = str((self.work / "missing.copyright").relative_to(ROOT))
+    result = self.cli("gates.py", self.upstream, "--skip-download", pin_file=self.write_resolved(resolved), check=False)
+    self.assertEqual(result.returncode, 1)
+    self.assertIn("G7: FAIL:", result.stderr)
+    self.assertIn("missing.copyright", result.stderr)
+
+  def test_supplicant_inputs_cover_binary_and_copyright(self):
+    resolved = deepcopy(self.resolved)
+    resolved["pin"]["wpa_supplicant"]["sha256"] = "0" * 64
+    self.assertNotEqual(compose.inputs_hash(self.upstream, resolved), self.inputs)
+    copyright_file = self.work / "variant.copyright"
+    resolved = deepcopy(self.resolved)
+    resolved["pin"]["wpa_supplicant"]["copyright"] = str(copyright_file.relative_to(ROOT))
+    copyright_file.write_text("license one\n")
+    before = compose.inputs_hash(self.upstream, resolved)
+    copyright_file.write_text("license two\n")
+    self.assertNotEqual(compose.inputs_hash(self.upstream, resolved), before)
 
   def test_manifest_and_symlink(self):
     original = compose.blob(self.repo, self.upstream, compose.MANIFEST)
@@ -247,7 +346,7 @@ class TestCompose(unittest.TestCase):
   def resolved_variant(self, native=False):
     base_stock, new_stock = identity_pair()
     if native:
-      new_stock = boot_image(sae=4)
+      new_stock = boot_image(sae=4, rsnxe=True)
     entries = json.loads(compose.blob(self.repo, self.upstream, compose.MANIFEST))
     for entry in entries:
       if entry["name"] == "boot":
@@ -259,9 +358,8 @@ class TestCompose(unittest.TestCase):
       compose.MANIFEST: compose.manifest_bytes(entries),
     }
     if native:
-      # These may evolve upstream once the stock kernel supports SAE.
+      # Native no longer depends on the pinned AGNOS flashing implementation.
       changes[compose.AGNOS_PY] = b"# new native updater\n"
-      changes["launch_chffrplus.sh"] = b"#!/bin/bash\necho native\n"
     upstream = self.variant_many(changes)
     base_pin = deepcopy(self.pin)
     base_pin["derived_from"]["boot_hash_raw"] = hashlib.sha256(base_stock).hexdigest()
@@ -283,14 +381,16 @@ class TestCompose(unittest.TestCase):
   def test_derived_resolve_gates_and_compose(self):
     upstream, resolved, pin_file = self.resolved_variant()
     gates_result = self.cli("gates.py", upstream, "--skip-download", pin_file=pin_file)
-    for gate in ("G1", "G2", "G3", "G5"):
+    for gate in ("G1", "G2", "G3", "G5", "G7"):
       self.assertIn(f"{gate}: OK:", gates_result.stdout)
     result = self.cli("compose.py", upstream, pin_file=pin_file).stdout
     self.assertEqual(result, self.cli("compose.py", upstream, pin_file=pin_file).stdout)
     commit, inputs = result.splitlines()
     self.assertEqual(inputs, self.cli("compose.py", upstream, "--inputs-only", pin_file=pin_file).stdout.strip())
     self.assertEqual(compose.launch_values(compose.blob(self.repo, commit, "launch_env.sh")),
-                     ("19.9", self.pin["tag"], self.pin["boot"]["hash_raw"]))
+                     ("19.9", self.pin["tag"], self.pin["boot"]["hash_raw"], self.pin["wpa_supplicant"]["stock_sha256"]))
+    self.assert_supplicant_files(commit)
+    self.assertEqual(resolved["pin"]["wpa_supplicant"], self.pin["wpa_supplicant"])
     message = compose.git(self.repo, "show", "-s", "--format=%B", commit).decode()
     self.assertIn(f"WPA3-AGNOS: {self.pin['release_tag']}\nWPA3-Pin: derived 19.9 from 19.8\n", message)
     changed = set(compose.git(self.repo, "diff-tree", "--no-commit-id", "-r", "--name-only", upstream, commit).decode().splitlines())
@@ -303,33 +403,108 @@ class TestCompose(unittest.TestCase):
     self.assertEqual(resolved["pin"]["boot"], self.pin["boot"])
     self.assertEqual(compose.blob(self.repo, commit, compose.STOCK_MANIFEST), compose.blob(self.repo, upstream, compose.MANIFEST))
 
-  def test_native_resolve_gates_and_compose_only_ui(self):
-    upstream, _, pin_file = self.resolved_variant(native=True)
+  def test_native_resolve_gates_and_compose_with_override(self):
+    upstream, resolved, pin_file = self.resolved_variant(native=True)
+    self.assertEqual(resolved["base"], "19.8")
+    self.assertEqual(resolved["wpa_supplicant"], self.pin["wpa_supplicant"])
     # No skip-download: native G4 must skip on its own, without network access.
     result = self.cli("gates.py", upstream, pin_file=pin_file)
-    self.assertIn("native SAE in stock boot", result.stdout)
+    self.assertIn("native SAE/H2E in stock boot", result.stdout)
     for gate in ("G2", "G3", "G4", "G6"):
       self.assertIn(f"{gate}: SKIP:", result.stdout)
     self.assertIn("G5: OK:", result.stdout)
+    self.assertIn("G7: OK:", result.stdout)
+    self.assertIn("launcher patch applies", result.stdout)
     self.assertIn("G6: SKIP: native mode", self.cli("gates.py", upstream, "--published", self.commit, pin_file=pin_file).stdout)
     result = self.cli("compose.py", upstream, pin_file=pin_file).stdout
     self.assertEqual(result, self.cli("compose.py", upstream, pin_file=pin_file).stdout)
     commit, inputs = result.splitlines()
     self.assertEqual(inputs, self.cli("compose.py", upstream, "--inputs-only", pin_file=pin_file).stdout.strip())
     changed = set(compose.git(self.repo, "diff-tree", "--no-commit-id", "-r", "--name-only", upstream, commit).decode().splitlines())
-    self.assertEqual(changed, compose.UI_ALLOWED | {".github/workflows/upstream.yml"})
+    self.assertEqual(changed, compose.NATIVE_ALLOWED | {".github/workflows/upstream.yml"})
     self.assertEqual(compose.git(self.repo, "ls-tree", "-r", commit, "--", ".github/workflows"), b"")
     self.assertEqual(compose.git(self.repo, "ls-tree", commit, "--", compose.STOCK_MANIFEST), b"")
-    for path in (compose.MANIFEST, "launch_env.sh", "launch_chffrplus.sh", UPDATED):
+    self.assert_supplicant_files(commit)
+    self.assertEqual(compose.launch_values(compose.blob(self.repo, commit, "launch_env.sh")),
+                     ("19.9", "", "", self.pin["wpa_supplicant"]["stock_sha256"]))
+    for path in (compose.MANIFEST, compose.AGNOS_PY):
       self.assertEqual(compose.blob(self.repo, commit, path), compose.blob(self.repo, upstream, path))
+    for path in ("launch_chffrplus.sh", UPDATED):
+      self.assertEqual(compose.blob(self.repo, commit, path), compose.blob(self.repo, self.commit, path))
     message = compose.git(self.repo, "show", "-s", "--format=%B", commit).decode()
     self.assertIn("WPA3-AGNOS: none\nWPA3-Pin: native 19.9\n", message)
-    self.assertIn("already applied", self.cli("gates.py", commit, pin_file=pin_file).stdout)
-    recomposed = self.cli("compose.py", commit, pin_file=pin_file).stdout.splitlines()[0]
-    self.assertEqual(compose.git(self.repo, "rev-parse", f"{commit}^{{tree}}"),
-                     compose.git(self.repo, "rev-parse", f"{recomposed}^{{tree}}"))
     drifted = self.variant_many({"openpilot/system/ui/lib/networkmanager.py": b"# incompatible UI\n"}, upstream)
     self.assertIn("G5: FAIL:", self.cli("gates.py", drifted, pin_file=pin_file, check=False).stderr)
+
+  def test_native_requires_launcher_patch_applicability(self):
+    upstream, _, pin_file = self.resolved_variant(native=True)
+    for path in ("launch_chffrplus.sh", "launch_env.sh", UPDATED):
+      with self.subTest(path=path):
+        original = compose.blob(self.repo, upstream, path)
+        data = b"#!/bin/bash\n# incompatible launcher\n" if path.endswith(".sh") else b"# incompatible updater\n"
+        if path == "launch_env.sh":
+          data += b'export AGNOS_VERSION="19.9"\n'
+        self.assertNotEqual(data, original)
+        drifted = self.variant_many({path: data}, upstream)
+        result = self.cli("gates.py", drifted, pin_file=pin_file, check=False)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("G3: FAIL:", result.stderr)
+        self.assertEqual(self.cli("compose.py", drifted, pin_file=pin_file, check=False).returncode, 1)
+
+  def test_native_supplicant_validation_and_inputs(self):
+    upstream, resolved, _ = self.resolved_variant(native=True)
+    for key, value in (("sha256", "0" * 64), ("copyright", str((self.work / "missing.copyright").relative_to(ROOT)))):
+      changed = deepcopy(resolved)
+      changed["wpa_supplicant"][key] = value
+      pin_file = self.write_resolved(changed)
+      with self.subTest(key=key):
+        result = self.cli("gates.py", upstream, pin_file=pin_file, check=False)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("G7: FAIL:", result.stderr)
+        self.assertEqual(self.cli("compose.py", upstream, pin_file=pin_file, check=False).returncode, 1)
+    for key, value in (("stock_sha256", "invalid"), ("path", "../outside")):
+      changed = deepcopy(resolved)
+      changed["wpa_supplicant"][key] = value
+      with self.subTest(key=key), self.assertRaises(ValueError):
+        compose.load_pin(self.repo, upstream, self.write_resolved(changed))
+    original_inputs = compose.inputs_hash(upstream, resolved)
+    changed = deepcopy(resolved)
+    changed["wpa_supplicant"]["sha256"] = "0" * 64
+    self.assertNotEqual(original_inputs, compose.inputs_hash(upstream, changed))
+    copyright_file = self.work / "native.copyright"
+    changed["wpa_supplicant"]["copyright"] = str(copyright_file.relative_to(ROOT))
+    copyright_file.write_text("license one\n")
+    original_inputs = compose.inputs_hash(upstream, changed)
+    copyright_file.write_text("license two\n")
+    self.assertNotEqual(original_inputs, compose.inputs_hash(upstream, changed))
+
+  def test_native_post_checks_protect_manifest_and_runtime(self):
+    upstream, resolved, pin_file = self.resolved_variant(native=True)
+    commit = self.cli("compose.py", upstream, pin_file=pin_file).stdout.splitlines()[0]
+    changes = [
+      (compose.MANIFEST, b"[]\n", "100644", "unexpected composed change"),
+      (compose.STOCK_MANIFEST, b"[]\n", "100644", "unexpected composed change"),
+      ("launch_env.sh", b'export AGNOS_VERSION="19.9"\nexport WPA3_BOOT_TAG="wpa3.sae=2"\n', "100644", "values do not match"),
+    ]
+    for path, (key, mode) in compose.SUPPLICANT_FILES.items():
+      data = (ROOT / self.pin["wpa_supplicant"][key]).read_bytes()
+      changes += [(path, data + b"drift", mode, "must match the pinned file"),
+                  (path, data, "100644" if mode == "100755" else "100755", "must match the pinned file")]
+    for path, data, mode, reason in changes:
+      with self.subTest(path=path, mode=mode), compose.temporary_index(self.repo, commit) as (env, scratch):
+        compose.put_blob(self.repo, env, path, data, mode=mode)
+        tree = compose.git(self.repo, "write-tree", env=env).decode().strip()
+        with self.assertRaisesRegex(ValueError, reason):
+          compose.post_checks(self.repo, upstream, tree, resolved, scratch)
+
+  def test_native_without_optional_supplicant(self):
+    upstream, resolved, _ = self.resolved_variant(native=True)
+    del resolved["wpa_supplicant"]
+    pin_file = self.write_resolved(resolved)
+    self.assertIn("G7: SKIP:", self.cli("gates.py", upstream, pin_file=pin_file).stdout)
+    commit = self.cli("compose.py", upstream, pin_file=pin_file).stdout.splitlines()[0]
+    self.assertEqual(compose.launch_values(compose.blob(self.repo, commit, "launch_env.sh")), ("19.9", "", "", ""))
+    self.assertEqual(compose.git(self.repo, "ls-tree", "-r", commit, "--", "wpa3"), b"")
 
   def test_launcher_bash_unit(self):
     launcher = self.work / "launch_chffrplus.sh"
@@ -339,6 +514,15 @@ class TestCompose(unittest.TestCase):
     self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
     self.assertIn("PASS: wpa3_boot_needed", result.stdout)
     self.assertIn("PASS: wpa3_update_manifest", result.stdout)
+    print("\n" + result.stdout.strip())
+
+  def test_supplicant_bash_unit(self):
+    launcher = self.work / "supplicant-launcher.sh"
+    launcher.write_bytes(compose.blob(self.repo, self.commit, "launch_chffrplus.sh"))
+    result = subprocess.run(["bash", str(ROOT / "scripts/test_wpa3_supplicant_override.sh"), str(launcher), str(self.work)],
+                            capture_output=True, text=True, timeout=30)
+    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+    self.assertIn("PASS: wpa3_supplicant_override", result.stdout)
     print("\n" + result.stdout.strip())
 
   def test_updated_trigger_is_read_only_and_preserves_version_updates(self):

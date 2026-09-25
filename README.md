@@ -28,13 +28,13 @@ What's changed
 
 Each build is comma's prebuilt commit with these changes:
 
-1. **Kernel:** the `boot` entry in the AGNOS manifest points to a boot image that enables SAE in the qcacld-3.0 Wi-Fi driver ([commaai/agnos-kernel-sdm845#142](https://github.com/commaai/agnos-kernel-sdm845/pull/142)). All other AGNOS images, including `system`, are comma's. `AGNOS_VERSION` is unchanged.
+1. **Kernel:** the `boot` entry in the AGNOS manifest points to a boot image that enables SAE in the qcacld-3.0 Wi-Fi driver ([commaai/agnos-kernel-sdm845#142](https://github.com/commaai/agnos-kernel-sdm845/pull/142)). All other AGNOS images, including `system`, are comma's. `AGNOS_VERSION` is unchanged. comma's original manifest is kept next to it as `agnos.stock.json`.
 2. **UI:** when the driver supports SAE, WPA3-only networks are listed and connected with a `sae` profile.
 3. **Launcher and updater:** they install the WPA3 kernel if the running kernel doesn't have it. See [Kernel install](#kernel-install).
 
 各ビルドは、comma のビルド済みコミットに次の変更を加えたものです。
 
-1. **カーネル:** AGNOS の manifest の `boot` を、qcacld-3.0 Wi-Fi ドライバの SAE を有効にした boot イメージに差し替えます（[commaai/agnos-kernel-sdm845#142](https://github.com/commaai/agnos-kernel-sdm845/pull/142)）。`system` を含むほかの AGNOS イメージは comma のままです。`AGNOS_VERSION` も変えません。
+1. **カーネル:** AGNOS の manifest の `boot` を、qcacld-3.0 Wi-Fi ドライバの SAE を有効にした boot イメージに差し替えます（[commaai/agnos-kernel-sdm845#142](https://github.com/commaai/agnos-kernel-sdm845/pull/142)）。`system` を含むほかの AGNOS イメージは comma のままです。`AGNOS_VERSION` も変えません。comma の元の manifest は、`agnos.stock.json` として隣に残します。
 2. **UI:** ドライバが SAE に対応していれば、WPA3 専用のネットワークを一覧に表示し、`sae` のプロファイルで接続します。
 3. **ランチャーと updater:** 起動中のカーネルが WPA3 対応でなければ、WPA3 カーネルをインストールします。[Kernel install](#kernel-install) を参照してください。
 
@@ -56,11 +56,15 @@ Kernel install
 
 The WPA3 boot image adds `wpa3.sae=1` to the kernel command line. On every boot, `launch_chffrplus.sh` looks for this tag in `/proc/cmdline`. If it's missing, the launcher runs the same A/B path as an AGNOS update: it swaps to the inactive slot if that slot already has the image, and otherwise flashes the slot first. `updated` stages the image in the background under the same condition.
 
-To prevent boot loops, the launcher tries at most 3 times per boot image hash. Attempts are recorded in `/data/wpa3_boot_attempts` as `<hash_raw> <count>`. After 3 attempts, it stops, and the device keeps running the stock kernel. Regular AGNOS version updates still work. The count resets when the boot image hash changes, and the file is removed once the tag is present. A malformed count, or a count that can't be saved, also stops the retries. `updated` only reads the count.
+To prevent boot loops, the launcher tries at most 3 times per boot image hash. Attempts are recorded in `/data/wpa3_boot_attempts` as `<hash_raw> <count>`. After 3 attempts, it stops, and the device keeps running the stock kernel. The count resets when the boot image hash changes, and the file is removed once the tag is present. A malformed count, or a count that can't be saved, also stops the retries. `updated` only reads the count.
+
+AGNOS version updates use the same count. If the running kernel doesn't have the tag, each update attempt counts, and after 3 attempts the launcher and `updated` flash comma's manifest (`agnos.stock.json`) instead. If the running kernel already has the tag, the WPA3 kernel has proven itself on this device, so the update uses the WPA3 manifest without counting.
 
 WPA3 の boot イメージは、カーネルのコマンドラインに `wpa3.sae=1` を追加します。`launch_chffrplus.sh` は起動のたびに、このタグが `/proc/cmdline` にあるかを確認します。なければ、AGNOS 更新と同じ A/B の手順を実行します。待機中のスロットにイメージが用意済みならそのスロットに切り替え、なければ先にそのスロットへ書き込みます。`updated` も同じ条件で、バックグラウンドでイメージを準備します。
 
-起動の繰り返しを防ぐため、ランチャーの試行は boot イメージのハッシュごとに 3 回までです。試行回数は `/data/wpa3_boot_attempts` に `<hash_raw> <count>` の形で記録します。3 回試してもタグがなければ試行をやめ、純正カーネルのまま動き続けます。通常の AGNOS のバージョン更新は、その後も行われます。boot イメージのハッシュが変わると回数はリセットされ、タグを確認できた時点で記録ファイルは削除されます。記録の内容が壊れている場合や、記録を保存できない場合も、試行を止めます。`updated` は回数を読むだけで、増やしません。
+起動の繰り返しを防ぐため、ランチャーの試行は boot イメージのハッシュごとに 3 回までです。試行回数は `/data/wpa3_boot_attempts` に `<hash_raw> <count>` の形で記録します。3 回試してもタグがなければ試行をやめ、純正カーネルのまま動き続けます。boot イメージのハッシュが変わると回数はリセットされ、タグを確認できた時点で記録ファイルは削除されます。記録の内容が壊れている場合や、記録を保存できない場合も、試行を止めます。`updated` は回数を読むだけで、増やしません。
+
+AGNOS のバージョン更新でも、同じ回数を使います。起動中のカーネルにタグがなければ、更新のたびに 1 回と数え、3 回を超えたらランチャーと `updated` は comma の manifest（`agnos.stock.json`）で書き込みます。起動中のカーネルにすでにタグがあれば、その端末で WPA3 カーネルが動くことは確認済みなので、回数を数えずに WPA3 の manifest で更新します。
 
 
 Nightly builds
@@ -70,36 +74,71 @@ The **Nightly WPA3** workflow runs every day at 11:00 UTC (20:00 JST), with a ca
 
 **Nightly WPA3** ワークフローは、毎日 11:00 UTC（20:00 JST）に実行されます。取りこぼしに備えて、12:30 UTC（21:30 JST）にも実行されます。実行のたびに、comma の最新コミットをもとに各ブランチを作り直します。comma のブランチは履歴を 1 つにまとめた親なしのコミットなので、各ビルドはその上に新しいコミットを 1 つ作るだけで、マージはしません。ビルドは再現可能で、入力が同じなら必ず同じコミット SHA になります。comma が新しいビルドを出していなければ、ブランチは変えません。
 
-Before publishing, the workflow checks:
+First, `scripts/pins.py` picks the boot image for the upstream `AGNOS_VERSION`. See [AGNOS updates](#agnos-updates). Then the workflow checks:
 
-公開前に、次の項目を確認します。
+最初に `scripts/pins.py` が、upstream の `AGNOS_VERSION` に使う boot イメージを決めます（[AGNOS updates](#agnos-updates) を参照）。そのあと、次の項目を確認します。
 
-| check | English                                                                       | 日本語                                                                              |
-|-------|-------------------------------------------------------------------------------|-------------------------------------------------------------------------------------|
-| G1    | The upstream `AGNOS_VERSION` has a pin in `agnos/pins.json`.                  | upstream の `AGNOS_VERSION` に対応する pin が `agnos/pins.json` にある。           |
-| G2    | The upstream stock `boot` and `system` hashes match the pin's `derived_from`. | upstream の純正 `boot` と `system` のハッシュが、pin の `derived_from` と一致する。 |
-| G3    | The upstream `agnos.py` is unchanged, and the launcher patch applies.         | upstream の `agnos.py` が変わっておらず、ランチャーのパッチが当たる。               |
-| G4    | The pinned boot image downloads, and its decompressed SHA-256 and size match. | pin の boot イメージをダウンロードでき、展開後の SHA-256 とサイズが一致する。       |
-| G5    | The UI patch applies, or is already applied.                                  | UI のパッチが当たる、または適用済みである。                                         |
+| check | English                                                                                     | 日本語                                                                                          |
+|-------|---------------------------------------------------------------------------------------------|-------------------------------------------------------------------------------------------------|
+| G1    | A boot image was resolved for the upstream `AGNOS_VERSION`.                                 | upstream の `AGNOS_VERSION` に使う boot イメージが決まっている。                               |
+| G2    | The upstream stock `boot` and `system` hashes match the pin's `derived_from`.               | upstream の純正 `boot` と `system` のハッシュが、pin の `derived_from` と一致する。             |
+| G3    | The upstream `agnos.py` is unchanged, and the launcher patch applies.                       | upstream の `agnos.py` が変わっておらず、ランチャーのパッチが当たる。                           |
+| G4    | The pinned boot image downloads, and its decompressed SHA-256 and size match.               | pin の boot イメージをダウンロードでき、展開後の SHA-256 とサイズが一致する。                   |
+| G5    | The UI patch applies, or is already applied.                                                | UI のパッチが当たる、または適用済みである。                                                     |
+| G6    | The command line tag and the boot image hash still match one to one, compared with the published build. | 公開中のビルドと比べて、コマンドラインのタグと boot イメージのハッシュが 1 対 1 のままである。 |
 
-If a check fails, that branch isn't published and keeps its last build. The workflow opens or updates one issue per branch, labeled `nightly-hold` and `branch:<branch>`, and closes it after the next successful build. An AGNOS version bump holds the nightly this way until a pin for the new version is added.
+If a check fails, that branch isn't published and keeps its last build. The workflow opens or updates one issue per branch, labeled `nightly-hold` and `branch:<branch>`, and closes it after the next successful build.
 
 After publishing, the workflow checks that installer.comma.ai serves an installer for the branch. If this fails, it opens a `nightly-smoke` issue but keeps the new build.
 
-確認に失敗したブランチは公開せず、前回のビルドのままにします。ワークフローは、`nightly-hold` と `branch:<branch>` のラベルを付けた issue をブランチごとに 1 件作成または更新し、次に公開できたときに閉じます。AGNOS のバージョンが上がったときも同じように公開を止め、新しいバージョン用の pin が追加されるまで待ちます。
+確認に失敗したブランチは公開せず、前回のビルドのままにします。ワークフローは、`nightly-hold` と `branch:<branch>` のラベルを付けた issue をブランチごとに 1 件作成または更新し、次に公開できたときに閉じます。
 
 公開後は、installer.comma.ai がそのブランチ用のインストーラーを返すかを確認します。失敗した場合は `nightly-smoke` の issue を作りますが、公開した新しいビルドはそのまま残します。
+
+
+AGNOS updates
+------
+
+When comma bumps `AGNOS_VERSION`, `scripts/pins.py` resolves the new version in one of four ways:
+
+| mode      | when                                                                                                           | result                                                                   |
+|-----------|----------------------------------------------------------------------------------------------------------------|--------------------------------------------------------------------------|
+| `pinned`  | `agnos/pins.json` has a pin for this version.                                                                  | The pinned WPA3 boot image is used.                                      |
+| `derived` | comma's new stock kernel is the same kernel as a pin's stock kernel, and `agnos.py` is unchanged.             | That pin's WPA3 boot image is reused. The rest of AGNOS is comma's new version. |
+| `native`  | comma's new stock kernel already supports SAE.                                                                 | The boot image isn't replaced, and the launcher isn't patched. Only the UI patch is applied. |
+| hold      | Anything else, e.g. the kernel code changed, or a download failed.                                             | Nothing is published. A `nightly-hold` issue explains why.               |
+
+"Same kernel" is checked on the decompressed boot images. The boot header, command line, device tree and kernel config must be identical. In the kernel image, only build identity may differ: the build date strings, the GNU build ID, the autogenerated module signing certificate and the timestamps in the built-in initramfs. Each allowed difference must be at the same place in both images and within a size limit. comma's stock kernels for AGNOS 19.6, 19.7 and 19.8 all pass this check, so the device-tested WPA3 kernel is reused without a new build.
+
+The `native` check looks for four SAE log strings in comma's kernel. All four must be present; a partial match holds the nightly.
+
+A hold because the kernel code changed needs a new WPA3 boot image: build it, test it on a device, and add a pin.
+
+comma が `AGNOS_VERSION` を上げると、`scripts/pins.py` は新しいバージョンを次の 4 通りのどれかで扱います。
+
+| モード    | 条件                                                                                           | 結果                                                                            |
+|-----------|------------------------------------------------------------------------------------------------|---------------------------------------------------------------------------------|
+| `pinned`  | `agnos/pins.json` にこのバージョンの pin がある。                                             | pin の WPA3 boot イメージを使う。                                               |
+| `derived` | comma の新しい純正カーネルが、既存の pin の元になった純正カーネルと同じで、`agnos.py` も変わっていない。 | その pin の WPA3 boot イメージを使い回す。ほかの AGNOS は comma の新しいもの。 |
+| `native`  | comma の新しい純正カーネルが、すでに SAE に対応している。                                     | boot イメージを差し替えず、ランチャーにも手を加えない。UI のパッチだけを当てる。 |
+| 保留      | それ以外（カーネルのコードが変わった、ダウンロードに失敗した、など）。                       | 公開しない。`nightly-hold` の issue で理由を知らせる。                          |
+
+「同じカーネル」かどうかは、展開した boot イメージで判定します。boot のヘッダー、コマンドライン、デバイスツリー、カーネル設定は完全に一致している必要があります。カーネル本体で違ってよいのは、ビルドのたびに変わる情報だけです。具体的には、ビルド日時の文字列、GNU の build ID、自動生成されるモジュール署名用の証明書、組み込みの initramfs に入る時刻です。許容する違いは、どちらのイメージでも同じ位置にあり、決められた大きさに収まっていなければなりません。comma の AGNOS 19.6、19.7、19.8 の純正カーネルは、どれもこの判定を通ります。そのため、実機で確認済みの WPA3 カーネルを、新しくビルドせずに使い回せます。
+
+`native` の判定では、comma のカーネルに SAE のログ文字列が 4 つあるかを調べます。4 つそろっている必要があり、一部だけの場合は公開を止めます。
+
+カーネルのコードが変わって保留になった場合は、新しい WPA3 boot イメージが必要です。ビルドして実機で確認し、pin を追加してください。
 
 
 Maintenance
 ------
 
-* **New boot images:** a replacement boot image needs a new command line tag (e.g. `wpa3.sae=2`), a new release tag and a new pin. The launcher only checks the tag, so devices already running a tagged kernel won't reflash an image with the same tag.
+* **New boot images:** a replacement boot image needs a new command line tag (e.g. `wpa3.sae=2`), a new release tag and a new pin. The launcher only checks the tag, so a tag must always mean exactly one boot image. `pins.py` rejects pins that break this, and G6 compares against the published build.
 * **Orphan commits:** publishing assumes comma's branches are orphan commits. If that changes, the nightly is held.
 * **Scheduled runs:** GitHub may disable scheduled workflows after 60 days without repository activity. If the nightly stops, re-enable **Nightly WPA3** from the Actions tab.
 * **Setting up a fork:** upload the boot image to the release named in `agnos/pins.json`, make `wpa3-ci` the default branch (scheduled workflows only run there), enable Actions and Issues, then run **Nightly WPA3** manually. A manual run builds both branches. `force` rebuilds even if the inputs haven't changed, but it doesn't skip any checks.
 
-* **boot イメージの差し替え:** 新しい boot イメージには、新しいコマンドラインのタグ（例: `wpa3.sae=2`）、新しいリリースタグ、新しい pin が必要です。ランチャーはタグしか見ないため、タグが同じだと、すでにタグ付きのカーネルで動いている端末には書き込まれません。
+* **boot イメージの差し替え:** 新しい boot イメージには、新しいコマンドラインのタグ（例: `wpa3.sae=2`）、新しいリリースタグ、新しい pin が必要です。ランチャーはタグしか見ないため、1 つのタグは必ず 1 つの boot イメージを指すようにします。これに反する pin は `pins.py` が受け付けず、G6 は公開中のビルドとも照らし合わせます。
 * **親なしのコミット:** 公開の仕組みは、comma のブランチが親なしのコミットであることを前提にしています。この前提が崩れた場合は、公開を止めます。
 * **定期実行:** GitHub は、60 日間活動のないリポジトリの定期実行を止めることがあります。nightly が止まった場合は、Actions の画面から **Nightly WPA3** を有効に戻してください。
 * **fork の準備:** `agnos/pins.json` に書かれたリリースに boot イメージをアップロードし、`wpa3-ci` を既定のブランチにします（定期実行は既定のブランチでしか動きません）。Actions と Issues を有効にしてから、**Nightly WPA3** を手動で実行します。手動実行でも両方のブランチを作ります。`force` を付けると入力が変わっていなくても作り直しますが、確認は省略しません。
@@ -120,21 +159,23 @@ comma の openpilot に戻すには、comma の URL から入れ直します。o
 Development
 ------
 
-The scripts need only Python 3 (standard library), git and bash. Each tree is composed in a bare repository with a temporary index, so nothing is checked out, and LFS objects are never downloaded or pushed. `.github/workflows` is removed from the composed tree, and a post-check verifies that only the 7 expected files changed.
+The scripts need only Python 3 (standard library), git and bash. Each tree is composed in a bare repository with a temporary index, so nothing is checked out, and LFS objects are never downloaded or pushed. `.github/workflows` is removed from the composed tree. A post-check verifies that only the expected files changed: the launcher, `launch_env.sh`, `updated.py`, the manifest, `agnos.stock.json` and the three UI files, or only the UI files in `native` mode.
 
-The tests need the reference files in the gitignored `ref/nightly-chestnut/`. The upstream SHA they came from is in `UPSTREAM_SHA`.
+The tests need the reference files in the gitignored `ref/nightly-chestnut/`. The upstream SHA they came from is in `UPSTREAM_SHA`. Tests on real boot images run only when `WPA3_REAL_BOOTS_DIR` points to a folder of images named `boot-<sha256>.img`.
 
-スクリプトに必要なのは、Python 3（標準ライブラリのみ）、git、bash だけです。ツリーは bare リポジトリと一時的なインデックスだけで組み立てるので、作業ツリーへの展開も、LFS オブジェクトのダウンロードや push も行いません。組み立てたツリーからは `.github/workflows` を取り除き、想定した 7 ファイル以外が変わっていないことを事後に確認します。
+スクリプトに必要なのは、Python 3（標準ライブラリのみ）、git、bash だけです。ツリーは bare リポジトリと一時的なインデックスだけで組み立てるので、作業ツリーへの展開も、LFS オブジェクトのダウンロードや push も行いません。組み立てたツリーからは `.github/workflows` を取り除きます。そのうえで、想定したファイル以外が変わっていないことを事後に確認します。想定しているのは、ランチャー、`launch_env.sh`、`updated.py`、manifest、`agnos.stock.json`、UI の 3 ファイルです。`native` モードでは UI のファイルだけです。
 
-テストには、git の管理対象外の `ref/nightly-chestnut/` にある参照ファイルが必要です。参照元の upstream の SHA は `UPSTREAM_SHA` にあります。
+テストには、git の管理対象外の `ref/nightly-chestnut/` にある参照ファイルが必要です。参照元の upstream の SHA は `UPSTREAM_SHA` にあります。実物の boot イメージを使うテストは、`WPA3_REAL_BOOTS_DIR` に `boot-<sha256>.img` という名前のイメージを置いたフォルダーを指定したときだけ実行されます。
 
 ```sh
 export GIT_LFS_SKIP_SMUDGE=1 GIT_LFS_SKIP_PUSH=1
 python3 -m unittest discover -s scripts -p 'test_*.py' -v
-python3 scripts/gates.py --repo /path/to/upstream.git --upstream <U> --skip-download
-python3 scripts/compose.py --repo /path/to/upstream.git --upstream <U>
+python3 scripts/pins.py --repo /path/to/upstream.git --upstream <U> --out pin.json
+python3 scripts/gates.py --repo /path/to/upstream.git --upstream <U> --pin-file pin.json --skip-download [--published <F>]
+python3 scripts/compose.py --repo /path/to/upstream.git --upstream <U> --pin-file pin.json
+python3 scripts/kernel_equiv.py <base boot.img> <new boot.img>
 ```
 
-`--skip-download` skips G4 and is only for offline tests. `compose.py` prints the new commit SHA, then the `WPA3-Inputs` hash. This is the SHA-256 of canonical JSON with the upstream commit, the hashes of both patches, the pin and the hash of `compose.py`. The author and committer are fixed, and both dates are the upstream commit date.
+`--skip-download` skips G4 and is only for offline tests. `--published` is the currently published fork commit, used by G6. `compose.py` prints the new commit SHA, then the `WPA3-Inputs` hash. This is the SHA-256 of canonical JSON with the upstream commit, the hashes of both patches, the resolved pin and the hash of `compose.py`. The commit message also records the resolved pin in a `WPA3-Pin` trailer. The author and committer are fixed, and both dates are the upstream commit date.
 
-`--skip-download` は G4 を省略するオプションで、オフラインのテスト専用です。`compose.py` は、新しいコミットの SHA と `WPA3-Inputs` のハッシュをこの順に出力します。このハッシュは、upstream のコミット、両パッチのハッシュ、pin、`compose.py` のハッシュを並べた正規化 JSON の SHA-256 です。author と committer は固定で、日時はどちらも upstream のコミットの日時を使います。
+`--skip-download` は G4 を省略するオプションで、オフラインのテスト専用です。`--published` には公開中の fork のコミットを渡し、G6 で使います。`compose.py` は、新しいコミットの SHA と `WPA3-Inputs` のハッシュをこの順に出力します。このハッシュは、upstream のコミット、両パッチのハッシュ、決定した pin、`compose.py` のハッシュを並べた正規化 JSON の SHA-256 です。コミットメッセージには、決定した pin も `WPA3-Pin` として記録します。author と committer は固定で、日時はどちらも upstream のコミットの日時を使います。

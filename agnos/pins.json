@@ -4,6 +4,7 @@
     "tag": "wpa3.sae=1",
     "derived_from": {
       "boot_hash_raw": "335c17579879614a3b6f9b58c867aa2e66609530258e12d9174d6007494fdb11",
+      "boot_url": "https://commadist.azureedge.net/agnosupdate/boot-335c17579879614a3b6f9b58c867aa2e66609530258e12d9174d6007494fdb11.img.xz",
       "system_hash_raw": "20d7a522190ba8b6351364beca9702f40303651577d7c3f6c2c1cb6b34e5db6b",
       "agnos_py_blob": "de0fb24551b38b26a916d7e6c06b1d0b6c05a2c4"
     },

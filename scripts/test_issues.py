@@ -129,8 +129,37 @@ class TestIssues(unittest.TestCase):
     self.assert_list_labels(calls, "hold", "nightly")
     self.assertEqual(len(calls), 1)
 
+  def test_pin_and_gate_failure_reason_from_log(self):
+    for reason in ("PIN: FAIL: agnos.py changed since 19.8", "G3: FAIL: launcher patch does not apply", "G6: FAIL: published tag/hash conflict"):
+      with self.subTest(reason=reason):
+        log = self.work / "nightly.log"
+        log.write_text(f"Upstream: abc123\n{reason}\n")
+        calls = self.run_issues("hold", "nightly", "--reason", "fallback", "--log", str(log))
+        create, = [call for call in calls if call[:2] == ["issue", "create"]]
+        self.assertEqual(flag_values(create, "--title"), [f"nightly hold [nightly]: {reason}"])
+
 
 class TestNightlyWorkflow(unittest.TestCase):
+  def test_resolve_step_and_pin_file_plumbing(self):
+    workflow = (ROOT / ".github/workflows/nightly.yml").read_text()
+    steps = workflow.split("      - ")
+    fetch = next(i for i, step in enumerate(steps) if "id: fetch\n" in step)
+    self.assertIn("name: Resolve AGNOS pin\n        id: pin\n", steps[fetch + 1])
+    self.assertIn('python3 scripts/pins.py --repo "$BARE_REPO" --upstream "$UPSTREAM" --out "$RUNNER_TEMP/pin.json" 2>&1 | tee -a "$NIGHTLY_LOG"', steps[fetch + 1])
+    self.assertIn("if pin['mode'] != 'pinned':", steps[fetch + 1])
+    self.assertIn('::notice::AGNOS pin:', steps[fetch + 1])
+    self.assertIn("steps.pin.outcome == 'failure' && 'AGNOS pin could not be resolved'", workflow)
+    gates = next(step for step in steps if "id: gates\n" in step)
+    self.assertIn('PUBLISHED_ARGS=()\n          if [ -n "$FORK" ]; then\n            PUBLISHED_ARGS=(--published "$FORK")\n          fi', gates)
+    self.assertIn('"${PUBLISHED_ARGS[@]}"', gates)
+    consumers = [line for line in workflow.splitlines() if "scripts/compose.py" in line or "scripts/gates.py" in line]
+    self.assertEqual(len(consumers), 3)
+    for line in consumers:
+      self.assertIn('--pin-file "$RUNNER_TEMP/pin.json"', line)
+    for step in steps:
+      if "        run:" in step:
+        self.assertNotIn("${{", step.split("        run:", 1)[1])
+
   def test_branch_names_only_in_matrix(self):
     workflow = (ROOT / ".github/workflows/nightly.yml").read_text()
     matrix = "branch: [nightly, nightly-chestnut]"

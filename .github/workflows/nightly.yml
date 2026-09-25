@@ -80,13 +80,26 @@ jobs:
             fi
           } 2>&1 | tee "$NIGHTLY_LOG"
 
+      - name: Resolve AGNOS pin
+        id: pin
+        run: |
+          python3 scripts/pins.py --repo "$BARE_REPO" --upstream "$UPSTREAM" --out "$RUNNER_TEMP/pin.json" 2>&1 | tee -a "$NIGHTLY_LOG"
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          pin = json.loads((Path(os.environ['RUNNER_TEMP']) / 'pin.json').read_text())
+          if pin['mode'] != 'pinned':
+            base = f" from {pin['base']}" if pin['mode'] == 'derived' else ''
+            print(f"::notice::AGNOS pin: {pin['mode']} {pin['version']}{base}")
+          PY
+
       - name: Skip identical published inputs
         id: inputs
         env:
           FORCE: ${{ inputs.force || false }}
         run: |
-          # An unknown pin is diagnosed by G1 below, rather than treated as unchanged.
-          if INPUTS=$(python3 scripts/compose.py --repo "$BARE_REPO" --upstream "$UPSTREAM" --inputs-only 2>> "$NIGHTLY_LOG"); then
+          if INPUTS=$(python3 scripts/compose.py --repo "$BARE_REPO" --upstream "$UPSTREAM" --pin-file "$RUNNER_TEMP/pin.json" --inputs-only 2>> "$NIGHTLY_LOG"); then
             if [ -n "$FORK" ]; then
               PREVIOUS=$(git -C "$BARE_REPO" show -s --format='%(trailers:key=WPA3-Inputs,valueonly)' "$FORK")
               if [ "$PREVIOUS" = "$INPUTS" ] && [ "$FORCE" != true ]; then
@@ -101,13 +114,17 @@ jobs:
         id: gates
         if: steps.inputs.outputs.unchanged != 'true'
         run: |
-          python3 scripts/gates.py --repo "$BARE_REPO" --upstream "$UPSTREAM" 2>&1 | tee -a "$NIGHTLY_LOG"
+          PUBLISHED_ARGS=()
+          if [ -n "$FORK" ]; then
+            PUBLISHED_ARGS=(--published "$FORK")
+          fi
+          python3 scripts/gates.py --repo "$BARE_REPO" --upstream "$UPSTREAM" --pin-file "$RUNNER_TEMP/pin.json" "${PUBLISHED_ARGS[@]}" 2>&1 | tee -a "$NIGHTLY_LOG"
 
       - name: Compose and validate deterministic commit
         id: compose
         if: steps.inputs.outputs.unchanged != 'true'
         run: |
-          python3 scripts/compose.py --repo "$BARE_REPO" --upstream "$UPSTREAM" 2>&1 | tee "$RUNNER_TEMP/composed.txt" | tee -a "$NIGHTLY_LOG"
+          python3 scripts/compose.py --repo "$BARE_REPO" --upstream "$UPSTREAM" --pin-file "$RUNNER_TEMP/pin.json" 2>&1 | tee "$RUNNER_TEMP/composed.txt" | tee -a "$NIGHTLY_LOG"
           mapfile -t RESULT < "$RUNNER_TEMP/composed.txt"
           [[ "${RESULT[0]}" =~ ^[0-9a-f]{40}$ ]]
           echo "new=${RESULT[0]}" >> "$GITHUB_OUTPUT"
@@ -133,7 +150,7 @@ jobs:
       - name: Report publication hold
         if: failure()
         env:
-          REASON: ${{ steps.gates.outcome == 'failure' && 'gate checks failed' || steps.compose.outcome == 'failure' && 'compose failed' || steps.push.outcome == 'failure' && 'publish failed' || 'fetch or inputs failed' }}
+          REASON: ${{ steps.pin.outcome == 'failure' && 'AGNOS pin could not be resolved' || steps.gates.outcome == 'failure' && 'gate checks failed' || steps.compose.outcome == 'failure' && 'compose failed' || steps.push.outcome == 'failure' && 'publish failed' || 'fetch or inputs failed' }}
         run: |
           python3 scripts/issues.py hold --branch "$BRANCH" --upstream "${UPSTREAM:-unknown}" --reason "$REASON" --log "$NIGHTLY_LOG"
           exit 1

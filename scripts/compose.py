@@ -228,8 +228,8 @@ def put_blob(repo, env, path, data, mode=None):
   git(repo, "update-index", "--add", "--cacheinfo", f"{mode},{oid},{path}", env=env)
 
 
-def manifest_bytes(entries):
-  return (json.dumps(entries, indent=2) + "\n").encode()
+def manifest_bytes(entries, *, trailing_newline=True):
+  return (json.dumps(entries, indent=2) + ("\n" if trailing_newline else "")).encode()
 
 
 def post_checks(repo, upstream, tree, resolved, scratch):
@@ -274,15 +274,16 @@ def post_checks(repo, upstream, tree, resolved, scratch):
   if not git(repo, "ls-tree", tree, "--", STOCK_MANIFEST).startswith(b"100644 blob "):
     raise ValueError("stock manifest must have mode 100644")
   old_entries = json.loads(original)
+  trailing_newline = original.endswith(b"\n")
   new_data = blob(repo, tree, MANIFEST)
   new_entries = json.loads(new_data)
-  if new_data != manifest_bytes(new_entries):
+  if new_data != manifest_bytes(new_entries, trailing_newline=trailing_newline):
     raise ValueError("composed manifest is not canonical upstream formatting")
   if [p for p in new_entries if p["name"] == "boot"] != [pin["boot"]]:
     raise ValueError("composed boot entry does not match the pin")
   old_boot = next(p for p in old_entries if p["name"] == "boot")
   restored = [old_boot if p["name"] == "boot" else p for p in new_entries]
-  if manifest_bytes(restored) != original:
+  if manifest_bytes(restored, trailing_newline=trailing_newline) != original:
     raise ValueError("non-boot manifest bytes changed")
 
 
@@ -307,10 +308,12 @@ def compose(repo, upstream, resolved):
     if not native:
       original = blob(repo, upstream, MANIFEST)
       entries = json.loads(original)
-      assert manifest_bytes(entries) == original, "upstream manifest no longer round-trips byte-for-byte"
+      trailing_newline = original.endswith(b"\n")
+      assert manifest_bytes(entries, trailing_newline=trailing_newline) == original, "upstream manifest no longer round-trips byte-for-byte"
       if len([p for p in entries if p["name"] == "boot"]) != 1:
         raise ValueError("upstream manifest must have exactly one boot entry")
-      put_blob(repo, env, MANIFEST, manifest_bytes([pin["boot"] if p["name"] == "boot" else p for p in entries]))
+      put_blob(repo, env, MANIFEST, manifest_bytes([pin["boot"] if p["name"] == "boot" else p for p in entries],
+                                                trailing_newline=trailing_newline))
       put_blob(repo, env, STOCK_MANIFEST, original, mode="100644")
 
     workflows = git(repo, "ls-files", "-z", "--", ".github/workflows", env=env)

@@ -334,6 +334,18 @@ class TestCompose(unittest.TestCase):
     self.assertEqual(result.returncode, 1)
     self.assertIn("round-trips byte-for-byte", result.stderr)
 
+  def test_manifest_without_trailing_newline_is_preserved(self):
+    original = compose.blob(self.repo, self.upstream, compose.MANIFEST).removesuffix(b"\n")
+    upstream = self.variant(compose.MANIFEST, original)
+    commit = self.cli("compose.py", upstream).stdout.splitlines()[0]
+    self.assertEqual(compose.blob(self.repo, commit, compose.STOCK_MANIFEST), original)
+    composed = compose.blob(self.repo, commit, compose.MANIFEST)
+    self.assertFalse(composed.endswith(b"\n"))
+    entries = json.loads(composed)
+    self.assertEqual([p for p in entries if p["name"] == "boot"], [self.pin["boot"]])
+    self.assertEqual([p for p in entries if p["name"] != "boot"],
+                     [p for p in json.loads(original) if p["name"] != "boot"])
+
   def test_resolved_json_is_canonical_and_inputs_include_resolution(self):
     resolved = json.loads(self.pin_file.read_text())
     self.assertEqual(self.pin_file.read_text(), json.dumps(resolved, sort_keys=True, indent=2) + "\n")

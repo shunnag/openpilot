@@ -63,6 +63,24 @@ class TestResolver(unittest.TestCase):
     self.assertEqual(self.calls, [])
     pins.git.assert_not_called()
 
+  def test_repository_198_and_199_pins_resolve_with_distinct_tag_hash_pairs(self):
+    self.pins = json.loads((compose.ROOT / "agnos/pins.json").read_text())
+    self.manifest = None
+    for version, tag, digest in (
+      ("19.8", "wpa3.sae=2", "862b653d80c9d7ac933a60d2bb748371a3267f658194e6ca7273f33c2973de94"),
+      ("19.9", "wpa3.sae=3", "f94c88e80909c556f20c426898cebced72e2470f520606282448c1275b68dd8d"),
+    ):
+      with self.subTest(version=version):
+        self.version = version
+        resolved = self.resolve()  # Validate the tag/hash invariant across both real pins.
+        self.assertEqual(resolved, {"mode": "pinned", "version": version, "pin": self.pins[version]})
+        self.assertEqual(resolved["pin"]["tag"], tag)
+        self.assertEqual(resolved["pin"]["boot"]["hash_raw"], digest)
+        self.assertEqual(resolved["pin"]["release_tag"], f"agnos-{version}-wpa3.{tag[-1]}")
+    self.assertEqual(self.pins["19.9"]["wpa_supplicant"], self.pins["19.8"]["wpa_supplicant"])
+    self.assertEqual(self.calls, [])
+    pins.git.assert_not_called()
+
   def test_derived_preserves_tested_pin_and_replaces_origin(self):
     original = deepcopy(self.pins)
     resolved = self.resolve()

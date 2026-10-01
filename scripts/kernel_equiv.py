@@ -33,6 +33,12 @@ def split(boot):
     raise ValueError("truncated boot page")
   header = boot[:576] + boot[608:1632]
   kernel = boot[page:page + ksize]
+  image, chain = split_kernel(kernel)
+  return header, image, chain
+
+
+def split_kernel(kernel):
+  """Split Image-dtb using the same bounded tail rule as stock equivalence."""
   # A magic match alone is insufficient: every totalsize must advance within the
   # tail, and the last DTB must end exactly at kernel_size (not file padding).
   for match in re.finditer(re.escape(FDT), kernel):
@@ -46,8 +52,24 @@ def split(boot):
         break
       pos += size
     if pos == len(kernel):
-      return header, kernel[:offset], kernel[offset:]
+      return kernel[:offset], kernel[offset:]
   raise ValueError("no valid appended DTB chain covering the kernel tail")
+
+
+def dtb_blobs(chain):
+  """Return whole FDT blobs in order, retaining duplicates; reject broken tails."""
+  blobs, pos = [], 0
+  while pos < len(chain):
+    if pos + 40 > len(chain) or chain[pos:pos + 4] != FDT:
+      raise ValueError("invalid or truncated FDT header")
+    size = struct.unpack_from(">I", chain, pos + 4)[0]
+    if size < 40 or size > len(chain) - pos:
+      raise ValueError("invalid FDT totalsize")
+    blobs.append(chain[pos:pos + size])
+    pos += size
+  if not blobs:
+    raise ValueError("empty FDT chain")
+  return blobs
 
 
 def gunzip_member(data):
@@ -198,13 +220,14 @@ def cpio_norm(raw):
     pos = end
 
 
-def _equivalent(base, new):
+def _equivalent(base, new, *, rebuild=False):
   reasons = []
   header_a, image_a, dtb_a = split(base)
   header_b, image_b, dtb_b = split(new)
   if header_a != header_b:
     reasons.append("boot header (incl. cmdline) differs")
-  if dtb_a != dtb_b:
+  same_dtbs = sorted(dtb_blobs(dtb_a)) == sorted(dtb_blobs(dtb_b)) if rebuild else dtb_a == dtb_b
+  if not same_dtbs:
     reasons.append("appended DTB differs")
   if len(image_a) != len(image_b):
     return False, reasons + ["kernel Image size differs"]
@@ -225,6 +248,10 @@ def _equivalent(base, new):
   spans = []
   for kind, spans_a in identities[0].items():
     spans_b = identities[1][kind]
+    if kind == "banner" and rebuild:
+      # proc_banner uses the same matching starts and bounded growth as banner.
+      spans_a = sorted(spans_a + cstr_spans(image_a, b"%s version %s ("))
+      spans_b = sorted(spans_b + cstr_spans(image_b, b"%s version %s ("))
     if [start for start, _ in spans_a] != [start for start, _ in spans_b]:
       reasons.append(f"{kind} identity span starts differ")
       continue
@@ -287,7 +314,12 @@ def _equivalent(base, new):
     bad.append((start, pos))
   if bad:
     reasons.append(f"{len(bad)} kernel Image byte runs differ outside build identity (first at {bad[0][0]:#x})")
-  return not reasons, reasons or [f"{runs} differing runs, all build identity"]
+  if reasons:
+    return False, reasons
+  notes = [f"{runs} differing runs, all build identity"]
+  if rebuild and dtb_a != dtb_b:
+    notes.append("appended DTB order differs; contents identical as a multiset")
+  return True, notes
 
 
 def equivalent(base_bytes, new_bytes):
@@ -296,6 +328,74 @@ def equivalent(base_bytes, new_bytes):
     return _equivalent(base_bytes, new_bytes)
   except Exception as error:
     return False, [f"boot parse failed: {type(error).__name__}: {error}"]
+
+
+def rebuild_equivalent(stock, rebuilt):
+  """Stock proof for rebuilds only: DTB multiset and bounded proc_banner mask.
+
+  This is deliberately separate from equivalent(), used by pins.resolve.
+  """
+  try:
+    return _equivalent(stock, rebuilt, rebuild=True)
+  except Exception as error:
+    return False, [f"boot parse failed: {type(error).__name__}: {error}"]
+
+
+def ikconfig_delta(a, b):
+  """Compare two Images: {CONFIG_name: (old, new)}, unset='n', absent=None.
+
+  Values retain their exact Kconfig spelling (including quotes). Comments and
+  order do not affect this diagnostic; equivalence still compares config bytes.
+  """
+  def options(img):
+    result = {}
+    for line in ikconfig(img).decode("utf-8").splitlines():
+      enabled = re.fullmatch(r"(CONFIG_[A-Za-z0-9_]+)=(.+)", line)
+      disabled = re.fullmatch(r"# (CONFIG_[A-Za-z0-9_]+) is not set", line)
+      if enabled:
+        name, value = enabled.groups()
+      elif disabled:
+        name, value = disabled[1], "n"
+      elif not line or line.startswith("#"):
+        continue
+      else:
+        raise ValueError(f"invalid config line: {line!r}")
+      if name in result:
+        raise ValueError(f"duplicate config option: {name}")
+      result[name] = value
+    return result
+
+  old, new = options(a), options(b)
+  return {name: (old.get(name), new.get(name)) for name in sorted(old.keys() | new.keys())
+          if old.get(name) != new.get(name)}
+
+
+def banner_identity(img):
+  """Return (user, host, integer build number, verbatim timestamp) from Image."""
+  spans = cstr_spans(img, b"Linux version ")
+  if len(spans) != 1:
+    raise ValueError("expected exactly one Linux banner")
+  start, end = spans[0]
+  match = re.fullmatch(rb"Linux version \S+ \(([^\s@()]+)@([^\s@()]+)\) .* "
+                       rb"#(\d{1,6}) SMP PREEMPT ([^\x00\n]+)", img[start:end - 1])
+  if not match:
+    raise ValueError("unsupported Linux banner identity")
+  user, host, number, timestamp = (value.decode("ascii") for value in match.groups())
+  return user, host, int(number), timestamp
+
+
+def image_layout(img):
+  """Validate the AGNOS wrapper and arm64 header; return their numeric fields."""
+  if len(img) < 84 or not img.startswith(b"UNCOMPRESSED_IMG\0") or img[76:80] != b"ARM\x64":
+    raise ValueError("invalid uncompressed arm64 Image header")
+  # The 16-byte marker is followed by le32 length; its low byte is the NUL
+  # seen in UNCOMPRESSED_IMG\0. The arm64 header therefore begins at 20.
+  length = struct.unpack_from("<I", img, 16)[0]
+  if length != len(img) - 20:
+    raise ValueError("uncompressed Image length differs from wrapper")
+  text_offset, image_size, flags = struct.unpack_from("<3Q", img, 28)
+  return {"length": length, "header_offset": 20, "text_offset": text_offset,
+          "image_size": image_size, "flags": flags}
 
 
 def native_sae(boot_bytes):
@@ -312,14 +412,17 @@ def has_rsnxe(boot_bytes):
 
 def main():
   parser = argparse.ArgumentParser(description=__doc__)
+  parser.add_argument("--mode", choices=("stock", "rebuild"), default="stock")
   parser.add_argument("base", type=Path)
   parser.add_argument("new", type=Path)
   args = parser.parse_args()
   try:
-    ok, reasons = equivalent(args.base.read_bytes(), args.new.read_bytes())
+    compare = rebuild_equivalent if args.mode == "rebuild" else equivalent
+    ok, reasons = compare(args.base.read_bytes(), args.new.read_bytes())
   except OSError as error:
     ok, reasons = False, [str(error)]
-  print(f"{'EQUIVALENT' if ok else 'DIFFERENT'}: {'; '.join(reasons)}")
+  success = "REBUILD-EQUIVALENT" if args.mode == "rebuild" else "EQUIVALENT"
+  print(f"{success if ok else 'DIFFERENT'}: {'; '.join(reasons)}")
   return 0 if ok else 1
 
 

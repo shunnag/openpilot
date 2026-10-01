@@ -8,7 +8,7 @@ import sys
 import tempfile
 import unittest
 
-from boot_fixture import BANNER, CERT, CONFIG, IMAGE_SIZE, INITRAMFS, NOTE, PAGE, SYMBOL, UTS, boot_image, identity_pair, mutate
+from boot_fixture import BANNER, CERT, CONFIG, IMAGE_SIZE, INITRAMFS, NOTE, PAGE, SYMBOL, UTS, boot_image, fdt, identity_pair, mutate
 import kernel_equiv as ke
 
 
@@ -304,6 +304,175 @@ class TestKernelEquiv(unittest.TestCase):
                                 capture_output=True, text=True)
         self.assertEqual(result.returncode, code, result.stderr)
         self.assertTrue(result.stdout.startswith(prefix), result.stdout)
+
+
+class TestRebuildEquiv(unittest.TestCase):
+  @staticmethod
+  def with_dtbs(boot, chain):
+    _, img, _ = ke.split(boot)
+    header = bytearray(boot[:PAGE])
+    kernel = img + chain
+    struct.pack_into("<I", header, 8, len(kernel))
+    return bytes(header) + kernel + bytes(-len(kernel) % PAGE)
+
+  def test_dtb_order_is_rebuild_only(self):
+    base, new = identity_pair()
+    blobs = ke.dtb_blobs(ke.split(new)[2])
+    changed = self.with_dtbs(new, b"".join(reversed(blobs)))
+    for a, b in ((base, changed), (changed, base)):
+      self.assertTrue(ke.rebuild_equivalent(a, b)[0], ke.rebuild_equivalent(a, b)[1])
+      self.assertFalse(ke.equivalent(a, b)[0])
+    self.assertTrue(ke.equivalent(base, new)[0], "rebuild mode must not mutate the stock comparator")
+
+  def test_dtb_multiset_retains_duplicates_and_exact_bytes(self):
+    base = boot_image()
+    one, two = ke.dtb_blobs(ke.split(base)[2])
+    base = self.with_dtbs(base, one + two + one)
+    for chain, expected in ((two + one + one, True), (one + two, False),
+                            (one + two + one + one, False), (one + two + two, False),
+                            (one + two + mutate(one, 60), False)):
+      with self.subTest(count=len(chain) // len(one), expected=expected):
+        changed = self.with_dtbs(base, chain)
+        for a, b in ((base, changed), (changed, base)):
+          self.assertEqual(ke.rebuild_equivalent(a, b)[0], expected)
+
+  def test_dtb_blobs_rejects_invalid_chains(self):
+    good = fdt(b"test")
+    for chain in (b"", good[:39], good[:-1], good + b"\0", mutate(good, 0),
+                  good[:4] + struct.pack(">I", 0) + good[8:],
+                  good[:4] + struct.pack(">I", 65) + good[8:]):
+      with self.subTest(chain=chain[:8]):
+        with self.assertRaises(ValueError):
+          ke.dtb_blobs(chain)
+
+  def test_proc_banner_mask_is_bounded_and_rebuild_only(self):
+    start = PAGE + 8000
+    proc = b"%s version %s (user@docker) compiler %s\n"
+    base = bytearray(boot_image())
+    base[start:start + 256] = proc.ljust(256, b"\0")
+    base = bytes(base)
+    for growth, expected in ((0, True), (16, True), (17, False)):
+      new = bytearray(base)
+      value = proc.replace(b"user", b"test")[:-1] + b"X" * growth + b"\n"
+      new[start:start + len(value)] = value
+      for a, b in ((base, bytes(new)), (bytes(new), base)):
+        with self.subTest(growth=growth):
+          ok, reasons = ke.rebuild_equivalent(a, b)
+          self.assertEqual(ok, expected, reasons)
+          self.assertFalse(ke.equivalent(a, b)[0])
+    for name, offset, value in (
+      ("terminator", start + len(proc) - 1, b"\0"),
+      ("outside", start + len(proc), b"X"),
+      ("missing", start, b"!"),
+      ("extra", start + 512, proc),
+      ("overlong", start, proc[:-1] + b"X" * 256 + b"\n"),
+    ):
+      new = bytearray(base)
+      new[offset:offset + len(value)] = value
+      with self.subTest(name=name):
+        self.assertFalse(ke.rebuild_equivalent(base, bytes(new))[0])
+        self.assertFalse(ke.rebuild_equivalent(bytes(new), base)[0])
+    # Growth cannot swallow a nonzero neighbor, even within the 16-byte cap.
+    narrow = bytearray(base)
+    narrow[start + len(proc) + 6] = ord("N")
+    for growth in (6, 7):
+      new = bytearray(narrow)
+      value = proc[:-1] + b"X" * growth + b"\n"
+      new[start:start + len(value)] = value
+      for a, b in ((narrow, new), (new, narrow)):
+        self.assertEqual(ke.rebuild_equivalent(bytes(a), bytes(b))[0], growth == 6)
+
+  def test_rebuild_preserves_other_stock_requirements(self):
+    base, new = identity_pair()
+    for offset in (12, 64, PAGE + 12, PAGE + CONFIG + 8, PAGE + SYMBOL,
+                   PAGE + INITRAMFS + 20, PAGE + IMAGE_SIZE + 60):
+      with self.subTest(offset=offset):
+        self.assertFalse(ke.rebuild_equivalent(base, mutate(new, offset))[0])
+    self.assertFalse(ke.rebuild_equivalent(base, boot_image(config=b"CONFIG_TEST=n\n"))[0])
+    self.assertFalse(ke.rebuild_equivalent(base, b"broken")[0])
+
+  def test_cli_modes(self):
+    root = Path(__file__).resolve().parents[1]
+    base = boot_image()
+    new = self.with_dtbs(base, b"".join(reversed(ke.dtb_blobs(ke.split(base)[2]))))
+    with tempfile.TemporaryDirectory() as work:
+      a, b = Path(work) / "a.img", Path(work) / "b.img"
+      a.write_bytes(base)
+      b.write_bytes(new)
+      for mode, code, prefix in (([], 1, "DIFFERENT"), (["--mode", "stock"], 1, "DIFFERENT"),
+                                 (["--mode", "rebuild"], 0, "REBUILD-EQUIVALENT")):
+        result = subprocess.run([sys.executable, str(root / "scripts/kernel_equiv.py"), *mode, str(a), str(b)],
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, code, result.stderr)
+        self.assertTrue(result.stdout.startswith(prefix), result.stdout)
+
+
+class TestKernelHelpers(unittest.TestCase):
+  def test_ikconfig_delta_exact(self):
+    def img(config):
+      return ke.split(boot_image(config=config))[1]
+
+    old = img(b'# comment\n# CONFIG_WLAN_FEATURE_SAE is not set\nCONFIG_KEEP=m\nCONFIG_OLD=y\nCONFIG_TEXT="a=b"\n')
+    new = img(b'CONFIG_TEXT="a=c"\nCONFIG_NEW=0x10\nCONFIG_KEEP=m\nCONFIG_WLAN_FEATURE_SAE=y\n')
+    expected = {"CONFIG_WLAN_FEATURE_SAE": ("n", "y"), "CONFIG_OLD": ("y", None),
+                "CONFIG_NEW": (None, "0x10"), "CONFIG_TEXT": ('"a=b"', '"a=c"')}
+    self.assertEqual(ke.ikconfig_delta(old, new), expected)
+    self.assertEqual(ke.ikconfig_delta(new, old), {key: (b, a) for key, (a, b) in expected.items()})
+    self.assertEqual(ke.ikconfig_delta(old, old), {})
+    stock = img(b"# CONFIG_MODULE_SIG_FORCE is not set\n# CONFIG_WLAN_FEATURE_SAE is not set\n")
+    wpa3 = img(b"# CONFIG_MODULE_SIG_FORCE is not set\nCONFIG_WLAN_FEATURE_SAE=y\n")
+    self.assertEqual(ke.ikconfig_delta(stock, wpa3), {"CONFIG_WLAN_FEATURE_SAE": ("n", "y")})
+    for bad in (b"CONFIG_A=y\nCONFIG_A=m\n", b"invalid\n"):
+      with self.assertRaises(ValueError):
+        ke.ikconfig_delta(old, img(bad))
+
+  def test_banner_identity(self):
+    banner = b"Linux version 4.9.103 (batman@docker) (gcc version 8.2.1 (arm)) #10 SMP PREEMPT Sun Sep 27 17:29:45 UTC 2026\n"
+    self.assertEqual(ke.banner_identity(banner), ("batman", "docker", 10, "Sun Sep 27 17:29:45 UTC 2026"))
+    for bad in (b"", banner + banner, banner[:-1], banner.replace(b"@", b"-"),
+                banner.replace(b"#10", b"#1000000"), banner[:-1] + b"X" * 256 + b"\n"):
+      with self.subTest(bad=bad[:40]):
+        with self.assertRaises(ValueError):
+          ke.banner_identity(bad)
+
+  def test_image_layout(self):
+    img = bytearray(20 + 256)
+    img[:16] = b"UNCOMPRESSED_IMG"
+    struct.pack_into("<I", img, 16, len(img) - 20)
+    struct.pack_into("<3Q", img, 28, 0x80000, 0x395f000, 0xa)
+    img[76:80] = b"ARM\x64"
+    self.assertEqual(ke.image_layout(img), {"length": 256, "header_offset": 20, "text_offset": 0x80000,
+                                           "image_size": 0x395f000, "flags": 0xa})
+    for bad in (img[:80], img[:-1], mutate(img, 0), mutate(img, 16), mutate(img, 76)):
+      with self.assertRaises(ValueError):
+        ke.image_layout(bad)
+    changed = bytearray(img)
+    struct.pack_into("<Q", changed, 28, 0x90000)
+    self.assertEqual(ke.image_layout(changed)["text_offset"], 0x90000)
+
+
+@unittest.skipUnless(Path("/Volumes/agnos").is_dir(), "/Volumes/agnos is not mounted")
+class TestMountedRebuilds(unittest.TestCase):
+  def test_reference_rebuilds_and_negatives(self):
+    root = Path("/Volumes/agnos")
+    stock199 = root.joinpath("ref199/boot-b9c9b926.img").read_bytes()
+    stock198 = root.joinpath("ref199/boot-335c1757.img").read_bytes()
+    rebuilt199 = root.joinpath("ref199/our-stock-199.img").read_bytes()
+    stock195 = Path(__file__).resolve().parents[1] / ".autofollow_1001/kernel_src/boots/boot-f716b81d.img"
+    pairs = (
+      (stock199, rebuilt199, True),
+      (stock198, root.joinpath("cmp/control-gcc8.img").read_bytes(), True),
+      (stock198, root.joinpath("cmp/control-gcc9.img").read_bytes(), False),
+      (stock199, stock198, False),
+      (stock198, stock195.read_bytes(), False),
+    )
+    for a, b, expected in pairs:
+      with self.subTest(expected=expected, sizes=(len(a), len(b))):
+        ok, reasons = ke.rebuild_equivalent(a, b)
+        self.assertEqual(ok, expected, reasons)
+    self.assertFalse(ke.equivalent(stock199, rebuilt199)[0])
+    self.assertEqual(ke.banner_identity(ke.split(stock199)[1]),
+                     ("batman", "docker", 10, "Sun Sep 27 17:29:45 UTC 2026"))
 
 
 @unittest.skipUnless(os.environ.get("WPA3_REAL_BOOTS_DIR"), "set WPA3_REAL_BOOTS_DIR for real stock/WPA3 images")

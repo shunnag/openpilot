@@ -199,13 +199,17 @@ comma の openpilot に戻すには、comma の URL から入れ直します。o
 Development
 ------
 
-The scripts need only Python 3 (standard library), git and bash. Each tree is composed in a bare repository with a temporary index, so nothing is checked out, and LFS objects are never downloaded or pushed. `.github/workflows` is removed from the composed tree. A post-check verifies that only the expected files changed: the launcher, `launch_env.sh`, `updated.py`, the manifest, `agnos.stock.json`, the three UI files and `wpa3/wpa_supplicant` with its license file. In `native` mode the manifest and `agnos.stock.json` stay unchanged.
+The compose and pin scripts need only Python 3 (standard library), git and bash. Each tree is composed in a bare repository with a temporary index, so nothing is checked out, and LFS objects are never downloaded or pushed. `.github/workflows` is removed from the composed tree. A post-check verifies that only the expected files changed: the launcher, `launch_env.sh`, `updated.py`, the manifest, `agnos.stock.json`, the three UI files and `wpa3/wpa_supplicant` with its license file. In `native` mode the manifest and `agnos.stock.json` stay unchanged.
 
-The tests need the reference files in the gitignored `ref/nightly-chestnut/` and `ref/release-staging/`; missing fixtures fail the tests. The upstream SHA each fixture came from is in its `UPSTREAM_SHA`. Tests on real boot images run only when `WPA3_REAL_BOOTS_DIR` points to a folder of images named `boot-<sha256>.img`.
+The tests need the reference files in the gitignored `ref/nightly-chestnut/` and `ref/release-staging/`; missing fixtures fail the tests. The upstream SHA each fixture came from is in its `UPSTREAM_SHA`. The existing stock/WPA3 comparison tests run only when `WPA3_REAL_BOOTS_DIR` points to a folder of images named `boot-<sha256>.img`.
 
-スクリプトに必要なのは、Python 3（標準ライブラリのみ）、git、bash だけです。ツリーは bare リポジトリと一時的なインデックスだけで組み立てるので、作業ツリーへの展開も、LFS オブジェクトのダウンロードや push も行いません。組み立てたツリーからは `.github/workflows` を取り除きます。そのうえで、想定したファイル以外が変わっていないことを事後に確認します。想定しているのは、ランチャー、`launch_env.sh`、`updated.py`、manifest、`agnos.stock.json`、UI の 3 ファイル、`wpa3/wpa_supplicant` とそのライセンスのファイルです。`native` モードでは、manifest と `agnos.stock.json` は変えません。
+`bootimg.py` additionally requires the `openssl` CLI. It parses, repacks and verifies Android v0 images with 4096-byte pages and no external ramdisk or second stage. Its synthetic tests run offline; the repacker and rebuild reference tests also run when `/Volumes/agnos` is mounted. `kernel_equiv.py` defaults to `--mode stock`, which is the comparator used by the pin resolver. `--mode rebuild` additionally permits DTB reordering (preserving duplicates) and bounded changes to `proc_banner`.
 
-テストには、git の管理対象外の `ref/nightly-chestnut/` と `ref/release-staging/` にある参照ファイルが必要です。参照ファイルがなければ、テストは失敗します。参照元の upstream の SHA は、それぞれの `UPSTREAM_SHA` にあります。実物の boot イメージを使うテストは、`WPA3_REAL_BOOTS_DIR` に `boot-<sha256>.img` という名前のイメージを置いたフォルダーを指定したときだけ実行されます。
+compose と pin のスクリプトに必要なのは、Python 3（標準ライブラリのみ）、git、bash だけです。ツリーは bare リポジトリと一時的なインデックスだけで組み立てるので、作業ツリーへの展開も、LFS オブジェクトのダウンロードや push も行いません。組み立てたツリーからは `.github/workflows` を取り除きます。そのうえで、想定したファイル以外が変わっていないことを事後に確認します。想定しているのは、ランチャー、`launch_env.sh`、`updated.py`、manifest、`agnos.stock.json`、UI の 3 ファイル、`wpa3/wpa_supplicant` とそのライセンスのファイルです。`native` モードでは、manifest と `agnos.stock.json` は変えません。
+
+テストには、git の管理対象外の `ref/nightly-chestnut/` と `ref/release-staging/` にある参照ファイルが必要です。参照ファイルがなければ、テストは失敗します。参照元の upstream の SHA は、それぞれの `UPSTREAM_SHA` にあります。既存の stock/WPA3 比較テストは、`WPA3_REAL_BOOTS_DIR` に `boot-<sha256>.img` という名前のイメージを置いたフォルダーを指定したときだけ実行されます。
+
+`bootimg.py` には追加で `openssl` CLI が必要です。4096 バイトのページを使い、外部 ramdisk と second stage のない Android v0 イメージを解析・再パック・署名検証します。合成データのテストはオフラインで実行され、`/Volumes/agnos` がマウントされていれば再パックと再ビルド比較の参照テストも実行されます。`kernel_equiv.py` の既定値は pin resolver と同じ `--mode stock` です。`--mode rebuild` は、重複を保持した DTB の並べ替えと、範囲を制限した `proc_banner` の変更も許容します。
 
 ```sh
 export GIT_LFS_SKIP_SMUDGE=1 GIT_LFS_SKIP_PUSH=1
@@ -214,6 +218,10 @@ python3 scripts/pins.py --repo /path/to/upstream.git --upstream <U> --out pin.js
 python3 scripts/gates.py --repo /path/to/upstream.git --upstream <U> --pin-file pin.json --skip-download [--published <F>]
 python3 scripts/compose.py --repo /path/to/upstream.git --upstream <U> --pin-file pin.json
 python3 scripts/kernel_equiv.py <base boot.img> <new boot.img>
+python3 scripts/kernel_equiv.py --mode rebuild <stock boot.img> <rebuilt boot.img>
+python3 scripts/bootimg.py selftest <boot.img> --key <private.pem>
+python3 scripts/bootimg.py verify <boot.img> --pubkey <public.pem>
+python3 scripts/bootimg.py tag <boot.img> --tag wpa3.sae=4 --key <private.pem> --out <tagged.img>
 ```
 
 `--skip-download` skips G4 and is only for offline tests. `--published` is the currently published fork commit, used by G6. `compose.py` prints the new commit SHA, then the `WPA3-Inputs` hash. This is the SHA-256 of canonical JSON with the upstream commit, the hashes of the chosen launcher patch and `ui-wpa3.patch`, the resolved pin, the hash of the `wpa_supplicant` license file and the hash of `compose.py`. The commit message also records the resolved pin in a `WPA3-Pin` trailer, immediately followed by `WPA3-Launcher-Patch` with the chosen patch's file name. The author and committer are fixed, and both dates are the upstream commit date.

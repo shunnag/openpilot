@@ -2,6 +2,7 @@
 """Compose a deterministic WPA3 commit in a bare repository, without checkout."""
 import argparse
 from contextlib import contextmanager
+from datetime import datetime, timezone
 import hashlib
 import json
 import os
@@ -11,6 +12,7 @@ import re
 import subprocess
 import sys
 import tempfile
+from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = "openpilot/common/hardware/comma/agnos.json"
@@ -62,19 +64,35 @@ def blob(repo, tree, path):
 
 
 def launch_values(script):
-  command = ('unset AGNOS_VERSION WPA3_BOOT_TAG WPA3_BOOT_HASH WPA3_SUPPLICANT_STOCK_SHA256; source "$1"; '
-             'printf "%s\\0" "$AGNOS_VERSION" "$WPA3_BOOT_TAG" "$WPA3_BOOT_HASH" "$WPA3_SUPPLICANT_STOCK_SHA256"')
-  # macOS bash 3.2 can read an empty /dev/stdin when sourcing a pipe under load.
-  with tempfile.NamedTemporaryFile(prefix="wpa3-launch-", suffix=".sh") as source:
-    source.write(script)
-    source.flush()
-    result = subprocess.run(["bash", "-e", "-c", command, "launch-values", source.name], check=True,
-                            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                            env={**os.environ, "BASH_ENV": "/dev/null"})
-  values = result.stdout.decode().split("\0")
-  if len(values) != 5 or values[-1] != "":
-    raise ValueError("launch_env.sh must source quietly and export the expected values")
-  return tuple(values[:4])
+  # Never execute upstream code in a job holding a write token. Only these
+  # literal exports and the exact default-version block have meaning here.
+  text = script.decode("utf-8")
+  names = ("AGNOS_VERSION", "WPA3_BOOT_TAG", "WPA3_BOOT_HASH", "WPA3_SUPPLICANT_STOCK_SHA256")
+  block = re.compile(r'^if \[ -z "\$AGNOS_VERSION" \]; then\n'
+                     r'  export AGNOS_VERSION="([0-9]+(?:\.[0-9]+)*)"\nfi$', re.M)
+  matches = list(block.finditer(text))
+  if len(matches) != 1:
+    raise ValueError("launch_env.sh requires exactly one AGNOS_VERSION default block")
+  values = [matches[0][1]]
+  remainder = block.sub("", text)
+  for name, pattern in zip(names[1:], (r'(?:wpa3\.sae=[1-9][0-9]*)?', r'(?:[0-9a-f]{64})?', r'(?:[0-9a-f]{64})?')):
+    assignment = re.compile(r'^export ' + name + r'="(' + pattern + r')"$', re.M)
+    exports = list(assignment.finditer(remainder))
+    if len(exports) > 1:
+      raise ValueError(f"launch_env.sh has a second assignment of {name}")
+    values.append(exports[0][1] if exports else "")
+    remainder = assignment.sub("", remainder)
+  if any(name in remainder for name in names):
+    raise ValueError("launch_env.sh has an unexpected reference or assignment to a protected name")
+  # Also reject command separators, substitutions and continuations that could
+  # disguise one of the prohibited commands. Comments need no interpretation.
+  for line in text.splitlines():
+    if line.lstrip().startswith("#"):
+      continue
+    if (re.search(r'(?:^|[;&|()]|\bthen\s|\bdo\s)\s*(?:source\b|eval\b|\.\s)', line)
+        or "$(" in line or "`" in line or line.endswith("\\") or "\0" in line or "\r" in line):
+      raise ValueError("launch_env.sh contains a prohibited command or substitution")
+  return tuple(values)
 
 
 def pin_description(resolved):
@@ -82,7 +100,7 @@ def pin_description(resolved):
   return f"{resolved['mode']} {resolved['version']}{base}"
 
 
-def validate_pin(version, pin):
+def validate_pin(version, pin, repository=None):
   def require(value, keys, prefix=""):
     if not isinstance(value, dict):
       raise ValueError(f"pin {version}: {prefix or 'entry'} must be an object")
@@ -95,7 +113,13 @@ def validate_pin(version, pin):
   require(pin["boot"], BOOT_KEYS, "boot.")
   try:
     validate_pin_values(pin)
-  except (ValueError, TypeError) as error:
+    if "auto" in pin:
+      if repository is None:
+        repository = json.loads((ROOT / "follow/policy.json").read_text())["repository"]
+      validate_auto_pin(pin, repository)
+    elif "revert" in pin or "withdrawn" in pin:
+      raise ValueError("revert and withdrawn require auto metadata")
+  except (ValueError, TypeError, KeyError) as error:
     raise ValueError(f"pin {version}: {error}") from error
 
 
@@ -109,6 +133,10 @@ def validate_pin_values(pin):
     raise ValueError("pin must describe a raw, fully checked A/B boot image")
   if set(boot) != set(BOOT_KEYS):
     raise ValueError(f"unexpected boot keys: {sorted(set(boot) - set(BOOT_KEYS))}")
+  if (type(boot["size"]) is not int or boot["size"] <= 0
+      or any(type(boot[key]) is not bool for key in ("sparse", "full_check", "has_ab"))
+      or not isinstance(boot["ondevice_hash"], str) or not re.fullmatch(r"[0-9a-f]{64}", boot["ondevice_hash"])):
+    raise ValueError("boot size, flags or ondevice_hash invalid")
   origin = pin["derived_from"]
   for key in ("boot_hash_raw", "system_hash_raw"):
     if not re.fullmatch(r"[0-9a-f]{64}", origin[key]):
@@ -119,6 +147,61 @@ def validate_pin_values(pin):
     raise ValueError("derived_from.boot_url must be a nonempty URL")
   if "wpa_supplicant" in pin:
     validate_supplicant(pin["wpa_supplicant"])
+
+
+def utc_time(value):
+  if not isinstance(value, str) or not re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", value):
+    raise ValueError("expected a UTC timestamp YYYY-MM-DDTHH:MM:SSZ")
+  return datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+
+
+def validate_auto_pin(pin, repository):
+  meta = pin["auto"]
+  keys = {"kernel_commit", "builder_commit", "recipe_sha256", "patchset_sha256", "baseline_release",
+          "baseline_kernel_commit", "gate_version", "provenance_sha256", "run_url", "published_at"}
+  if not isinstance(meta, dict) or set(meta) != keys:
+    raise ValueError("invalid auto metadata keys")
+  for key in ("kernel_commit", "builder_commit", "baseline_kernel_commit"):
+    if not isinstance(meta[key], str) or not re.fullmatch(r"[0-9a-f]{40}", meta[key]):
+      raise ValueError(f"auto.{key} must be a Git commit id")
+  for key in ("recipe_sha256", "patchset_sha256", "gate_version", "provenance_sha256"):
+    if not isinstance(meta[key], str) or not re.fullmatch(r"[0-9a-f]{64}", meta[key]):
+      raise ValueError(f"auto.{key} must be a SHA-256 hash")
+  release_pattern = r"agnos-[0-9]+(?:\.[0-9]+)*-wpa3\.[1-9][0-9]*"
+  for value in (pin["release_tag"], meta["baseline_release"]):
+    if not isinstance(value, str) or not re.fullmatch(release_pattern, value):
+      raise ValueError("invalid auto release tag")
+  if not isinstance(meta["run_url"], str) or not re.fullmatch(r"https://github\.com/" + re.escape(repository) + r"/actions/runs/[0-9]+", meta["run_url"]):
+    raise ValueError("invalid auto.run_url")
+  utc_time(meta["published_at"])
+  if "withdrawn" not in pin:
+    raise ValueError("missing withdrawn")
+  if pin["withdrawn"] is not None:
+    withdrawal = pin["withdrawn"]
+    if (not isinstance(withdrawal, dict) or set(withdrawal) != {"at", "by", "reason"}
+        or any(not isinstance(withdrawal[k], str) or not withdrawal[k].strip() for k in withdrawal)):
+      raise ValueError("withdrawn must be null or {at, by, reason}")
+    utc_time(withdrawal["at"])
+  revert = pin.get("revert")
+  if not isinstance(revert, dict) or set(revert) != {"tag", "boot"}:
+    raise ValueError("revert must contain tag and boot")
+  if not isinstance(revert["boot"], dict) or set(revert["boot"]) != set(BOOT_KEYS):
+    raise ValueError("unexpected boot keys in revert")
+  validate_pin_values({**pin, **revert})
+  number = int(pin["release_tag"].rsplit(".", 1)[1])
+  if revert["tag"] != f"wpa3.sae={number + 1}":
+    raise ValueError("revert tag must follow the release tag number")
+  if pin["tag"] != f"wpa3.sae={number}" and not (pin["withdrawn"] and pin["tag"] == revert["tag"] and pin["boot"] == revert["boot"]):
+    raise ValueError("auto tag must match release number (or its withdrawn revert)")
+  for boot in (pin["boot"], revert["boot"]):
+    expected = f'https://github.com/{repository}/releases/download/{pin["release_tag"]}/boot-{boot["hash_raw"]}.img.xz'
+    if boot["url"] != expected:
+      raise ValueError("auto boot URL must match repository, release tag and hash_raw")
+  origin = pin["derived_from"]
+  url = urlsplit(origin["boot_url"])
+  if (url.scheme != "https" or url.netloc != "commadist.azureedge.net" or url.query or url.fragment
+      or url.path != f'/agnosupdate/boot-{origin["boot_hash_raw"]}.img.xz'):
+    raise ValueError("auto derived_from.boot_url must name its stock hash on commadist")
 
 
 def validate_supplicant(supplicant):
@@ -169,8 +252,6 @@ def load_pin(repo, upstream, pin_file):
     raise ValueError(f"resolved pin version {resolved['version']!r} does not match upstream AGNOS {version!r}")
   if resolved["mode"] == "native":
     if "wpa_supplicant" in resolved:
-      if not resolved.get("base"):
-        raise ValueError("native supplicant has no base version")
       validate_supplicant(resolved["wpa_supplicant"])
     return resolved
   if resolved["mode"] == "derived" and not resolved.get("base"):
@@ -249,10 +330,30 @@ def manifest_bytes(entries, *, trailing_newline=True):
   return (json.dumps(entries, indent=2) + ("\n" if trailing_newline else "")).encode()
 
 
+def release_notice(resolved):
+  pin = resolved.get("pin", {})
+  if "auto" not in pin:
+    return b""
+  if pin["withdrawn"] is not None:
+    text = (f"WPA3 kernel {pin['release_tag']} was withdrawn; this update installs "
+            f"comma's kernel for AGNOS {resolved['version']}.")
+  else:
+    text = (f"WPA3 kernel {pin['release_tag']} was built automatically and has NOT been tested on any device, "
+            "and never on a comma 3X. Details and how to undo: github.com/shunnag/openpilot")
+  return (text + "\n").encode()
+
+
 def post_checks(repo, upstream, tree, resolved, scratch):
   native = resolved["mode"] == "native"
   pin = resolved if native else resolved["pin"]
   allowed = NATIVE_ALLOWED if native else ALLOWED
+  notice = release_notice(resolved)
+  if notice:
+    allowed = allowed | {"RELEASES.md"}
+    if blob(repo, tree, "RELEASES.md") != notice + blob(repo, upstream, "RELEASES.md"):
+      raise ValueError("RELEASES.md must contain exactly the one prepended notice line")
+    if git(repo, "ls-tree", tree, "--", "RELEASES.md").split()[:1] != git(repo, "ls-tree", upstream, "--", "RELEASES.md").split()[:1]:
+      raise ValueError("RELEASES.md mode changed")
   if "wpa_supplicant" not in pin:
     allowed = allowed - SUPPLICANT_FILES.keys()
   changed = git(repo, "diff-tree", "--no-commit-id", "-r", "--name-only", "-z", upstream, tree).decode().split("\0")
@@ -311,6 +412,12 @@ def compose(repo, upstream, resolved):
   launcher_patch = select_launcher_patch(repo, upstream)
   inputs = inputs_hash(upstream, resolved, launcher_patch)
   with temporary_index(repo, upstream) as (env, scratch):
+    notice = release_notice(resolved)
+    if notice:
+      releases = blob(repo, upstream, "RELEASES.md")
+      if not re.match(rb"(?:#+ )?Version [^\n]+\n", releases):
+        raise ValueError("RELEASES.md must start with the upstream Version heading")
+      put_blob(repo, env, "RELEASES.md", notice + releases)
     git(repo, "apply", "--cached", "--whitespace=error", str(launcher_patch), env=env)
     launch_env = git(repo, "show", ":launch_env.sh", env=env)
     for name, value in (("BOOT_TAG", "" if native else pin["tag"]), ("BOOT_HASH", "" if native else pin["boot"]["hash_raw"]),
@@ -348,7 +455,8 @@ def compose(repo, upstream, resolved):
               for key, value in (("NAME", "openpilot-wpa3-bot"), ("EMAIL", "shunnag@users.noreply.github.com"), ("DATE", date))}
   message = (f"{subject} + WPA3\n\nUpstream-Commit: {upstream}\n"
              f"WPA3-Inputs: {inputs}\nWPA3-AGNOS: {'none' if native else resolved['pin']['release_tag']}\n"
-             f"WPA3-Pin: {pin_description(resolved)}\nWPA3-Launcher-Patch: {launcher_patch.name}\n")
+             f"WPA3-Pin: {pin_description(resolved)}\nWPA3-Launcher-Patch: {launcher_patch.name}\n"
+             f"WPA3-Boot-Build: {'auto' if 'auto' in pin else 'manual'}\n")
   commit = git(repo, "-c", "commit.gpgsign=false", "commit-tree", tree, "-p", upstream,
                data=message.encode(), env=identity).decode().strip()
   return commit, inputs

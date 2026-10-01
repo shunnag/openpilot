@@ -1,0 +1,137 @@
+{
+  "allowed_branches": [
+    "nightly",
+    "nightly-chestnut",
+    "release-mici-staging",
+    "release-tizi-staging"
+  ],
+  "build_kernel_normalized": "build_kernel() {\n  cd agnos-kernel-sdm845\n\n  # Build parameters\n  ARCH=$(uname -m)\n  if [ \"$ARCH\" != \"arm64\" ] && [ \"$ARCH\" != \"aarch64\" ]; then\n    export CROSS_COMPILE=$TOOLS/aarch64-linux-gnu-gcc/bin/aarch64-linux-gnu-\n    export CC=$TOOLS/aarch64-linux-gnu-gcc/bin/aarch64-linux-gnu-gcc\n    export LD=$TOOLS/aarch64-linux-gnu-gcc/bin/aarch64-linux-gnu-ld.bfd\n  fi\n\n  # Build arm64 arch\n  export ARCH=arm64\n\n  # Set ccache dir\n  export CCACHE_DIR=$DIR/.ccache\n\n  # Force ccache usage for kernel build (both target and host compilers)\n  export PATH=\"/usr/lib/ccache:$PATH\"\n  export HOSTCC=\"ccache gcc\"\n  export HOSTCXX=\"ccache g++\"\n\n  # Avoid LINUX_COMPILE_HOST to change on every run thus invalidating cache\n  # https://patchwork.kernel.org/project/linux-kbuild/patch/1302015561-21047-8-git-send-email-mmarek@suse.cz/\n  export KBUILD_BUILD_HOST=\"docker\"\n\n  # Disable all warnings\n  export KCFLAGS=\"-w\"\n\n  # Load defconfig and build kernel\n  echo \"-- First make --\"\n  make $DEFCONFIG O=out\n  echo \"-- Second make: $(nproc --all) cores --\"\n  make -j$(nproc --all) O=out  # Image-dtb\n\n  # Turn on if you want perf\n  # LDFLAGS=-static make -j$(nproc --all) -C tools/perf\n\n  # Copy over Image-dtb\n  mkdir -p $TMP_DIR\n  cd $TMP_DIR\n  cp $DIR/agnos-kernel-sdm845/out/arch/arm64/boot/Image-dtb .\n\n  # Make boot image\n  $TOOLS/mkbootimg \\\n    --kernel Image-dtb \\\n    --ramdisk /dev/null \\\n    --cmdline \"<CMDLINE>\" \\\n    --pagesize 4096 \\\n    --base 0x80000000 \\\n    --kernel_offset 0x8000 \\\n    --ramdisk_offset 0x8000 \\\n    --tags_offset 0x100 \\\n    --output $BOOT_IMG.nonsecure\n\n  # le signing\n  openssl dgst -sha256 -binary $BOOT_IMG.nonsecure > $BOOT_IMG.sha256\n  openssl pkeyutl -sign -in $BOOT_IMG.sha256 -inkey $DIR/vble-qti.key -out $BOOT_IMG.sig -pkeyopt digest:sha256 -pkeyopt rsa_padding_mode:pkcs1\n  dd if=/dev/zero of=$BOOT_IMG.sig.padded bs=2048 count=1\n  dd if=$BOOT_IMG.sig of=$BOOT_IMG.sig.padded conv=notrunc\n  cat $BOOT_IMG.nonsecure $BOOT_IMG.sig.padded > $BOOT_IMG\n\n  # Copy to output dir\n  mkdir -p $OUTPUT_DIR\n  mv $BOOT_IMG $OUTPUT_DIR/\n  cd $DIR/agnos-kernel-sdm845\n\n  echo \"-- Install kernel UAPI headers --\"\n  rm -rf $OUTPUT_DIR/linux-headers\n  make headers_install O=out INSTALL_HDR_PATH=$OUTPUT_DIR/linux-headers\n}\n",
+  "builder_base_image": null,
+  "manifest_keys": [
+    "alt",
+    "full_check",
+    "has_ab",
+    "hash",
+    "hash_raw",
+    "name",
+    "ondevice_hash",
+    "size",
+    "sparse",
+    "url"
+  ],
+  "manifest_shape": [
+    {
+      "full_check": true,
+      "has_ab": true,
+      "name": "xbl",
+      "sparse": false
+    },
+    {
+      "full_check": true,
+      "has_ab": true,
+      "name": "xbl_config",
+      "sparse": false
+    },
+    {
+      "full_check": true,
+      "has_ab": true,
+      "name": "abl",
+      "sparse": false
+    },
+    {
+      "full_check": true,
+      "has_ab": true,
+      "name": "aop",
+      "sparse": false
+    },
+    {
+      "full_check": true,
+      "has_ab": true,
+      "name": "devcfg",
+      "sparse": false
+    },
+    {
+      "full_check": true,
+      "has_ab": true,
+      "name": "boot",
+      "sparse": false
+    },
+    {
+      "full_check": false,
+      "has_ab": true,
+      "name": "system",
+      "sparse": true
+    }
+  ],
+  "max_changed_lines": 1000,
+  "max_commits": 20,
+  "max_full_builds": 3,
+  "max_untested_chain": 3,
+  "min_free_gb": 14,
+  "min_publish_interval_days": 7,
+  "on_unknown_stock_wpa": "hold",
+  "patches": {
+    "0001-qcacld-3.0-enable-SAE.patch": "06e362ad6a2cf674c9797f7853b3cba9aaa180a638399efe80b573fc05e6cbfa",
+    "0002-qcacld-3.0-include-RSNXE-in-the-association-request.patch": "6e8da66610baa4757f57c6591b16405a77a1130967d678315ced2a74826c3cfb"
+  },
+  "recipe": {
+    "Dockerfile.builder": "e32c9bedeebf0565a794fb7a04bf64b28f023978",
+    "build_kernel.sh": "3463c51eeb4717244c5f01a91eec87553aeaaee2",
+    "tools/mkbootimg": "5a13da26b0e10c19b4025aaecda4e47df513ff2b",
+    "vble-qti.key": "2981ca00ed691946af8a11878e60ef42c3f85201"
+  },
+  "repository": "shunnag/openpilot",
+  "risk_paths": [
+    "drivers/staging/qcacld-3.0/**",
+    "drivers/staging/qca-wifi-host-cmn/**",
+    "drivers/staging/fw-api*/**",
+    "drivers/net/wireless/**",
+    "net/wireless/**",
+    "net/mac80211/**",
+    "drivers/base/firmware_class.c",
+    "firmware/**",
+    "include/net/cfg80211.h",
+    "include/net/mac80211.h",
+    "include/uapi/linux/nl80211.h",
+    "include/linux/ieee80211.h",
+    "include/soc/qcom/icnss.h",
+    "**/sdm845.dtsi",
+    "**/comma_common.dtsi",
+    "drivers/soc/qcom/icnss*",
+    "drivers/soc/qcom/wcnss*",
+    "drivers/soc/qcom/wlan_firmware_service_v01*",
+    "drivers/soc/qcom/qmi_interface*",
+    "drivers/soc/qcom/service-locator*",
+    "drivers/soc/qcom/service-notifier*",
+    "drivers/soc/qcom/subsystem_restart.c",
+    "drivers/soc/qcom/subsystem_notif.c",
+    "drivers/soc/qcom/sysmon-qmi.c",
+    "drivers/soc/qcom/pil-*",
+    "drivers/soc/qcom/subsys-pil-*",
+    "arch/arm64/configs/tici_defconfig",
+    "drivers/staging/qcacld-3.0/Kconfig",
+    "drivers/staging/qcacld-3.0/core/hdd/src/wlan_hdd_assoc.c",
+    "drivers/staging/qcacld-3.0/core/hdd/src/wlan_hdd_cfg80211.c",
+    "drivers/staging/qcacld-3.0/core/mac/inc/sir_mac_prot_def.h",
+    "drivers/staging/qcacld-3.0/core/mac/src/pe/lim/lim_process_sme_req_messages.c",
+    "drivers/staging/qcacld-3.0/core/mac/src/pe/lim/lim_send_management_frames.c"
+  ],
+  "schema": 1,
+  "source_diff_sha256": "d91686af5761b36866ab01bff08ff4d20f92f0e8aff8a2da43e892cef45e99e3",
+  "toolchain": {
+    "gcc_lfs_oid": "d2451496fa23bbf94b8fc50a4b07a053ddffa70b1a7940d7b880eda0937187f7",
+    "gcc_lfs_size": 476099278,
+    "sha256": "3e60644846ac60693e58ad71a319d64c5f7bcf95ff34411272c8d9674f85648f",
+    "url": "https://developer.arm.com/-/media/Files/downloads/gnu-a/8.2-2018.08/gcc-arm-8.2-2018.08-x86_64-aarch64-linux-gnu.tar.xz"
+  },
+  "vble_public_key_sha256": "544dace4ea7d5abc07780b02a4355ad82d0a07cf149ffe82e86a07b12fd5414e",
+  "wifi_config_regex": "WLAN|QCA|CLD|CNSS|ICNSS|CFG80211|NL80211|MAC80211|WIRELESS|RFKILL|IPA|QMI|PIL|SUBSYS|SSR",
+  "wpa": {
+    "auto_publish": false,
+    "base_image": "ubuntu:24.04@sha256:008173c23f95b170204355c12626cb5a965d779a7e1283b09e9cffbb1bf33ca3",
+    "orig_tarball_sha256": "b39f85be9d8fd58adee1acae3735ec0a1f7bdc460fe3f6fd76a1d57e9ac910c6",
+    "reference_sha256": "139be31dde5f000d99af5f2692b792989bb3d6cbe332d662b2ddf822de89fd93",
+    "reference_stock_sha256": "b0f1c8ee9bb32153faed468c68390db4691b252ffd6a90e6d3d7b49f4d106bdd",
+    "version_regex": "^2:2\\.10-21ubuntu0\\.[0-9]+$"
+  }
+}

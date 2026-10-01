@@ -99,7 +99,7 @@ class TestCompose(unittest.TestCase):
     self.assertEqual(self.cli("compose.py", upstream, "--inputs-only").stdout.strip(), inputs)
     self.assertNotEqual(inputs, self.inputs)
     message = compose.git(self.repo, "show", "-s", "--format=%B", commit).decode().strip()
-    self.assertTrue(message.endswith("WPA3-Pin: pinned 19.8\nWPA3-Launcher-Patch: launcher-wpa3-release.patch"))
+    self.assertTrue(message.endswith("WPA3-Pin: pinned 19.8\nWPA3-Launcher-Patch: launcher-wpa3-release.patch\nWPA3-Boot-Build: manual"))
     launcher = compose.blob(self.repo, commit, "launch_chffrplus.sh")
     nightly_launcher = compose.blob(self.repo, self.commit, "launch_chffrplus.sh")
 
@@ -210,7 +210,7 @@ class TestCompose(unittest.TestCase):
     message = compose.git(self.repo, "show", "-s", "--format=%B", self.commit).decode()
     self.assertEqual(message.strip(), f"Synthetic upstream + WPA3\n\nUpstream-Commit: {self.upstream}\n"
                      f"WPA3-Inputs: {self.inputs}\nWPA3-AGNOS: {self.pin['release_tag']}\nWPA3-Pin: pinned 19.8\n"
-                     "WPA3-Launcher-Patch: launcher-wpa3.patch")
+                     "WPA3-Launcher-Patch: launcher-wpa3.patch\nWPA3-Boot-Build: manual")
     self.assertEqual(compose.git(self.repo, "show", "-s", "--format=%an <%ae>|%cn <%ce>", self.commit).decode().strip(),
                      "openpilot-wpa3-bot <shunnag@users.noreply.github.com>|openpilot-wpa3-bot <shunnag@users.noreply.github.com>")
     print(f"\nDeterministic compose SHA (two runs): {self.commit}\nWPA3-Inputs: {self.inputs}")
@@ -480,7 +480,7 @@ class TestCompose(unittest.TestCase):
         self.assertEqual(len(data), size)
       return data
 
-    resolved = pins.resolve(self.repo, upstream, {"19.8": base_pin}, fake_fetch)
+    resolved = pins.resolve(lambda path: compose.blob(self.repo, upstream, path), {"19.8": base_pin}, fake_fetch)
     self.assertEqual(resolved["mode"], "native" if native else "derived")
     pin_file = self.work / f"{resolved['mode']}.json"
     pin_file.write_text(json.dumps(resolved, sort_keys=True, indent=2) + "\n")
@@ -551,7 +551,7 @@ class TestCompose(unittest.TestCase):
         original = compose.blob(self.repo, upstream, path)
         data = b"#!/bin/bash\n# incompatible launcher\n" if path.endswith(".sh") else b"# incompatible updater\n"
         if path == "launch_env.sh":
-          data += b'export AGNOS_VERSION="19.9"\n'
+          data += b'if [ -z "$AGNOS_VERSION" ]; then\n  export AGNOS_VERSION="19.9"\nfi\n'
         self.assertNotEqual(data, original)
         drifted = self.variant_many({path: data}, upstream)
         result = self.cli("gates.py", drifted, pin_file=pin_file, check=False)
@@ -592,7 +592,7 @@ class TestCompose(unittest.TestCase):
     changes = [
       (compose.MANIFEST, b"[]\n", "100644", "unexpected composed change"),
       (compose.STOCK_MANIFEST, b"[]\n", "100644", "unexpected composed change"),
-      ("launch_env.sh", b'export AGNOS_VERSION="19.9"\nexport WPA3_BOOT_TAG="wpa3.sae=2"\n', "100644", "values do not match"),
+      ("launch_env.sh", b'if [ -z "$AGNOS_VERSION" ]; then\n  export AGNOS_VERSION="19.9"\nfi\nexport WPA3_BOOT_TAG="wpa3.sae=2"\n', "100644", "values do not match"),
     ]
     for path, (key, mode) in compose.SUPPLICANT_FILES.items():
       data = (ROOT / self.pin["wpa_supplicant"][key]).read_bytes()
@@ -688,6 +688,150 @@ class TestCompose(unittest.TestCase):
           manifest = compose.STOCK_MANIFEST if expected == "stock" else MANIFEST_LINK
           self.assertEqual(agnos.flash_agnos_update.call_args.args[0], "/staged/" + manifest)
         self.assertTrue(all(call[0] in ("read_text", "read_bytes", "is_file") for call in path.return_value.method_calls))
+
+
+  def test_auto_release_notice_and_withdrawal_render_in_device_first_block(self):
+    import follow_state as fs
+    from fixtures.openpilot_markdown import parse_markdown
+    from test_follow_state import automatic_pin, withdrawal
+    original = b'Version 0.11.2 (2026-08-12)\n===========================\n* Upstream notes\n\nOlder version\n'
+    with compose.temporary_index(self.repo, self.upstream) as (env, _):
+      compose.put_blob(self.repo, env, 'RELEASES.md', original, mode='100644')
+      tree = compose.git(self.repo, 'write-tree', env=env).decode().strip()
+      upstream = compose.git(self.repo, 'commit-tree', tree, data=b'With release notes\n', env=self.identity).decode().strip()
+    auto = automatic_pin(fs.load(), '19.8')
+    auto['derived_from'] = deepcopy(self.pin['derived_from'])
+    auto['wpa_supplicant'] = deepcopy(self.pin['wpa_supplicant'])
+    for withdrawn in (False, True):
+      pin = deepcopy(auto)
+      if withdrawn:
+        pin['withdrawn'] = withdrawal()
+        pin.update(deepcopy(pin['revert']))
+      resolved = {'mode': 'pinned', 'version': '19.8', 'pin': pin}
+      pin_file = self.write_resolved(resolved)
+      commit = self.cli('compose.py', upstream, pin_file=pin_file).stdout.splitlines()[0]
+      data = compose.blob(self.repo, commit, 'RELEASES.md')
+      self.assertEqual(data, compose.release_notice(resolved) + original)
+      self.assertNotIn(b'\n\n', compose.release_notice(resolved))
+      self.assertIn('WPA3-Boot-Build: auto', compose.git(self.repo, 'show', '-s', '--format=%B', commit).decode())
+      # Execute upstream's actual function, isolated from its hardware imports.
+      module = ast.parse(compose.blob(self.repo, upstream, UPDATED))
+      function = next(node for node in module.body if isinstance(node, ast.FunctionDef) and node.name == 'parse_release_notes')
+      namespace = {'os': os, 'parse_markdown': parse_markdown, 'cloudlog': Mock()}
+      exec(compile(ast.Module(body=[function], type_ignores=[]), UPDATED, 'exec'), namespace)
+      with tempfile.TemporaryDirectory(dir=self.work) as directory:
+        (Path(directory) / 'RELEASES.md').write_bytes(data)
+        rendered = namespace['parse_release_notes'](directory).decode()
+      self.assertIn('was withdrawn' if withdrawn else 'has NOT been tested on any device', rendered)
+      self.assertIn('<h1>Version 0.11.2 (2026-08-12)</h1>', rendered)
+      self.assertIn('Upstream notes', rendered)
+      self.assertNotIn('Older version', rendered)
+      for changed in (original, data + b'extra\n', data.replace(b'Upstream notes', b'changed')):
+        with compose.temporary_index(self.repo, commit) as (env, scratch):
+          compose.put_blob(self.repo, env, 'RELEASES.md', changed)
+          tree = compose.git(self.repo, 'write-tree', env=env).decode().strip()
+          with self.assertRaisesRegex(ValueError, 'exactly the one prepended notice'):
+            compose.post_checks(self.repo, upstream, tree, resolved, scratch)
+      with compose.temporary_index(self.repo, commit) as (env, scratch):
+        compose.put_blob(self.repo, env, 'RELEASES.md', data, mode='100755')
+        tree = compose.git(self.repo, 'write-tree', env=env).decode().strip()
+        with self.assertRaisesRegex(ValueError, 'mode changed'):
+          compose.post_checks(self.repo, upstream, tree, resolved, scratch)
+    manual = self.cli('compose.py', upstream).stdout.splitlines()[0]
+    self.assertEqual(compose.blob(self.repo, manual, 'RELEASES.md'), original)
+    self.assertNotIn('RELEASES.md', compose.ALLOWED)
+    with compose.temporary_index(self.repo, manual) as (env, scratch):
+      compose.put_blob(self.repo, env, 'RELEASES.md', b'unsolicited notice\n' + original)
+      tree = compose.git(self.repo, 'write-tree', env=env).decode().strip()
+      with self.assertRaisesRegex(ValueError, 'unexpected composed change: RELEASES.md'):
+        compose.post_checks(self.repo, upstream, tree, self.resolved, scratch)
+
+  def test_g8_cli_enforcement_and_revoke_override(self):
+    upstream, _, pin_file = self.resolved_variant()
+    for mode in ('off', 'dryrun', 'state', 'on'):
+      result = self.cli('gates.py', upstream, '--skip-download', '--follow-mode', mode, pin_file=pin_file, check=False)
+      self.assertEqual(result.returncode, 0 if mode in ('off', 'dryrun') else 1)
+      self.assertIn('G8: WARN:' if result.returncode == 0 else 'G8: FAIL:', result.stdout + result.stderr)
+      revoked = self.cli('gates.py', upstream, '--skip-download', '--follow-mode', mode, '--revoke', pin_file=pin_file)
+      self.assertIn('G8: WARN:', revoked.stdout)
+
+
+class TestLaunchParser(unittest.TestCase):
+  def setUp(self):
+    self.valid = b'#!/usr/bin/env bash\nexport OMP_NUM_THREADS=1\nif [ -z "$AGNOS_VERSION" ]; then\n  export AGNOS_VERSION="19.9"\nfi\n'
+
+  def test_literals_only_and_no_shell_process(self):
+    with patch('compose.subprocess.run', side_effect=AssertionError('shell execution')):
+      self.assertEqual(compose.launch_values(self.valid), ('19.9', '', '', ''))
+      script = self.valid + b'export WPA3_BOOT_TAG="wpa3.sae=10"\nexport WPA3_BOOT_HASH="' + b'a' * 64 + b'"\n'
+      self.assertEqual(compose.launch_values(script), ('19.9', 'wpa3.sae=10', 'a' * 64, ''))
+
+  def test_forbidden_commands_even_when_not_executed(self):
+    for command in (b'source /tmp/evil', b'  . /tmp/evil', b'eval "anything"', b'$(touch /tmp/evil)',
+                    b'echo hi; source /tmp/evil', b'false || eval true', b'export OTHER="$(touch /tmp/evil)"',
+                    b'export OTHER=`id`', b'eval\\\n echo anything'):
+      with self.subTest(command=command), self.assertRaisesRegex(ValueError, 'prohibited'):
+        compose.launch_values(self.valid + command + b'\n')
+
+  def test_missing_duplicated_indirect_or_unrecognized_assignments_fail_closed(self):
+    for script in (b'export OTHER=1\n', b'export AGNOS_VERSION="19.9"\n', self.valid * 2,
+                   self.valid + b'export AGNOS_VERSION="20"\n', self.valid + b'# AGNOS_VERSION\n',
+                   self.valid + b'unset WPA3_BOOT_HASH\n', self.valid.replace(b'19.9', b'19..9'),
+                   self.valid.replace(b'19.9', b'$(id)'), self.valid.replace(b'19.9', b'19.9;id'),
+                   self.valid + b'export WPA3_BOOT_TAG="wpa3.sae=4"\n' * 2,
+                   self.valid + b'export WPA3_BOOT_HASH="malformed"\n',
+                   self.valid + b'WPA3_BOOT_TAG="wpa3.sae=4"\n'):
+      with self.subTest(script=script), self.assertRaises(ValueError):
+        compose.launch_values(script)
+
+
+class TestG8(unittest.TestCase):
+  def test_modes_for_missing_probe_missing_wpa_and_mismatch(self):
+    import follow_state as fs
+    from contextlib import redirect_stdout
+    for problem in ('probe', 'wpa', 'mismatch', 'version'):
+      state = fs.load()
+      pin = deepcopy(state['manual']['19.9'])
+      resolved = {'mode': 'pinned', 'version': '19.9', 'pin': pin}
+      digest = pin['derived_from']['system_hash_raw']
+      if problem == 'probe':
+        state['system_probe'] = {}
+      elif problem == 'wpa':
+        state['supplicants'] = {}
+      elif problem == 'mismatch':
+        pin['wpa_supplicant']['sha256'] = '0' * 64
+      else:
+        state['system_probe'][digest]['dpkg_version'] = '2:2.10-21ubuntu0.5'
+      for mode in fs.MODES:
+        for revoke in (False, True):
+          stdout = io.StringIO()
+          with self.subTest(problem=problem, mode=mode, revoke=revoke), redirect_stdout(stdout):
+            if mode in ('state', 'on') and not revoke:
+              with self.assertRaises(ValueError):
+                gates.check_g8(resolved, digest, state, mode, revoke)
+            else:
+              gates.check_g8(resolved, digest, state, mode, revoke)
+              self.assertIn('G8: WARN:', stdout.getvalue())
+
+  def test_known_probe_and_stock_policy_agree_with_resolved_files(self):
+    import follow_state as fs
+    from contextlib import redirect_stdout
+    state = fs.load()
+    pin = deepcopy(state['manual']['19.9'])
+    resolved = {'mode': 'pinned', 'version': '19.9', 'pin': pin}
+    digest = pin['derived_from']['system_hash_raw']
+    for mode in fs.MODES:
+      stdout = io.StringIO()
+      with redirect_stdout(stdout):
+        gates.check_g8(resolved, digest, state, mode)
+      self.assertIn('G8: OK:' if mode in ('state', 'on') else 'G8: WARN:', stdout.getvalue())
+    state['supplicants'] = {}
+    state['policy']['on_unknown_stock_wpa'] = 'stock'
+    with self.assertRaisesRegex(ValueError, 'does not match G8'):
+      gates.check_g8(resolved, digest, state, 'state')
+    del pin['wpa_supplicant']
+    with redirect_stdout(io.StringIO()):
+      gates.check_g8(resolved, digest, state, 'state')
 
 
 class TestBootDownload(unittest.TestCase):

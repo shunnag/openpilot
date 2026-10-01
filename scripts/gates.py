@@ -2,11 +2,13 @@
 """Fail closed when the upstream tree or the pinned boot image has drifted."""
 import argparse
 import json
+import os
 from pathlib import Path
 import sys
 
 from boot_download import fetch_boot
 from compose import AGNOS_PY, MANIFEST, apply_ui, blob, error_text, git, launch_values, load_pin, resolve_commit, select_launcher_patch, supplicant_files, temporary_index
+from follow_state import load, mode_value, resolve_supplicant
 
 
 def check_download(boot):
@@ -20,7 +22,24 @@ def check_supplicant(pin):
     raise ValueError("wpa_supplicant must be an ELF64 little-endian aarch64 executable")
 
 
-def run_gates(repo, upstream, pin_file, skip_download=False, published=None):
+def check_g8(resolved, system_hash, state, mode="off", revoke=False):
+  mode_value(mode)
+  pin = resolved if resolved['mode'] == 'native' else resolved['pin']
+  advisory = mode in ('off', 'dryrun') or revoke or pin.get('withdrawn') is not None
+  try:
+    checked = resolve_supplicant(resolved, system_hash, state, mode)
+    if checked != resolved:
+      raise ValueError('resolved supplicant does not match G8 probe data')
+  except ValueError as error:
+    if not advisory:
+      raise
+    print(f"G8: WARN: {error_text(error)}", flush=True)
+  else:
+    level = 'WARN' if advisory else 'OK'
+    print(f"G8: {level}: probed stock wpa_supplicant and override agree", flush=True)
+
+
+def run_gates(repo, upstream, pin_file, skip_download=False, published=None, follow_mode=None, revoke=False):
   gate = "G1"
   try:
     upstream = resolve_commit(repo, upstream)
@@ -89,6 +108,15 @@ def run_gates(repo, upstream, pin_file, skip_download=False, published=None):
     else:
       check_supplicant(pin)
       print("G7: OK: pinned wpa_supplicant SHA-256, aarch64 ELF and copyright verified", flush=True)
+
+    gate = "G8"
+    state = load()
+    mode = os.environ.get('WPA3_FOLLOW_MODE', 'off') if follow_mode is None else follow_mode
+    manifest = json.loads(blob(repo, upstream, MANIFEST))
+    systems = [entry for entry in manifest if entry['name'] == 'system']
+    if len(systems) != 1:
+      raise ValueError('upstream manifest must have exactly one system entry')
+    check_g8(resolved, systems[0]['hash_raw'], state, mode, revoke)
   except Exception as error:
     print(f"{gate}: FAIL: {error_text(error)}", file=sys.stderr, flush=True)
     return 1
@@ -102,8 +130,10 @@ def main():
   parser.add_argument("--pin-file", required=True, type=Path, help="resolved JSON from pins.py")
   parser.add_argument("--published", help="currently published fork commit, if the branch exists")
   parser.add_argument("--skip-download", action="store_true", help="skip G4 for offline tests; never use when publishing")
+  parser.add_argument("--follow-mode", default=os.environ.get("WPA3_FOLLOW_MODE", "off"))
+  parser.add_argument("--revoke", action="store_true", help="G8 is advisory for a withdrawal publish")
   args = parser.parse_args()
-  return run_gates(args.repo.resolve(), args.upstream, args.pin_file, args.skip_download, args.published)
+  return run_gates(args.repo.resolve(), args.upstream, args.pin_file, args.skip_download, args.published, args.follow_mode, args.revoke)
 
 
 if __name__ == "__main__":

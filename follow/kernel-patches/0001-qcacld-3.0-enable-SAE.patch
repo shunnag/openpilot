@@ -1,0 +1,62 @@
+diff --git a/arch/arm64/configs/tici_defconfig b/arch/arm64/configs/tici_defconfig
+index 0cd2142..e8c0701 100644
+--- a/arch/arm64/configs/tici_defconfig
++++ b/arch/arm64/configs/tici_defconfig
+@@ -1912,6 +1912,7 @@ CONFIG_QCACLD_WLAN_LFR3=y
+ CONFIG_PRIMA_WLAN_OKC=y
+ CONFIG_PRIMA_WLAN_11AC_HIGH_TP=y
+ CONFIG_WLAN_FEATURE_11W=y
++CONFIG_WLAN_FEATURE_SAE=y
+ CONFIG_WLAN_FEATURE_LPSS=y
+ CONFIG_QCOM_VOWIFI_11R=y
+ CONFIG_QCACLD_FEATURE_NAN=y
+diff --git a/drivers/staging/qcacld-3.0/Kconfig b/drivers/staging/qcacld-3.0/Kconfig
+index bed09cd..ca46bac 100644
+--- a/drivers/staging/qcacld-3.0/Kconfig
++++ b/drivers/staging/qcacld-3.0/Kconfig
+@@ -25,6 +25,11 @@ config WLAN_FEATURE_11W
+ 	bool "Enable the WLAN 802.11w Protected Management Frames feature"
+ 	default n
+ 
++config WLAN_FEATURE_SAE
++	bool "Enable WPA3-Personal SAE (external auth) support"
++	depends on QCA_CLD_WLAN
++	default n
++
+ config WLAN_FEATURE_LPSS
+ 	bool "Enable the WLAN LPSS feature"
+ 	default n
+diff --git a/drivers/staging/qcacld-3.0/core/hdd/src/wlan_hdd_assoc.c b/drivers/staging/qcacld-3.0/core/hdd/src/wlan_hdd_assoc.c
+index f607bd0..095b3a7 100644
+--- a/drivers/staging/qcacld-3.0/core/hdd/src/wlan_hdd_assoc.c
++++ b/drivers/staging/qcacld-3.0/core/hdd/src/wlan_hdd_assoc.c
+@@ -6085,6 +6085,10 @@ int hdd_set_csr_auth_type(hdd_adapter_t *pAdapter, eCsrAuthType RSNAuthType)
+ 					RSNAuthType;
+ 				hdd_debug("updated profile authtype as %d",
+ 					RSNAuthType);
++			} else if (RSNAuthType == eCSR_AUTH_TYPE_SAE) {
++				/* SAE with open authentication case */
++				pRoamProfile->AuthType.authType[0] =
++					eCSR_AUTH_TYPE_SAE;
+ 			} else if ((RSNAuthType ==
+ 				  eCSR_AUTH_TYPE_SUITEB_EAP_SHA256) &&
+ 				  ((pWextState->
+diff --git a/drivers/staging/qcacld-3.0/core/hdd/src/wlan_hdd_cfg80211.c b/drivers/staging/qcacld-3.0/core/hdd/src/wlan_hdd_cfg80211.c
+index 6369675..bb0ebcf 100644
+--- a/drivers/staging/qcacld-3.0/core/hdd/src/wlan_hdd_cfg80211.c
++++ b/drivers/staging/qcacld-3.0/core/hdd/src/wlan_hdd_cfg80211.c
+@@ -17098,13 +17098,12 @@ static int wlan_hdd_cfg80211_set_auth_type(hdd_adapter_t *pAdapter,
+ 		hdd_debug("set authentication type to FILS SHARED");
+ 		pHddStaCtx->conn_info.authType = eCSR_AUTH_TYPE_OPEN_SYSTEM;
+ 		break;
+-
++#endif
+ 	case NL80211_AUTHTYPE_SAE:
+ 		hdd_debug("set authentication type to SAE");
+ 		pHddStaCtx->conn_info.authType = eCSR_AUTH_TYPE_SAE;
+ 		break;
+ 
+-#endif
+ 	default:
+ 		hdd_err("Unsupported authentication type: %d", auth_type);
+ 		pHddStaCtx->conn_info.authType = eCSR_AUTH_TYPE_UNKNOWN;

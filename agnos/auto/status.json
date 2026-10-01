@@ -1,0 +1,36 @@
+{
+  "allocated_tags": [
+    1,
+    2,
+    3
+  ],
+  "attempts": {},
+  "device_tested": {
+    "agnos-19.8-wpa3.2": {
+      "at": "2026-09-25",
+      "by": "seed",
+      "devices": [
+        "mici"
+      ],
+      "kernel_commit": "eccd146599f2e2f159d951092642689bede91632",
+      "note": "session4_log_ja.md",
+      "stock_boot_hash_raw": "335c17579879614a3b6f9b58c867aa2e66609530258e12d9174d6007494fdb11",
+      "stock_boot_url": "https://commadist.azureedge.net/agnosupdate/boot-335c17579879614a3b6f9b58c867aa2e66609530258e12d9174d6007494fdb11.img.xz"
+    },
+    "agnos-19.9-wpa3.3": {
+      "at": "2026-10-01",
+      "by": "seed",
+      "devices": [
+        "mici"
+      ],
+      "kernel_commit": "8b0e4d289b246a5cc1b0484b25a3f9f8d4772544",
+      "note": "session4_log_ja.md:482-492",
+      "stock_boot_hash_raw": "b9c9b9261fca0cef9e6d9b198fa4b563767e6342afc7a61ab137b2b519260615",
+      "stock_boot_url": "https://commadist.azureedge.net/agnosupdate/boot-b9c9b9261fca0cef9e6d9b198fa4b563767e6342afc7a61ab137b2b519260615.img.xz"
+    }
+  },
+  "last_auto_publish_at": null,
+  "paused": null,
+  "schema": 1,
+  "wpa_attempts": {}
+}

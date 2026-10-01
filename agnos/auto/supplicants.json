@@ -1,0 +1,16 @@
+{
+  "b0f1c8ee9bb32153faed468c68390db4691b252ffd6a90e6d3d7b49f4d106bdd": {
+    "build_version": "2:2.10-21ubuntu0.4+agnos1",
+    "built_by": "manual",
+    "ci_reproduced_reference": false,
+    "copyright": "userspace/wpa_supplicant.copyright",
+    "patchset_sha256": "8148dc8f02090d9692244a535973054b05422ebe49648dcb6874ae5aa6785eca",
+    "path": "userspace/wpa_supplicant",
+    "sha256": "139be31dde5f000d99af5f2692b792989bb3d6cbe332d662b2ddf822de89fd93",
+    "toolchain": {
+      "base_image": "ubuntu:24.04@sha256:008173c23f95b170204355c12626cb5a965d779a7e1283b09e9cffbb1bf33ca3",
+      "manifest_sha256": "3aae08ff4b5fb5aee0d213f1cd0265e4f2a81fe1a716a812b42429188e453d7c"
+    },
+    "ubuntu_version": "2:2.10-21ubuntu0.4"
+  }
+}

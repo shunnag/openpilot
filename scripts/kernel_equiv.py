@@ -71,7 +71,9 @@ def ikconfig(img):
 
 def cstr_spans(img, prefix):
   spans = []
-  for match in re.finditer(re.escape(prefix), img):
+  # Standalone #N fix: compiled prefixes retain the same bounded C-string rules.
+  pattern = prefix if isinstance(prefix, re.Pattern) else re.escape(prefix)
+  for match in re.finditer(pattern, img):
     end = match.start()
     limit = min(len(img), match.start() + 256)
     while end < limit and img[end] not in (0, 10):
@@ -214,7 +216,8 @@ def _equivalent(base, new):
     ramdisks.append(initramfs_members(img))
     identities.append({
       "banner": cstr_spans(img, b"Linux version "),
-      "uts": cstr_spans(img, b"#1 SMP PREEMPT "),
+      # Standalone #N fix (also applies to stock equivalence).
+      "uts": cstr_spans(img, re.compile(rb"#\d{1,6} SMP PREEMPT ")),
       "build-id": buildid_spans(img),
       "cert": cert_spans(img),
       "initramfs": [(offset, offset + size) for offset, size, _ in ramdisks[-1]],

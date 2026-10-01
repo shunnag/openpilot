@@ -49,6 +49,29 @@ class TestKernelEquiv(unittest.TestCase):
       with self.subTest(offset=offset):
         self.assertTrue(ke.equivalent(self.base, mutate(self.base, offset))[0])
 
+  # Standalone #N regression tests; independent of rebuild mode.
+  def test_uts_build_numbers_keep_stock_bounds(self):
+    def numbered(number):
+      changed = bytearray(self.base)
+      image = ke.split(self.base)[1]
+      for start, end in ke.cstr_spans(image, b"#1 SMP PREEMPT "):
+        value = image[start:end].replace(b"#1 ", f"#{number} ".encode(), 1)
+        changed[PAGE + start:PAGE + start + len(value)] = value
+      return bytes(changed)
+
+    for number in (2, 10, 999999):
+      with self.subTest(number=number):
+        stock = numbered(number)
+        for base, new in ((self.base, stock), (stock, self.base)):
+          self.assertTrue(ke.equivalent(base, new)[0])
+          for offset in (PAGE + 12, 64, PAGE + IMAGE_SIZE + 60):
+            self.assertFalse(ke.equivalent(base, mutate(new, offset))[0])
+    self.assertFalse(ke.equivalent(self.base, numbered(1000000))[0])
+    stock = bytearray(numbered(2))
+    end = stock.index(0, PAGE + UTS)
+    stock[end:end + 18] = b"X" * 17 + b"\0"
+    self.assertFalse(ke.equivalent(self.base, bytes(stock))[0])
+
   def test_invalid_headers_and_fdt_chains(self):
     variants = [b"", self.base[:32], self.base[:PAGE + IMAGE_SIZE + 50]]
     for offset, value in ((36, 0), (8, len(self.base)), (40, 1)):

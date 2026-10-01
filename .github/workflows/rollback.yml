@@ -12,6 +12,8 @@ on:
           - select-a-branch
           - nightly
           - nightly-chestnut
+          - release-mici-staging
+          - release-tizi-staging
 
 permissions:
   contents: write
@@ -40,9 +42,9 @@ jobs:
       - name: Restore lastgood with lease, then disable nightly publishing
         run: |
           case "$BRANCH" in
-            nightly|nightly-chestnut) ;;
+            nightly|nightly-chestnut|release-mici-staging|release-tizi-staging) ;;
             *)
-              echo '::error::Choose nightly or nightly-chestnut; nothing was changed.'
+              echo '::error::Choose nightly, nightly-chestnut, release-mici-staging or release-tizi-staging; nothing was changed.'
               exit 1
               ;;
           esac
@@ -61,4 +63,4 @@ jobs:
           git -C "$BARE_REPO" fetch --depth=1 --no-tags --no-recurse-submodules origin "$GOOD"
           git -C "$BARE_REPO" push --force-with-lease="refs/heads/$BRANCH:$F" origin "$GOOD:refs/heads/$BRANCH"
           gh workflow disable nightly.yml --repo "$GH_REPO"
-          echo '::notice::nightly.yml is disabled; publishing for BOTH nightly and nightly-chestnut is paused until re-enabled.'
+          echo '::notice::nightly.yml is disabled; publishing for all four branches (nightly, nightly-chestnut, release-mici-staging and release-tizi-staging) is paused until re-enabled.'

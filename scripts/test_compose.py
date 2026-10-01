@@ -23,6 +23,7 @@ import pins
 
 ROOT = compose.ROOT
 REF = ROOT / "ref/nightly-chestnut"
+RELEASE_REF = ROOT / "ref/release-staging"
 UPDATED = "openpilot/system/updated/updated.py"
 MANIFEST_LINK = "openpilot/system/hardware/comma/agnos.json"
 
@@ -87,6 +88,100 @@ class TestCompose(unittest.TestCase):
       self.assertIn(f"{gate}: OK:", result.stdout)
     self.assertIn("G4: SKIP:", result.stdout)
     self.assertIn("G6: SKIP: no published commit", result.stdout)
+    self.assertIn("G3: OK: agnos.py blob matches and launcher patch launcher-wpa3.patch applies", result.stdout)
+
+  def test_release_launcher_selection_and_compose(self):
+    upstream = self.variant("launch_chffrplus.sh", (RELEASE_REF / "launch_chffrplus.sh").read_bytes())
+    self.assertEqual(compose.select_launcher_patch(self.repo, upstream), compose.LAUNCHER_PATCHES[1])
+    result = self.cli("gates.py", upstream, "--skip-download")
+    self.assertIn("G3: OK: agnos.py blob matches and launcher patch launcher-wpa3-release.patch applies", result.stdout)
+    commit, inputs = self.cli("compose.py", upstream).stdout.splitlines()
+    self.assertEqual(self.cli("compose.py", upstream, "--inputs-only").stdout.strip(), inputs)
+    self.assertNotEqual(inputs, self.inputs)
+    message = compose.git(self.repo, "show", "-s", "--format=%B", commit).decode().strip()
+    self.assertTrue(message.endswith("WPA3-Pin: pinned 19.8\nWPA3-Launcher-Patch: launcher-wpa3-release.patch"))
+    launcher = compose.blob(self.repo, commit, "launch_chffrplus.sh")
+    nightly_launcher = compose.blob(self.repo, self.commit, "launch_chffrplus.sh")
+
+    def functions(script, pattern):
+      return subprocess.run(["sed", "-n", pattern], input=script, capture_output=True, check=True).stdout
+
+    pattern = '/^function wpa3_.* {$/,/^}$/p'
+    self.assertEqual(functions(launcher, pattern), functions(nightly_launcher, pattern))
+    agnos_init = functions(launcher, '/^function agnos_init {$/,/^}$/p')
+    for expected in (b"|| wpa3_boot_needed", b"wpa3_update_manifest", b"wpa3_supplicant_override"):
+      self.assertIn(expected, agnos_init)
+    self.assertEqual(agnos_init.count(b"    $DIR/openpilot/common/hardware/comma/updater $AGNOS_PY $MANIFEST\n"), 1)
+    self.assertNotIn(b"while true", agnos_init)
+    launcher_file = self.work / "release-launcher.sh"
+    launcher_file.write_bytes(launcher)
+    work = self.work / "release-runtime"
+    work.mkdir()
+    for name, messages in (
+      ("test_wpa3_boot_needed.sh", ("PASS: wpa3_boot_needed", "PASS: wpa3_update_manifest")),
+      ("test_wpa3_supplicant_override.sh", ("PASS: wpa3_supplicant_override",)),
+    ):
+      with self.subTest(script=name):
+        result = subprocess.run(["bash", str(ROOT / "scripts" / name), str(launcher_file), str(work)],
+                                capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        for expected in messages:
+          self.assertIn(expected, result.stdout)
+
+  def test_launcher_patches_are_exclusive(self):
+    release = self.variant("launch_chffrplus.sh", (RELEASE_REF / "launch_chffrplus.sh").read_bytes())
+    nightly_patch, release_patch = compose.LAUNCHER_PATCHES
+    for upstream, matching, other in ((self.upstream, nightly_patch, release_patch), (release, release_patch, nightly_patch)):
+      with self.subTest(patch=matching.name), compose.temporary_index(self.repo, upstream) as (env, _):
+        before = compose.git(self.repo, "write-tree", env=env)
+        self.assertEqual(compose.select_launcher_patch(self.repo, upstream), matching)
+        compose.git(self.repo, "apply", "--cached", "--check", str(matching), env=env)
+        with self.assertRaises(subprocess.CalledProcessError):
+          compose.git(self.repo, "apply", "--cached", "--check", str(other), env=env)
+        self.assertEqual(compose.git(self.repo, "write-tree", env=env), before)
+    self.assertFalse((self.repo / "index").exists())
+
+  def test_unknown_launcher_fails_gates_compose_and_inputs(self):
+    upstream = self.variant("launch_chffrplus.sh", b"#!/bin/bash\n# incompatible launcher\n")
+    with self.assertRaisesRegex(ValueError, "no launcher patch applies"):
+      compose.select_launcher_patch(self.repo, upstream)
+    for script, args, prefix in (
+      ("gates.py", ("--skip-download",), "G3"),
+      ("compose.py", (), "compose"),
+      ("compose.py", ("--inputs-only",), "compose"),
+    ):
+      with self.subTest(script=script, args=args):
+        result = self.cli(script, upstream, *args, check=False)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(f"{prefix}: FAIL: no launcher patch applies:", result.stderr)
+        for launcher_patch in compose.LAUNCHER_PATCHES:
+          self.assertIn(f"{launcher_patch.name}: git ", result.stderr)
+        self.assertEqual(result.stderr.count("error: launch_chffrplus.sh: patch does not apply"), 2)
+
+  def test_ambiguous_launcher_patches_fail(self):
+    duplicate = self.work / "duplicate-launcher.patch"
+    duplicate.write_bytes(compose.LAUNCHER_PATCHES[0].read_bytes())
+    with patch.object(compose, "LAUNCHER_PATCHES", (compose.LAUNCHER_PATCHES[0], duplicate)):
+      with self.assertRaisesRegex(ValueError, "more than one launcher patch applies") as error:
+        compose.select_launcher_patch(self.repo, self.upstream)
+      for launcher_patch in compose.LAUNCHER_PATCHES:
+        self.assertIn(f"{launcher_patch.name}: applies cleanly", str(error.exception))
+      with self.assertRaisesRegex(ValueError, "more than one launcher patch applies"):
+        compose.compose(self.repo, self.upstream, self.resolved)
+      with patch("sys.stdout", new_callable=io.StringIO), patch("sys.stderr", new_callable=io.StringIO) as stderr:
+        self.assertEqual(gates.run_gates(self.repo, self.upstream, self.pin_file, skip_download=True), 1)
+        self.assertIn("G3: FAIL: more than one launcher patch applies:", stderr.getvalue())
+
+  def test_inputs_hash_uses_chosen_launcher_patch(self):
+    nightly_patch, release_patch = compose.LAUNCHER_PATCHES
+    self.assertEqual(compose.inputs_hash(self.upstream, self.resolved, nightly_patch), self.inputs)
+    self.assertNotEqual(compose.inputs_hash(self.upstream, self.resolved, release_patch), self.inputs)
+    unused = self.work / release_patch.name
+    unused.write_bytes(release_patch.read_bytes())
+    with patch.object(compose, "LAUNCHER_PATCHES", (nightly_patch, unused)):
+      unused.write_bytes(unused.read_bytes() + b"\n# unused patch changed\n")
+      self.assertEqual(compose.select_launcher_patch(self.repo, self.upstream), nightly_patch)
+      self.assertEqual(compose.inputs_hash(self.upstream, self.resolved, nightly_patch), self.inputs)
 
   def test_g6_published_tag_hash_invariant(self):
     tag, digest = self.pin["tag"], self.pin["boot"]["hash_raw"]
@@ -114,7 +209,8 @@ class TestCompose(unittest.TestCase):
                      compose.git(self.repo, "show", "-s", "--format=%cI %cI", self.upstream))
     message = compose.git(self.repo, "show", "-s", "--format=%B", self.commit).decode()
     self.assertEqual(message.strip(), f"Synthetic upstream + WPA3\n\nUpstream-Commit: {self.upstream}\n"
-                     f"WPA3-Inputs: {self.inputs}\nWPA3-AGNOS: {self.pin['release_tag']}\nWPA3-Pin: pinned 19.8")
+                     f"WPA3-Inputs: {self.inputs}\nWPA3-AGNOS: {self.pin['release_tag']}\nWPA3-Pin: pinned 19.8\n"
+                     "WPA3-Launcher-Patch: launcher-wpa3.patch")
     self.assertEqual(compose.git(self.repo, "show", "-s", "--format=%an <%ae>|%cn <%ce>", self.commit).decode().strip(),
                      "openpilot-wpa3-bot <shunnag@users.noreply.github.com>|openpilot-wpa3-bot <shunnag@users.noreply.github.com>")
     print(f"\nDeterministic compose SHA (two runs): {self.commit}\nWPA3-Inputs: {self.inputs}")
@@ -262,14 +358,14 @@ class TestCompose(unittest.TestCase):
   def test_supplicant_inputs_cover_binary_and_copyright(self):
     resolved = deepcopy(self.resolved)
     resolved["pin"]["wpa_supplicant"]["sha256"] = "0" * 64
-    self.assertNotEqual(compose.inputs_hash(self.upstream, resolved), self.inputs)
+    self.assertNotEqual(compose.inputs_hash(self.upstream, resolved, compose.LAUNCHER_PATCHES[0]), self.inputs)
     copyright_file = self.work / "variant.copyright"
     resolved = deepcopy(self.resolved)
     resolved["pin"]["wpa_supplicant"]["copyright"] = str(copyright_file.relative_to(ROOT))
     copyright_file.write_text("license one\n")
-    before = compose.inputs_hash(self.upstream, resolved)
+    before = compose.inputs_hash(self.upstream, resolved, compose.LAUNCHER_PATCHES[0])
     copyright_file.write_text("license two\n")
-    self.assertNotEqual(compose.inputs_hash(self.upstream, resolved), before)
+    self.assertNotEqual(compose.inputs_hash(self.upstream, resolved, compose.LAUNCHER_PATCHES[0]), before)
 
   def test_manifest_and_symlink(self):
     original = compose.blob(self.repo, self.upstream, compose.MANIFEST)
@@ -353,7 +449,7 @@ class TestCompose(unittest.TestCase):
     reordered.write_text(json.dumps(resolved, sort_keys=False))
     self.assertEqual(self.cli("compose.py", self.upstream, pin_file=reordered).stdout.splitlines(), [self.commit, self.inputs])
     different = {**resolved, "mode": "derived", "base": "19.7"}
-    self.assertNotEqual(compose.inputs_hash(self.upstream, resolved), compose.inputs_hash(self.upstream, different))
+    self.assertNotEqual(compose.inputs_hash(self.upstream, resolved, compose.LAUNCHER_PATCHES[0]), compose.inputs_hash(self.upstream, different, compose.LAUNCHER_PATCHES[0]))
 
   def resolved_variant(self, native=False):
     base_stock, new_stock = identity_pair()
@@ -426,7 +522,7 @@ class TestCompose(unittest.TestCase):
       self.assertIn(f"{gate}: SKIP:", result.stdout)
     self.assertIn("G5: OK:", result.stdout)
     self.assertIn("G7: OK:", result.stdout)
-    self.assertIn("launcher patch applies", result.stdout)
+    self.assertIn("G3: SKIP: pinned agnos.py check in native mode; launcher patch launcher-wpa3.patch applies", result.stdout)
     self.assertIn("G6: SKIP: native mode", self.cli("gates.py", upstream, "--published", self.commit, pin_file=pin_file).stdout)
     result = self.cli("compose.py", upstream, pin_file=pin_file).stdout
     self.assertEqual(result, self.cli("compose.py", upstream, pin_file=pin_file).stdout)
@@ -479,16 +575,16 @@ class TestCompose(unittest.TestCase):
       changed["wpa_supplicant"][key] = value
       with self.subTest(key=key), self.assertRaises(ValueError):
         compose.load_pin(self.repo, upstream, self.write_resolved(changed))
-    original_inputs = compose.inputs_hash(upstream, resolved)
+    original_inputs = compose.inputs_hash(upstream, resolved, compose.LAUNCHER_PATCHES[0])
     changed = deepcopy(resolved)
     changed["wpa_supplicant"]["sha256"] = "0" * 64
-    self.assertNotEqual(original_inputs, compose.inputs_hash(upstream, changed))
+    self.assertNotEqual(original_inputs, compose.inputs_hash(upstream, changed, compose.LAUNCHER_PATCHES[0]))
     copyright_file = self.work / "native.copyright"
     changed["wpa_supplicant"]["copyright"] = str(copyright_file.relative_to(ROOT))
     copyright_file.write_text("license one\n")
-    original_inputs = compose.inputs_hash(upstream, changed)
+    original_inputs = compose.inputs_hash(upstream, changed, compose.LAUNCHER_PATCHES[0])
     copyright_file.write_text("license two\n")
-    self.assertNotEqual(original_inputs, compose.inputs_hash(upstream, changed))
+    self.assertNotEqual(original_inputs, compose.inputs_hash(upstream, changed, compose.LAUNCHER_PATCHES[0]))
 
   def test_native_post_checks_protect_manifest_and_runtime(self):
     upstream, resolved, pin_file = self.resolved_variant(native=True)

@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = "openpilot/common/hardware/comma/agnos.json"
 STOCK_MANIFEST = "openpilot/common/hardware/comma/agnos.stock.json"
 AGNOS_PY = "openpilot/common/hardware/comma/agnos.py"
-LAUNCHER_PATCH = ROOT / "patches/launcher-wpa3.patch"
+LAUNCHER_PATCHES = (ROOT / "patches/launcher-wpa3.patch", ROOT / "patches/launcher-wpa3-release.patch")
 UI_PATCH = ROOT / "patches/ui-wpa3.patch"
 UI_ALLOWED = {
   "openpilot/system/ui/lib/networkmanager.py",
@@ -181,11 +181,11 @@ def load_pin(repo, upstream, pin_file):
   return resolved
 
 
-def inputs_hash(upstream, resolved):
+def inputs_hash(upstream, resolved, launcher_patch):
   # Hash the entire resolved pin as canonical JSON, independent of file formatting.
   inputs = {
     "upstream": upstream,
-    "patches": {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in (LAUNCHER_PATCH, UI_PATCH)},
+    "patches": {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in (launcher_patch, UI_PATCH)},
     "pin": resolved,
     "compose.py": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
   }
@@ -205,6 +205,23 @@ def temporary_index(repo, upstream):
     env = {"GIT_INDEX_FILE": str(scratch / "index")}
     git(repo, "read-tree", upstream, env=env)
     yield env, scratch
+
+
+def select_launcher_patch(repo, upstream):
+  matches, diagnostics = [], []
+  with temporary_index(repo, upstream) as (env, _):
+    for patch in LAUNCHER_PATCHES:
+      try:
+        git(repo, "apply", "--cached", "--check", str(patch), env=env)
+      except subprocess.CalledProcessError as error:
+        diagnostics.append(f"{patch.name}: {error_text(error)}")
+      else:
+        matches.append(patch)
+        diagnostics.append(f"{patch.name}: applies cleanly")
+  if len(matches) != 1:
+    reason = "no launcher patch applies" if not matches else "more than one launcher patch applies"
+    raise ValueError(f"{reason}: {'; '.join(diagnostics)}")
+  return matches[0]
 
 
 def apply_ui(repo, env, check=False):
@@ -291,9 +308,10 @@ def compose(repo, upstream, resolved):
   native = resolved["mode"] == "native"
   pin = resolved if native else resolved["pin"]
   files = supplicant_files(pin)
-  inputs = inputs_hash(upstream, resolved)
+  launcher_patch = select_launcher_patch(repo, upstream)
+  inputs = inputs_hash(upstream, resolved, launcher_patch)
   with temporary_index(repo, upstream) as (env, scratch):
-    git(repo, "apply", "--cached", "--whitespace=error", str(LAUNCHER_PATCH), env=env)
+    git(repo, "apply", "--cached", "--whitespace=error", str(launcher_patch), env=env)
     launch_env = git(repo, "show", ":launch_env.sh", env=env)
     for name, value in (("BOOT_TAG", "" if native else pin["tag"]), ("BOOT_HASH", "" if native else pin["boot"]["hash_raw"]),
                         ("SUPPLICANT_STOCK_SHA256", pin.get("wpa_supplicant", {}).get("stock_sha256", ""))):
@@ -330,7 +348,7 @@ def compose(repo, upstream, resolved):
               for key, value in (("NAME", "openpilot-wpa3-bot"), ("EMAIL", "shunnag@users.noreply.github.com"), ("DATE", date))}
   message = (f"{subject} + WPA3\n\nUpstream-Commit: {upstream}\n"
              f"WPA3-Inputs: {inputs}\nWPA3-AGNOS: {'none' if native else resolved['pin']['release_tag']}\n"
-             f"WPA3-Pin: {pin_description(resolved)}\n")
+             f"WPA3-Pin: {pin_description(resolved)}\nWPA3-Launcher-Patch: {launcher_patch.name}\n")
   commit = git(repo, "-c", "commit.gpgsign=false", "commit-tree", tree, "-p", upstream,
                data=message.encode(), env=identity).decode().strip()
   return commit, inputs
@@ -348,7 +366,7 @@ def main():
     upstream = resolve_commit(repo, args.upstream)
     resolved = load_pin(repo, upstream, args.pin_file)
     if args.inputs_only:
-      print(inputs_hash(upstream, resolved))
+      print(inputs_hash(upstream, resolved, select_launcher_patch(repo, upstream)))
     else:
       commit, inputs = compose(repo, upstream, resolved)
       print(f"{commit}\n{inputs}")

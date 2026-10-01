@@ -27,7 +27,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        branch: [nightly, nightly-chestnut]
+        branch: [nightly, nightly-chestnut, release-mici-staging, release-tizi-staging]
     concurrency:
       group: publish-${{ matrix.branch }}
       cancel-in-progress: false

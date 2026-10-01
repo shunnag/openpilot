@@ -6,7 +6,7 @@ from pathlib import Path
 import sys
 
 from boot_download import fetch_boot
-from compose import AGNOS_PY, LAUNCHER_PATCH, MANIFEST, apply_ui, blob, error_text, git, launch_values, load_pin, resolve_commit, supplicant_files, temporary_index
+from compose import AGNOS_PY, MANIFEST, apply_ui, blob, error_text, git, launch_values, load_pin, resolve_commit, select_launcher_patch, supplicant_files, temporary_index
 
 
 def check_download(boot):
@@ -50,12 +50,12 @@ def run_gates(repo, upstream, pin_file, skip_download=False, published=None):
         raise ValueError(f"upstream agnos.py blob changed: {oid}")
 
     gate = "G3"
+    launcher_patch = select_launcher_patch(repo, upstream)
     with temporary_index(repo, upstream) as (env, _):
-      git(repo, "apply", "--cached", "--check", str(LAUNCHER_PATCH), env=env)
       if native:
-        print("G3: SKIP: pinned agnos.py check in native mode; launcher patch applies", flush=True)
+        print(f"G3: SKIP: pinned agnos.py check in native mode; launcher patch {launcher_patch.name} applies", flush=True)
       else:
-        print("G3: OK: agnos.py blob matches and launcher patch applies", flush=True)
+        print(f"G3: OK: agnos.py blob matches and launcher patch {launcher_patch.name} applies", flush=True)
 
         gate = "G4"
         if skip_download:

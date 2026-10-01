@@ -130,7 +130,8 @@ class TestIssues(unittest.TestCase):
     self.assertEqual(len(calls), 1)
 
   def test_pin_and_gate_failure_reason_from_log(self):
-    for reason in ("PIN: FAIL: agnos.py changed since 19.8", "G3: FAIL: launcher patch does not apply", "G6: FAIL: published tag/hash conflict"):
+    for reason in ("PIN: FAIL: agnos.py changed since 19.8", "G3: FAIL: launcher patch does not apply",
+                   "G6: FAIL: published tag/hash conflict", "G7: FAIL: wpa_supplicant SHA-256 differs from pin"):
       with self.subTest(reason=reason):
         log = self.work / "nightly.log"
         log.write_text(f"Upstream: abc123\n{reason}\n")
@@ -162,9 +163,10 @@ class TestNightlyWorkflow(unittest.TestCase):
 
   def test_branch_names_only_in_matrix(self):
     workflow = (ROOT / ".github/workflows/nightly.yml").read_text()
-    matrix = "branch: [nightly, nightly-chestnut]"
+    matrix = "branch: [nightly, nightly-chestnut, release-mici-staging, release-tizi-staging]"
     self.assertIn(matrix, workflow)
-    self.assertNotIn("nightly-chestnut", workflow.replace(matrix, ""))
+    for branch in ("nightly-chestnut", "release-mici-staging", "release-tizi-staging"):
+      self.assertNotIn(branch, workflow.replace(matrix, ""))
 
   def test_branch_environment_refs_and_job_concurrency(self):
     workflow = (ROOT / ".github/workflows/nightly.yml").read_text()
@@ -204,7 +206,9 @@ class TestRollbackWorkflow(unittest.TestCase):
       '--force-with-lease="refs/heads/$BRANCH:$F"',
       "default: select-a-branch",
       'case "$BRANCH" in',
-      "nightly|nightly-chestnut) ;;",
+      "nightly|nightly-chestnut|release-mici-staging|release-tizi-staging) ;;",
+      "          - release-mici-staging\n          - release-tizi-staging\n",
+      "publishing for all four branches (nightly, nightly-chestnut, release-mici-staging and release-tizi-staging) is paused",
     ):
       with self.subTest(expected=expected):
         self.assertIn(expected, workflow)
@@ -233,7 +237,7 @@ class TestRollbackWorkflow(unittest.TestCase):
                                 "ROLLBACK_CALL_LOG": str(log),
                               })
       self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
-      self.assertEqual(result.stdout.strip(), "::error::Choose nightly or nightly-chestnut; nothing was changed.")
+      self.assertEqual(result.stdout.strip(), "::error::Choose nightly, nightly-chestnut, release-mici-staging or release-tizi-staging; nothing was changed.")
       self.assertEqual(log.read_text(), "")
 
 

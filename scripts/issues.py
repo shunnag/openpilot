@@ -32,7 +32,7 @@ def main():
     return
 
   log = args.log.read_text(errors="replace") if args.log and args.log.exists() else "No log was captured."
-  failures = ("PIN: FAIL:", *(f"G{i}: FAIL:" for i in range(1, 7)))
+  failures = ("PIN: FAIL:", *(f"G{i}: FAIL:" for i in range(1, 8)))
   reason = next((line for line in log.splitlines() if line.startswith(failures)), args.reason)
   title = f"nightly {args.kind} [{args.branch}]: {reason}"[:200]
   status = "Publication held; no new nightly was published." if args.kind == "hold" else "Installer smoke test failed; published branch is retained."

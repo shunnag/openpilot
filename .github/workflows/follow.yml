@@ -1,0 +1,257 @@
+{
+  "name": "Kernel follow (dryrun only)",
+  "on": {
+    "workflow_dispatch": {
+      "inputs": {
+        "replay": {
+          "description": "Historical replay; always dryrun. Empty means discover current upstream.",
+          "type": "choice",
+          "default": "19.9",
+          "options": [
+            "latest",
+            "19.9",
+            "19.8",
+            "neg-caff1d8d"
+          ]
+        },
+        "mode": {
+          "description": "Part 2 clamps state/on to dryrun; replay also forces dryrun.",
+          "type": "choice",
+          "default": "dryrun",
+          "options": [
+            "off",
+            "dryrun",
+            "state",
+            "on"
+          ]
+        },
+        "branch": {
+          "description": "Upstream discovery scope (ignored for replay)",
+          "type": "choice",
+          "default": "all",
+          "options": [
+            "all",
+            "nightly",
+            "nightly-chestnut",
+            "release-mici-staging",
+            "release-tizi-staging"
+          ]
+        },
+        "force": {
+          "description": "Bypass only the younger-than-seven-days held-attempt skip",
+          "type": "boolean",
+          "default": false
+        }
+      }
+    }
+  },
+  "permissions": {},
+  "env": {
+    "FOLLOW_MODE": "${{ vars.WPA3_FOLLOW_MODE || 'off' }}",
+    "GIT_LFS_SKIP_SMUDGE": "1",
+    "GIT_LFS_SKIP_PUSH": "1",
+    "GIT_TERMINAL_PROMPT": "0"
+  },
+  "defaults": {
+    "run": {
+      "shell": "bash"
+    }
+  },
+  "jobs": {
+    "detect": {
+      "runs-on": "ubuntu-24.04",
+      "timeout-minutes": 30,
+      "permissions": {
+        "contents": "read"
+      },
+      "outputs": {
+        "matrix": "${{ steps.detect.outputs.matrix }}",
+        "build": "${{ steps.detect.outputs.build }}"
+      },
+      "steps": [
+        {
+          "uses": "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
+          "with": {
+            "persist-credentials": false
+          }
+        },
+        {
+          "name": "Discover and run K0-K4(f)",
+          "id": "detect",
+          "env": {
+            "GH_TOKEN": "${{ github.token }}",
+            "REPLAY": "${{ inputs.replay }}",
+            "REQUESTED_MODE": "${{ inputs.mode }}",
+            "BRANCH": "${{ inputs.branch }}",
+            "FORCE": "${{ inputs.force }}"
+          },
+          "run": "flags=()\nif [[ \"$FORCE\" == true ]]; then flags+=(--force); fi\nmkdir -p detect\npython3 scripts/kernel_follow.py detect --out detect --replay \"$REPLAY\" --mode \"${REQUESTED_MODE:-$FOLLOW_MODE}\" --branch \"$BRANCH\" \"${flags[@]}\" 2>&1 | tee detect.log"
+        },
+        {
+          "name": "Detect summary",
+          "if": "always()",
+          "run": "{\n  echo '### Kernel follow: dryrun only'\n  echo 'No releases, tags, state commits, pushes, issues or workflow dispatches are performed.'\n  echo '```text'\n  cat detect.log || true\n  echo '```'\n} >> \"$GITHUB_STEP_SUMMARY\""
+        },
+        {
+          "uses": "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
+          "if": "always()",
+          "with": {
+            "name": "kernel-detect",
+            "path": "detect/",
+            "retention-days": 14,
+            "if-no-files-found": "error"
+          }
+        }
+      ]
+    },
+    "kernel-build": {
+      "needs": "detect",
+      "if": "needs.detect.outputs.build == 'true'",
+      "runs-on": "ubuntu-24.04",
+      "timeout-minutes": 150,
+      "permissions": {
+        "contents": "read"
+      },
+      "strategy": {
+        "fail-fast": false,
+        "max-parallel": 3,
+        "matrix": "${{ fromJSON(needs.detect.outputs.matrix) }}"
+      },
+      "steps": [
+        {
+          "uses": "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
+          "with": {
+            "persist-credentials": false
+          }
+        },
+        {
+          "uses": "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093",
+          "with": {
+            "name": "kernel-detect",
+            "path": "detect"
+          }
+        },
+        {
+          "name": "Free disk and choose build volume",
+          "run": "sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL\ndocker system prune -af\nbuild_root=\"$RUNNER_TEMP/kernel-follow\"\nif [[ -d /mnt ]] && (( $(df -Pk /mnt | awk 'END {print $4}') > $(df -Pk \"$RUNNER_TEMP\" | awk 'END {print $4}') )); then\n  build_root=/mnt/kernel-follow\n  sudo systemctl stop docker\n  sudo mkdir -p /mnt/docker\n  sudo python3 - <<'PYCODE'\nimport json\nfrom pathlib import Path\npath = Path('/etc/docker/daemon.json')\nconfig = json.loads(path.read_text()) if path.exists() else {}\nconfig['data-root'] = '/mnt/docker'\npath.parent.mkdir(parents=True, exist_ok=True)\npath.write_text(json.dumps(config))\nPYCODE\n  sudo systemctl start docker\nfi\nsudo mkdir -p \"$build_root\"\nsudo chown \"$(id -u):$(id -g)\" \"$build_root\"\necho \"BUILD_WORK=$build_root/work\" >> \"$GITHUB_ENV\"\necho \"TOOLCHAIN_TAR=$RUNNER_TEMP/gcc-arm-8.2.tar.xz\" >> \"$GITHUB_ENV\"\ndf -h"
+        },
+        {
+          "name": "Toolchain policy",
+          "id": "toolchain",
+          "run": "python3 - <<'PYCODE'\nimport json, os\npolicy = json.load(open('follow/policy.json'))['toolchain']\nwith open(os.environ['GITHUB_OUTPUT'], 'a') as out:\n  out.write('sha256=' + policy['sha256'] + '\\n')\n  out.write('url=' + policy['url'] + '\\n')\nPYCODE"
+        },
+        {
+          "uses": "actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684",
+          "id": "cache",
+          "with": {
+            "path": "${{ env.TOOLCHAIN_TAR }}",
+            "key": "gcc-arm-8.2-2018.08-x86_64-aarch64-${{ steps.toolchain.outputs.sha256 }}"
+          }
+        },
+        {
+          "name": "Download if absent; verify even on a cache hit",
+          "env": {
+            "TOOLCHAIN_URL": "${{ steps.toolchain.outputs.url }}",
+            "TOOLCHAIN_SHA256": "${{ steps.toolchain.outputs.sha256 }}"
+          },
+          "run": "if [[ ! -f \"$TOOLCHAIN_TAR\" ]]; then\n  curl --fail --location --retry 3 --output \"$TOOLCHAIN_TAR\" \"$TOOLCHAIN_URL\"\nfi\nprintf '%s  %s\\n' \"$TOOLCHAIN_SHA256\" \"$TOOLCHAIN_TAR\" | sha256sum --check --status"
+        },
+        {
+          "uses": "actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684",
+          "if": "steps.cache.outputs.cache-hit != 'true'",
+          "with": {
+            "path": "${{ env.TOOLCHAIN_TAR }}",
+            "key": "gcc-arm-8.2-2018.08-x86_64-aarch64-${{ steps.toolchain.outputs.sha256 }}"
+          }
+        },
+        {
+          "name": "Host-only git and exports before compiling",
+          "env": {
+            "CANDIDATE_ID": "${{ matrix.id }}"
+          },
+          "run": "python3 scripts/kernel_build_data.py prepare --inputs detect --id \"$CANDIDATE_ID\" --work \"$BUILD_WORK\""
+        },
+        {
+          "name": "Stock rebuild then incremental WPA3",
+          "id": "compile",
+          "run": "mkdir -p \"$BUILD_WORK/artifacts\"\nmetrics=\"$BUILD_WORK/artifacts/metrics.txt\"\nprintf 'start_utc=%s\\n' \"$(date -u +%FT%TZ)\" >> \"$metrics\"\nstart=$SECONDS\n(while true; do date -u +%FT%TZ; df -Pk \"$BUILD_WORK\"; sleep 5; done) >> \"$metrics\" &\nmonitor=$!\ntrap 'kill \"$monitor\" 2>/dev/null || true; wait \"$monitor\" 2>/dev/null || true' EXIT\nresult=failed\nif bash scripts/kernel_build.sh stock \"$BUILD_WORK\" \"$TOOLCHAIN_TAR\" 2>&1 | tee \"$BUILD_WORK/artifacts/build.log\"; then\n  if bash scripts/kernel_build.sh wpa3 \"$BUILD_WORK\" \"$TOOLCHAIN_TAR\" 2>&1 | tee -a \"$BUILD_WORK/artifacts/build.log\"; then\n    result=complete\n  fi\nelif [[ -f \"$BUILD_WORK/artifacts/stock-rebuild-report.txt\" ]]; then\n  result=rejected\nfi\nprintf 'end_utc=%s\\nwall_seconds=%s\\n' \"$(date -u +%FT%TZ)\" \"$((SECONDS-start))\" >> \"$metrics\"\necho \"result=$result\" >> \"$GITHUB_OUTPUT\"\n# A rejected source is an expected candidate result; publish rechecks K5.\n[[ \"$result\" != failed ]]"
+        },
+        {
+          "name": "Seal data artifacts and free rejected source",
+          "if": "always()",
+          "env": {
+            "BUILD_RESULT": "${{ steps.compile.outputs.result || 'failed' }}"
+          },
+          "run": "count=0\nif [[ -f \"$BUILD_WORK/full-builds\" ]]; then count=$(cat \"$BUILD_WORK/full-builds\"); fi\npython3 scripts/kernel_build_data.py finalize --work \"$BUILD_WORK\" --result \"$BUILD_RESULT\" --count \"$count\"\nif [[ \"$BUILD_RESULT\" != complete ]]; then rm -rf \"$BUILD_WORK/source\" \"$BUILD_WORK/patch-files\"; fi"
+        },
+        {
+          "uses": "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
+          "if": "always()",
+          "with": {
+            "name": "kernel-${{ matrix.id }}",
+            "path": "${{ env.BUILD_WORK }}/artifacts/",
+            "retention-days": 14,
+            "if-no-files-found": "error"
+          }
+        }
+      ]
+    },
+    "publish": {
+      "needs": [
+        "detect",
+        "kernel-build"
+      ],
+      "if": "always() && needs.detect.result == 'success' && needs.detect.outputs.build == 'true'",
+      "runs-on": "ubuntu-24.04",
+      "timeout-minutes": 30,
+      "permissions": {
+        "contents": "read"
+      },
+      "concurrency": {
+        "group": "wpa3-state",
+        "cancel-in-progress": false
+      },
+      "steps": [
+        {
+          "uses": "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
+          "with": {
+            "persist-credentials": false
+          }
+        },
+        {
+          "uses": "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093",
+          "with": {
+            "name": "kernel-detect",
+            "path": "detect"
+          }
+        },
+        {
+          "uses": "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093",
+          "with": {
+            "pattern": "kernel-*-*",
+            "path": "builds"
+          }
+        },
+        {
+          "name": "Recompute K5-K12 from data and assemble dryrun artifacts",
+          "run": "python3 scripts/kernel_follow.py publish --inputs detect --builds builds --out verified 2>&1 | tee publish.log"
+        },
+        {
+          "name": "Verification summary and remaining GitHub measurements",
+          "if": "always()",
+          "run": "{\n  echo '### Kernel follow: verified dryrun artifacts'\n  echo '```text'\n  cat publish.log || true\n  echo '```'\n  echo 'TODO Q1: review reference stock.json, wifi-deps.txt, rebuilt-objects.txt and wifi-objects.json from CI artifacts.'\n  echo 'TODO Q5: run this same replay twice and compare stripped Wi-Fi object hashes. K8 remains advisory.'\n  echo 'TODO Q7: inspect metrics.txt for observed wall time and minimum free disk on the selected volume; discovery fallback cost needs a hosted measurement.'\n  echo 'TODO Q8/Q10: confirm concurrency and checkout behavior on GitHub. queue:max is deferred until the writing stage and compatible actionlint; this job is read-only.'\n  echo 'Dryrun only. Artifacts are not device-tested. No WPA3 kernel has been device-tested on comma 3X.'\n} >> \"$GITHUB_STEP_SUMMARY\""
+        },
+        {
+          "uses": "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
+          "if": "always()",
+          "with": {
+            "name": "kernel-verified-dryrun",
+            "path": "verified/",
+            "retention-days": 14,
+            "if-no-files-found": "warn"
+          }
+        }
+      ]
+    }
+  }
+}

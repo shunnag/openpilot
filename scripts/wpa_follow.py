@@ -73,8 +73,8 @@ def probe_plan(out, replay, mode, reference=False):
   state = follow_state.load()
   follow_state.mode_value(mode)
   out.mkdir(parents=True, exist_ok=True)
-  plan = {'schema': 1, 'mode': 'dryrun' if mode != 'off' or replay not in ('', 'latest') else 'off',
-          'items': [], 'probes': {}, 'kernel_holds': []}
+  plan = {'schema': 1, 'mode': 'dryrun' if replay else mode, 'replay': replay,
+          'gate_version': follow_state.gate_version(), 'items': [], 'probes': {}, 'kernel_holds': []}
   if plan['mode'] == 'off':
     manifests = []
   elif replay in ('19.8', '19.9', 'neg-caff1d8d'):

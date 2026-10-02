@@ -494,7 +494,7 @@ class OrchestrationTests(unittest.TestCase):
 
   def test_off_does_not_fetch(self):
     with tempfile.TemporaryDirectory() as tmp, patch.object(follow, 'get_json', side_effect=AssertionError('network')):
-      follow.probe_plan(Path(tmp), 'latest', 'off')
+      follow.probe_plan(Path(tmp), '', 'off')
       self.assertEqual(request.read_json(Path(tmp) / 'plan.json')['items'], [])
 
   def test_seeded_replay_does_not_download(self):

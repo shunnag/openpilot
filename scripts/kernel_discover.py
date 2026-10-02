@@ -131,10 +131,36 @@ def local_membership(kernel, candidate, heads):
   raise ValueError('kernel commit not on any branch')
 
 
+class DiscoveryHold(ValueError):
+  def __init__(self, detail, fingerprint):
+    self.refs_fingerprint = fingerprint
+    super().__init__(detail)
+
+
+def refs_fingerprint(proposals, candidates, heads, compare=None, fallback=None):
+  """Only VERSION-matching builder proposals and containing kernel heads count."""
+  referenced = sorted({(p['builder_ref'], p['builder_commit'], p['commit']) for p in proposals if p['oracle']})
+  containing = set()
+  for ref, tip in trusted_heads(heads).items():
+    for candidate in candidates:
+      commit = candidate['commit']
+      if tip == commit:
+        containing.add((ref, tip))
+      elif compare or fallback:
+        try:
+          branch_contains(commit, {ref: tip}, compare, fallback)
+          containing.add((ref, tip))
+        except ValueError as error:
+          if str(error) != 'kernel commit not on any branch':
+            raise
+  return sha256(json.dumps([referenced, sorted(containing)]).encode())
+
+
 def discover(builder, kernel, version, stock, prs, heads, policy, *, compare=None, fallback=None, forced=None):
   when, identity = build_time(stock)
   proposals = oracle(builder, version, when, prs)
-  require(proposals, f'no builder gitlink for VERSION={version}')
+  if not proposals:
+    raise DiscoveryHold(f'no builder gitlink for VERSION={version}', refs_fingerprint([], [], heads))
   recipe = proposals[0]
   if forced:
     proposals = [{**recipe, 'commit': oid(forced), 'oracle': False, 'reason': 'negative replay'}]
@@ -161,7 +187,9 @@ def discover(builder, kernel, version, stock, prs, heads, policy, *, compare=Non
       candidates.append({**proposal, 'tree': tree, 'branch': branch, 'membership': method})
     except Exception as error:
       rejected.append({**proposal, 'error': str(error)})
-  require(candidates, f'K1: no trusted candidates: {rejected}')
+  fingerprint = refs_fingerprint(proposals, candidates, heads, compare, measured_fallback if fallback else None)
+  if not candidates:
+    raise DiscoveryHold(f'K1: no trusted candidates: {rejected}', fingerprint)
   cap = policy['max_full_builds']
   require(type(cap) is int and 1 <= cap <= 3, 'max_full_builds must be 1..3')
   omitted = candidates[cap:]
@@ -170,8 +198,6 @@ def discover(builder, kernel, version, stock, prs, heads, policy, *, compare=Non
   spare = cap - len(candidates)
   for index, candidate in enumerate(candidates):
     candidate['full_build_budget'] = 1 + int(index < spare)
-  referenced = sorted((p['builder_commit'], p['commit']) for p in proposals if p['oracle'])
-  fingerprint = sha256(json.dumps([referenced, sorted(trusted_heads(heads).items())]).encode())
   return {'schema': 1, 'version': version, 'identity': identity, 'stock_sha256': sha256(stock),
           'refs_fingerprint': fingerprint, 'candidates': candidates, 'rejected': rejected,
           'omitted_by_budget': omitted, 'max_full_builds': cap, 'verified': False,

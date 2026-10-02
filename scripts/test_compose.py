@@ -710,6 +710,10 @@ class TestCompose(unittest.TestCase):
       resolved = {'mode': 'pinned', 'version': '19.8', 'pin': pin}
       pin_file = self.write_resolved(resolved)
       commit = self.cli('compose.py', upstream, pin_file=pin_file).stdout.splitlines()[0]
+      if withdrawn:
+        launch = compose.blob(self.repo, commit, 'launch_env.sh')
+        self.assertIn(b'export WPA3_BOOT_TAG="wpa3.sae=5"', launch)
+        self.assertIn(f'export WPA3_BOOT_HASH="{auto["revert"]["boot"]["hash_raw"]}"'.encode(), launch)
       data = compose.blob(self.repo, commit, 'RELEASES.md')
       self.assertEqual(data, compose.release_notice(resolved) + original)
       self.assertNotIn(b'\n\n', compose.release_notice(resolved))

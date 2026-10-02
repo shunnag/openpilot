@@ -1,29 +1,12 @@
 {
-  "name": "Kernel and wpa_supplicant follow (dryrun only)",
+  "name": "Kernel and wpa_supplicant follow",
   "on": {
     "workflow_dispatch": {
       "inputs": {
         "replay": {
-          "description": "Historical replay; always dryrun. Empty means discover current upstream.",
-          "type": "choice",
-          "default": "19.9",
-          "options": [
-            "latest",
-            "19.9",
-            "19.8",
-            "neg-caff1d8d"
-          ]
-        },
-        "mode": {
-          "description": "Parts 2\u20133 clamp state/on to dryrun; replay also forces dryrun.",
-          "type": "choice",
-          "default": "dryrun",
-          "options": [
-            "off",
-            "dryrun",
-            "state",
-            "on"
-          ]
+          "description": "Optional replay: 19.8, 19.9, neg-caff1d8d, or latest. Any nonempty replay forces dryrun.",
+          "type": "string",
+          "default": ""
         },
         "branch": {
           "description": "Upstream discovery scope (ignored for replay)",
@@ -51,16 +34,27 @@
           "description": "Optional public Mac mini result id; must match all rebuilt asset hashes and suite commit. Empty = T3 PENDING.",
           "type": "string",
           "default": ""
+        },
+        "reason": {
+          "description": "Reason for this follow request",
+          "type": "string",
+          "default": ""
         }
       }
-    }
+    },
+    "schedule": [
+      {
+        "cron": "17 10 * * *"
+      }
+    ]
   },
   "permissions": {},
   "env": {
     "FOLLOW_MODE": "${{ vars.WPA3_FOLLOW_MODE || 'off' }}",
     "GIT_LFS_SKIP_SMUDGE": "1",
     "GIT_LFS_SKIP_PUSH": "1",
-    "GIT_TERMINAL_PROMPT": "0"
+    "GIT_TERMINAL_PROMPT": "0",
+    "FOLLOW_BRANCHES": "${{ vars.WPA3_FOLLOW_BRANCHES }}"
   },
   "defaults": {
     "run": {
@@ -91,16 +85,15 @@
           "env": {
             "GH_TOKEN": "${{ github.token }}",
             "REPLAY": "${{ inputs.replay }}",
-            "REQUESTED_MODE": "${{ inputs.mode }}",
             "BRANCH": "${{ inputs.branch }}",
             "FORCE": "${{ inputs.force }}"
           },
-          "run": "flags=()\nif [[ \"$FORCE\" == true ]]; then flags+=(--force); fi\nmkdir -p detect\npython3 scripts/kernel_follow.py detect --out detect --replay \"$REPLAY\" --mode \"${REQUESTED_MODE:-$FOLLOW_MODE}\" --branch \"$BRANCH\" \"${flags[@]}\" 2>&1 | tee detect.log"
+          "run": "flags=()\nif [[ \"$FORCE\" == true ]]; then flags+=(--force); fi\nmkdir -p detect\npython3 scripts/kernel_follow.py detect --out detect --replay \"$REPLAY\" --mode \"$FOLLOW_MODE\" --branch \"${BRANCH:-all}\" \"${flags[@]}\" 2>&1 | tee detect.log"
         },
         {
           "name": "Detect summary",
           "if": "always()",
-          "run": "{\n  echo '### Kernel follow: dryrun only'\n  echo 'No releases, tags, state commits, pushes, issues or workflow dispatches are performed.'\n  echo '```text'\n  cat detect.log || true\n  echo '```'\n} >> \"$GITHUB_STEP_SUMMARY\""
+          "run": "{\n  echo '### Kernel follow detection'\n  echo '```text'\n  cat detect.log || true\n  echo '```'\n} >> \"$GITHUB_STEP_SUMMARY\""
         },
         {
           "uses": "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
@@ -217,19 +210,30 @@
       ],
       "if": "always() && needs.detect.result == 'success' && needs.probe.result == 'success'",
       "runs-on": "ubuntu-24.04",
-      "timeout-minutes": 30,
+      "timeout-minutes": 45,
       "permissions": {
-        "contents": "read"
+        "contents": "write",
+        "issues": "write",
+        "actions": "write"
       },
       "concurrency": {
         "group": "wpa3-state",
+        "queue": "max",
         "cancel-in-progress": false
       },
       "steps": [
         {
           "uses": "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
           "with": {
-            "persist-credentials": false
+            "persist-credentials": false,
+            "ref": "wpa3-ci"
+          }
+        },
+        {
+          "uses": "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093",
+          "with": {
+            "name": "kernel-detect",
+            "path": "detect"
           }
         },
         {
@@ -241,61 +245,56 @@
         },
         {
           "uses": "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093",
-          "if": "needs.probe.outputs.build == 'true'",
+          "if": "needs.detect.outputs.build == 'true'",
+          "with": {
+            "pattern": "kernel-*-*",
+            "path": "builds"
+          }
+        },
+        {
+          "uses": "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093",
+          "if": "needs.probe.outputs.build == 'true' && needs.wpa-test.result == 'success'",
           "with": {
             "pattern": "wpa-request-*",
             "path": "wpa-requests"
           }
         },
         {
-          "name": "Verify WPA artifact identities and optional public Mac mini result",
+          "name": "Verify and write under the owner mode switch",
+          "if": "(env.FOLLOW_MODE == 'state' || env.FOLLOW_MODE == 'on') && inputs.replay == '' && inputs.wpa_reference != true",
           "env": {
-            "RESULT_ID": "${{ inputs.wpa_result_id }}"
+            "GH_TOKEN": "${{ github.token }}",
+            "GH_REPO": "${{ github.repository }}"
           },
-          "run": "python3 scripts/wpa_follow.py publish --inputs probe --builds wpa-requests --result-id \"$RESULT_ID\" 2>&1 | tee wpa-publish.log"
+          "run": "gh auth setup-git --hostname github.com\npython3 scripts/follow_publish.py --inputs detect --builds builds --probes probe --wpa-builds wpa-requests --out verified 2>&1 | tee publish.log"
         },
         {
-          "name": "WPA dryrun summary",
+          "name": "Verify replay or dry mode without remote writes",
+          "if": "${{ !((env.FOLLOW_MODE == 'state' || env.FOLLOW_MODE == 'on') && inputs.replay == '' && inputs.wpa_reference != true) }}",
+          "run": "python3 scripts/follow_publish.py --inputs detect --builds builds --probes probe --wpa-builds wpa-requests --out verified 2>&1 | tee publish.log"
+        },
+        {
+          "name": "Follow summary",
           "if": "always()",
-          "run": "{\n  echo \"### WPA follow (dryrun only)\"\n  echo '```text'\n  cat wpa-publish.log || true\n  echo '```'\n} >> \"$GITHUB_STEP_SUMMARY\""
-        },
-        {
-          "uses": "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093",
-          "with": {
-            "name": "kernel-detect",
-            "path": "detect"
-          },
-          "if": "needs.detect.outputs.build == 'true'"
-        },
-        {
-          "uses": "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093",
-          "with": {
-            "pattern": "kernel-*-*",
-            "path": "builds"
-          },
-          "if": "needs.detect.outputs.build == 'true'"
-        },
-        {
-          "name": "Recompute K5-K12 from data and assemble dryrun artifacts",
-          "run": "python3 scripts/kernel_follow.py publish --inputs detect --builds builds --out verified 2>&1 | tee publish.log",
-          "if": "needs.detect.outputs.build == 'true'"
-        },
-        {
-          "name": "Verification summary and remaining GitHub measurements",
-          "if": "always() && needs.detect.outputs.build == 'true'",
-          "run": "{\n  echo '### Kernel follow: verified dryrun artifacts'\n  echo '```text'\n  cat publish.log || true\n  echo '```'\n  echo 'TODO Q1: review reference stock.json, wifi-deps.txt, rebuilt-objects.txt and wifi-objects.json from CI artifacts.'\n  echo 'TODO Q5: run this same replay twice and compare stripped Wi-Fi object hashes. K8 remains advisory.'\n  echo 'TODO Q7: inspect metrics.txt for observed wall time and minimum free disk on the selected volume; discovery fallback cost needs a hosted measurement.'\n  echo 'TODO Q8/Q10: confirm concurrency and checkout behavior on GitHub. queue:max is deferred until the writing stage and compatible actionlint; this job is read-only.'\n  echo 'Dryrun only. Artifacts are not device-tested. No WPA3 kernel has been device-tested on comma 3X.'\n} >> \"$GITHUB_STEP_SUMMARY\""
+          "run": "{\n  echo '### Follow verification and publication'\n  echo '```text'\n  cat publish.log || true\n  echo '```'\n  echo 'Kernel pins require on; state permits probes and drafts. Replays never write.'\n  echo 'Q8/Q10: queue:max and live GitHub write semantics still require the sandbox run.'\n} >> \"$GITHUB_STEP_SUMMARY\""
         },
         {
           "uses": "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
-          "if": "always() && needs.detect.outputs.build == 'true'",
+          "if": "always()",
           "with": {
-            "name": "kernel-verified-dryrun",
+            "name": "kernel-verified",
             "path": "verified/",
             "retention-days": 14,
             "if-no-files-found": "warn"
           }
         }
-      ]
+      ],
+      "env": {
+        "FOLLOW_MODE": "${{ vars.WPA3_FOLLOW_MODE || 'off' }}",
+        "REPLAY": "${{ inputs.replay }}",
+        "RESULT_ID": "${{ inputs.wpa_result_id }}",
+        "WPA_REFERENCE": "${{ inputs.wpa_reference }}"
+      }
     },
     "probe": {
       "runs-on": "ubuntu-24.04",
@@ -315,10 +314,9 @@
           "id": "probe",
           "env": {
             "REPLAY": "${{ inputs.replay }}",
-            "MODE": "${{ inputs.mode }}",
             "REFERENCE": "${{ inputs.wpa_reference }}"
           },
-          "run": "flags=()\nif [[ \"$REFERENCE\" == true ]]; then flags+=(--reference); fi\npython3 scripts/wpa_follow.py probe --out probe --replay \"$REPLAY\" --mode \"${MODE:-$FOLLOW_MODE}\" \"${flags[@]}\""
+          "run": "flags=()\nif [[ \"$REFERENCE\" == true ]]; then flags+=(--reference); fi\npython3 scripts/wpa_follow.py probe --out probe --replay \"$REPLAY\" --mode \"$FOLLOW_MODE\" \"${flags[@]}\""
         },
         {
           "uses": "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
@@ -455,7 +453,7 @@
           "run": "sudo apt-get update\nsudo apt-get install -y e2fsprogs binutils wpasupplicant zstd\npython3 scripts/wpa_follow.py test --inputs built"
         },
         {
-          "name": "Write test-request.json as an artifact only; publication deferred to Part 4a",
+          "name": "Write test-request.json for guarded draft publication",
           "env": {
             "SUITE_COMMIT": "${{ github.sha }}",
             "RUN_ID": "${{ github.run_id }}"
@@ -483,6 +481,34 @@
         "max-parallel": 2,
         "matrix": "${{ fromJSON(needs.probe.outputs.matrix) }}"
       }
+    },
+    "report": {
+      "needs": [
+        "detect",
+        "probe",
+        "kernel-build",
+        "wpa-classify",
+        "wpa-build",
+        "wpa-test",
+        "publish"
+      ],
+      "if": "always() && contains(needs.*.result, 'failure') && (vars.WPA3_FOLLOW_MODE == 'state' || vars.WPA3_FOLLOW_MODE == 'on') && inputs.replay == '' && inputs.wpa_reference != true",
+      "runs-on": "ubuntu-24.04",
+      "timeout-minutes": 5,
+      "permissions": {
+        "issues": "write"
+      },
+      "steps": [
+        {
+          "name": "Report failed follow run",
+          "env": {
+            "GH_TOKEN": "${{ github.token }}",
+            "GH_REPO": "${{ github.repository }}",
+            "RUN_URL": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          },
+          "run": "gh label create follow-hold --repo \"$GH_REPO\" --color B60205 --force\nprintf 'Follow failed. Inspect the gates and publication log: %s\\n' \"$RUN_URL\" > \"$RUNNER_TEMP/follow-failure.md\"\ngh issue create --repo \"$GH_REPO\" --label follow-hold --title \"WPA3 follow failed: $GITHUB_RUN_ID\" --body-file \"$RUNNER_TEMP/follow-failure.md\""
+        }
+      ]
     }
   }
 }

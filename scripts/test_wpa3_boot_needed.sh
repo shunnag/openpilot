@@ -2,6 +2,8 @@
 # Source only the WPA3 functions, never the launcher's device entrypoint.
 set -euo pipefail
 sed -n '/^function wpa3_.* {$/,/^}$/p' "$1" > "$2/wpa3-function.sh"
+# Generated from the patched launcher by the Python test harness.
+# shellcheck source=/dev/null
 source "$2/wpa3-function.sh"
 declare -F wpa3_boot_needed >/dev/null
 export WPA3_CMDLINE_PATH="$2/cmdline"

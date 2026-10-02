@@ -4,6 +4,8 @@ set -euo pipefail
 work="$2/supplicant tests"
 mkdir -p "$work/stubs"
 sed -n '/^function wpa3_supplicant_override {$/,/^}$/p' "$1" > "$work/function.sh"
+# Generated from the patched launcher by the Python test harness.
+# shellcheck source=/dev/null
 source "$work/function.sh"
 declare -F wpa3_supplicant_override >/dev/null
 export PATH="$work/stubs:$PATH"
@@ -102,7 +104,8 @@ printf '%s\n' "$*" >> "$STUB_VERSION_CALLS"
 exit 2
 SH
   chmod +x "$WPA3_SUPPLICANT_SYS" "$WPA3_SUPPLICANT_BIN"
-  export WPA3_SUPPLICANT_STOCK_SHA256="$(hash "$WPA3_SUPPLICANT_SYS")"
+  WPA3_SUPPLICANT_STOCK_SHA256="$(hash "$WPA3_SUPPLICANT_SYS")"
+  export WPA3_SUPPLICANT_STOCK_SHA256
   export STUB_ACTIVE_RC=0 STUB_ACTIVE_AFTER=1 STUB_MOUNT_RC=0 STUB_VERSION_RC=0 STUB_RESTART_RC=0 STUB_RELOAD_RC=0
   export STUB_PROCESS_ALIVE=0 STUB_UMOUNT_RC=0 STUB_UMOUNT_KEEP=0
   export STUB_MAINPID_EXE="$WPA3_SUPPLICANT_BIN"
@@ -186,6 +189,8 @@ not_called 'umount|'
 log_has 'patched wpa_supplicant active'
 grep -Fqx '[Service]' "$WPA3_SUPPLICANT_DROPIN_DIR/wpa3.conf" || fail "missing service section"
 grep -Fq 'ExecStopPost=/bin/sh -c' "$WPA3_SUPPLICANT_DROPIN_DIR/wpa3.conf" || fail "missing crash hook"
+# The systemd variable must remain literal in the generated drop-in.
+# shellcheck disable=SC2016
 grep -Fq '$$SERVICE_RESULT' "$WPA3_SUPPLICANT_DROPIN_DIR/wpa3.conf" || fail "service result expanded too soon"
 [ "$(cat "$STUB_VERSION_CALLS")" = '-v' ] || fail "binary viability not checked"
 filtered=$(grep -E '^(mount|systemctl)\|' "$STUB_CALLS")

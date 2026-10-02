@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Offline follow state, validation and pure transitions (no git or network writes)."""
 from copy import deepcopy
-from datetime import date
+from datetime import date, timedelta
 import hashlib
 import json
 from pathlib import Path
@@ -272,7 +272,7 @@ def reserve_tags(state, n, release_names=()):
   return validate(result)
 
 
-def apply(state, facts):
+def apply(state, facts, *, brakes=None):
   """Return validated state; map facts merge entries, never erase allocations.
 
   Status facts replace individual status fields. Withdrawal is a separate fact
@@ -280,6 +280,8 @@ def apply(state, facts):
   Call state_files() for deterministic bytes. This function never writes files.
   """
   validate(state)
+  if brakes is not None:
+    require(brakes is True, 'fresh publication brakes refused the state transition')
   keys(facts, (), 'facts', (*STATE_FILES, 'withdraw'))
   result = deepcopy(state)
   if 'status' in facts:
@@ -321,6 +323,21 @@ def apply(state, facts):
 def state_files(state):
   validate(state)
   return {f'agnos/auto/{name}.json': dumps(state[name]).encode() for name in STATE_FILES}
+
+
+def attempt_wait(attempt, gate, refs, now, *, force=False):
+  """Seven-day holds, K1 ref changes and rate deferrals; force only skips holds."""
+  if not attempt:
+    return None
+  if attempt['result'] == 'deferred' and now < utc_time(attempt['deferred_until']):
+    return 'deferred until ' + attempt['deferred_until']
+  if force or attempt['gate_version'] != gate or attempt['result'] not in ('held', 'risk_held'):
+    return None
+  if attempt['reason'].startswith('K1') and refs != attempt['refs_fingerprint']:
+    return None
+  if now < utc_time(attempt['at']) + timedelta(days=7):
+    return 'same held attempt younger than seven days'
+  return None
 
 
 def check_allowlist(diff_name_status, readme_old, readme_new, *, modes=None):

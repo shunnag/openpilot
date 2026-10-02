@@ -1,8 +1,5 @@
 #!/usr/bin/env python3
-"""Publish-side verification and signing. Artifacts are data, never executed.
-
-This part has no publication implementation. Images and provenance stay local.
-"""
+"""Publish-side verification and signing. Artifacts are data, never executed."""
 import argparse
 from datetime import datetime, timezone
 import lzma
@@ -28,6 +25,10 @@ def stock_rebuild(stock, image_dtb, key):
   return rebuilt
 
 
+class PatchRisk(ValueError):
+  """Unchanged patches apply, but reviewed qcacld source blobs have changed."""
+
+
 def k6(proof, pre, patch_dir, policy):
   for name, digest in policy['patches'].items():
     require(sha256(read_bytes(patch_dir / name)) == digest, f'patch bytes changed: {name}')
@@ -36,10 +37,15 @@ def k6(proof, pre, patch_dir, policy):
   require(proof['source_diff'] == source.decode(), 'normalized source diff differs')
   paths = patch_paths(source.decode())
   require(set(proof['candidate_blobs']) == set(paths) == set(proof['baseline_blobs']), 'patched blob path set differs')
-  require(proof['candidate_blobs'] == proof['baseline_blobs'] == pre['patched_blobs'], 'patched file blob ids changed')
-  require(not set(paths) & set(pre['diff']['paths']), 'K3 diff contains patched paths')
+  require(proof['baseline_blobs'] == pre['patched_blobs'], 'baseline patched file blob ids changed')
   require(proof['candidate'] == pre['diff']['candidate'] and proof['baseline'] == pre['diff']['baseline'], 'proof source mismatch')
   require(all(re.fullmatch(r'[0-9a-f]{40}', blob) for blob in proof['candidate_blobs'].values()), 'invalid blob ids')
+  changed = {path for path in paths if proof['candidate_blobs'][path] != proof['baseline_blobs'][path]}
+  require(changed <= set(pre['diff']['paths']), 'changed patched blob absent from K3 diff')
+  touched = set(paths) & set(pre['diff']['paths'])
+  if touched:
+    require(all(path.startswith('drivers/staging/qcacld-3.0/') for path in touched), 'non-qcacld patched source change')
+    raise PatchRisk('unchanged patches apply, but qcacld patched source changed: ' + ', '.join(sorted(touched)))
   return 'patch bytes, normalized diff and seven baseline/candidate blobs agree'
 
 
@@ -180,7 +186,14 @@ def assemble(stock, rebuilt_kernel, wpa_image, key, policy, number, manual, manu
   if proof is None and local:
     gates.skip('K6', 'local Mac artifact check; no build-job patch proof supplied')
   else:
-    gates.check('K6', lambda: k6(proof, pre, patch_dir, policy))
+    try:
+      detail = k6(proof, pre, patch_dir, policy)
+    except PatchRisk as error:
+      gates.add('K6', False, str(error), 'risk')
+    except Exception as error:
+      gates.add('K6', False, str(error))
+    else:
+      gates.add('K6', True, detail)
   gates.check('K7', lambda: k7(stock_image, wpa_image))
   reference_dir = reference_dir or ROOT / 'follow/reference'
   prefix = reference_dir / str(baseline_release)

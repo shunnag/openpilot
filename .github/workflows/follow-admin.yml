@@ -1,0 +1,107 @@
+{
+  "name": "WPA3 follow admin",
+  "on": {
+    "workflow_dispatch": {
+      "inputs": {
+        "action": {
+          "description": "Owner action",
+          "required": true,
+          "type": "choice",
+          "options": [
+            "mark-tested",
+            "revoke",
+            "approve",
+            "unpause",
+            "retry"
+          ]
+        },
+        "target": {
+          "description": "Release tag (mark-tested/revoke), stock hash (approve/retry)",
+          "type": "string",
+          "default": ""
+        },
+        "note": {
+          "description": "Test note, approval note or withdrawal reason",
+          "type": "string",
+          "default": ""
+        },
+        "device": {
+          "description": "Device actually tested; required for mark-tested or device_tested=yes",
+          "type": "choice",
+          "options": [
+            "none",
+            "mici",
+            "tizi"
+          ],
+          "default": "none"
+        },
+        "device_tested": {
+          "description": "For approve: whether this image was device-tested",
+          "type": "choice",
+          "options": [
+            "no",
+            "yes"
+          ],
+          "default": "no"
+        }
+      }
+    }
+  },
+  "permissions": {},
+  "defaults": {
+    "run": {
+      "shell": "bash"
+    }
+  },
+  "jobs": {
+    "admin": {
+      "if": "github.actor == github.repository_owner && github.triggering_actor == github.repository_owner && github.ref == 'refs/heads/wpa3-ci' && (vars.WPA3_FOLLOW_MODE == 'state' || vars.WPA3_FOLLOW_MODE == 'on')",
+      "runs-on": "ubuntu-24.04",
+      "timeout-minutes": 45,
+      "permissions": {
+        "contents": "write",
+        "issues": "write",
+        "actions": "write"
+      },
+      "concurrency": {
+        "group": "wpa3-state",
+        "queue": "max",
+        "cancel-in-progress": false
+      },
+      "env": {
+        "FOLLOW_MODE": "${{ vars.WPA3_FOLLOW_MODE || 'off' }}",
+        "GH_TOKEN": "${{ github.token }}",
+        "GH_REPO": "${{ github.repository }}",
+        "ADMIN_ACTION": "${{ inputs.action }}",
+        "TARGET": "${{ inputs.target }}",
+        "NOTE": "${{ inputs.note }}",
+        "DEVICE": "${{ inputs.device }}",
+        "DEVICE_TESTED": "${{ inputs.device_tested }}",
+        "GIT_LFS_SKIP_SMUDGE": "1",
+        "GIT_LFS_SKIP_PUSH": "1",
+        "GIT_TERMINAL_PROMPT": "0"
+      },
+      "steps": [
+        {
+          "uses": "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
+          "with": {
+            "ref": "wpa3-ci",
+            "persist-credentials": false
+          }
+        },
+        {
+          "name": "Apply owner action",
+          "run": "gh auth setup-git --hostname github.com\npython3 scripts/follow_admin.py"
+        },
+        {
+          "name": "Restore disabled nightly after revoke, including failure",
+          "if": "always()",
+          "env": {
+            "ADMIN_ACTION": "restore-nightly"
+          },
+          "run": "python3 scripts/follow_admin.py"
+        }
+      ]
+    }
+  }
+}

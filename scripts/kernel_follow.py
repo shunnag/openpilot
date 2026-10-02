@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import subprocess
 import sys
 import tempfile
 
@@ -25,8 +26,7 @@ from kernel_gates import content_diff, patch_paths, prebuild, recipe_files
 
 def effective_mode(mode, replay):
   follow_state.mode_value(mode)
-  # Part 2 cannot enter state/on, even when a repository variable says on.
-  return 'dryrun' if replay or mode != 'off' else 'off'
+  return 'dryrun' if replay else mode
 
 
 def expected_agnos_blob(state):
@@ -49,9 +49,16 @@ def upstream_items(state, replay, branch):
     fixture = read_json(ROOT / 'follow/replay' / f'{version}.json')
     return [{**fixture, 'branches': ['replay'], 'replay': replay}]
   result = {}
-  branches = state['policy']['allowed_branches'] if branch == 'all' else [branch]
+  allowed = state['policy']['allowed_branches']
+  branch_variable = os.environ.get('FOLLOW_BRANCHES', '').strip()
+  if branch_variable:
+    import re
+    selected = re.split(r'[,\s]+', branch_variable)
+    require(all(b in allowed for b in selected), 'WPA3_FOLLOW_BRANCHES contains an unsupported branch')
+    allowed = [b for b in allowed if b in selected]
+  branches = allowed if branch == 'all' else [branch]
   for name in branches:
-    require(name in state['policy']['allowed_branches'], 'branch not allowed')
+    require(name in allowed, 'branch not allowed')
     # Read an immutable upstream commit, then use the existing resolver's trigger.
     commit = api(f'repos/commaai/openpilot/commits/{name}')['sha']
     def reader(path):
@@ -83,7 +90,8 @@ def detect(out, replay, mode, branch, force=False):
   out.mkdir(parents=True, exist_ok=True)
   mode = effective_mode(mode, replay)
   plan = {'schema': 1, 'mode': mode, 'replay': replay, 'matrix': {'include': []}, 'items': [],
-          'gate_version': follow_state.gate_version(), 'deferred': []}
+          'gate_version': follow_state.gate_version(), 'deferred': [], 'recover': [], 'reuse': [], 'outcomes': []}
+  replay = '' if replay == 'latest' else replay
   write_json(out / 'plan.json', plan)
   if mode == 'off':
     print('K0: SKIP: follow mode off; no builds')
@@ -92,6 +100,44 @@ def detect(out, replay, mode, branch, force=False):
   if not items:
     return plan
   require(state['status']['paused'] is None, 'paused; replay/force cannot bypass the brake')
+  from follow_publish import GitHub, matching_releases
+  github = GitHub(state['policy']['repository'], mode)
+  require(not github.paused(), 'paused in follow-paused mirror')
+  remaining_items = []
+  for item in items:
+    stock = next(entry['hash_raw'] for entry in item['manifest'] if entry['name'] == 'boot')
+    if not replay and any(p['derived_from']['boot_hash_raw'] == stock for p in state['pins'].values()):
+      print(f'K0: SKIP: {stock}: auto pin already exists')
+      continue
+    matches = matching_releases(github, stock)
+    require(not any((r.get('name') or '').startswith('WITHDRAWN') for r in matches), 'target withdrawn in release title')
+    published = [r for r in matches if r['draft'] is False]
+    if not replay and published:
+      require(len(published) == 1 and published[0].get('immutable') is True, 'infra: recovery requires one immutable release')
+      plan['recover'].append({'stock': stock, 'release_id': published[0]['id']})
+      continue
+    old = state['status']['attempts'].get(stock)
+    wait = follow_state.attempt_wait(old, plan['gate_version'], None, datetime.now(timezone.utc), force=force)
+    if not replay and wait:
+      plan['deferred'].append({'stock': stock, 'reason': wait})
+      continue
+    if mode in ('state', 'on') and not replay and not (old and 'rebuild: artifacts unavailable' in old['reason']):
+      drafts = [r for r in matches if r['draft'] and not (r.get('name') or '').startswith('ABANDONED:')
+                and f"<!-- wpa3-follow-gates: {plan['gate_version']} -->" in (r.get('body') or '')]
+      if drafts:
+        # Artifact access belongs in the actions:write publish job. The original
+        # read-only build artifacts are reverified there without another build.
+        draft = max(drafts, key=lambda r: r['id'])
+        import re
+        run_id = re.search(r'https://github\.com/' + re.escape(state['policy']['repository']) + r'/actions/runs/([0-9]+)', draft.get('body') or '')
+        if run_id:
+          plan['reuse'].append({'stock': stock, 'release_id': draft['id'], 'run_id': run_id[1]})
+          continue
+    remaining_items.append(item)
+  items = remaining_items
+  write_json(out / 'plan.json', plan)
+  if not items:
+    return plan
   (out / 'manual').mkdir()
   for version, pin in state['manual'].items():
     (out / 'manual' / f'{version}.img').write_bytes(fetch_boot(pin['boot']['url'], pin['boot']['hash_raw'], pin['boot']['size']))
@@ -108,53 +154,67 @@ def detect(out, replay, mode, branch, force=False):
     prs, heads = fetch_inputs(builder, kernel)
     for item in items:
       boot = next(entry for entry in item['manifest'] if entry['name'] == 'boot')
-      stock = fetch_boot(boot['url'], boot['hash_raw'], boot['size'])
-      require(not any(pin.get('withdrawn') and pin['derived_from']['boot_hash_raw'] == sha256(stock)
-                      for pin in state['pins'].values()), 'target withdrawn; force/replay cannot bypass')
-      item_id = sha256(stock)[:12]
-      directory = out / 'items' / item_id
-      directory.mkdir(parents=True)
-      (directory / 'stock.img').write_bytes(stock)
-      tag, base = baseline(state, replay)
-      forced = git_text(kernel, 'rev-parse', 'caff1d8d^{commit}') if replay == 'neg-caff1d8d' else None
-      discovery = discover(builder, kernel, item['version'], stock, prs, heads, state['policy'],
-        compare=lambda a, b: api(f'repos/commaai/agnos-kernel-sdm845/compare/{a}...{b}'),
-        fallback=lambda c, h: local_membership(kernel, c, h), forced=forced)
-      discovery['fetch_metrics'] = read_json(temp / 'fetch-metrics.json')
-      old = state['status']['attempts'].get(sha256(stock))
-      if old and not force and not replay and old.get('gate_version') == plan['gate_version']:
-        attempted = datetime.fromisoformat(old['at'].replace('Z', '+00:00'))
-        same_refs = old.get('refs_fingerprint') == discovery['refs_fingerprint']
-        if old['result'] in ('held', 'risk_held') and same_refs and (datetime.now(timezone.utc) - attempted).days < 7:
-          plan['deferred'].append({'stock': sha256(stock), 'reason': 'same held attempt younger than seven days'})
+      discovery, stage = None, 'stock download'
+      try:
+        stock = fetch_boot(boot['url'], boot['hash_raw'], boot['size'])
+        require(not any(pin.get('withdrawn') and pin['derived_from']['boot_hash_raw'] == sha256(stock)
+                        for pin in state['pins'].values()), 'target withdrawn; force/replay cannot bypass')
+        item_id = sha256(stock)[:12]
+        directory = out / 'items' / item_id
+        directory.mkdir(parents=True)
+        (directory / 'stock.img').write_bytes(stock)
+        tag, base = baseline(state, replay)
+        forced = git_text(kernel, 'rev-parse', 'caff1d8d^{commit}') if replay == 'neg-caff1d8d' else None
+        stage = 'K1'
+        discovery = discover(builder, kernel, item['version'], stock, prs, heads, state['policy'],
+          compare=lambda a, b: api(f'repos/commaai/agnos-kernel-sdm845/compare/{a}...{b}'),
+          fallback=lambda c, h: local_membership(kernel, c, h), forced=forced)
+        discovery['fetch_metrics'] = read_json(temp / 'fetch-metrics.json')
+        old = state['status']['attempts'].get(sha256(stock))
+        wait = follow_state.attempt_wait(old, plan['gate_version'], discovery['refs_fingerprint'], datetime.now(timezone.utc), force=force)
+        if wait and not replay:
+          plan['deferred'].append({'stock': sha256(stock), 'reason': wait})
           continue
-      item.update(stock_hash=sha256(stock), baseline_release=tag, baseline_commit=base,
-                  discovery=discovery, pre={})
-      diff_kernel = temp / f'diff-{item_id}'
-      git(temp, 'init', '--bare', diff_kernel)
-      git(diff_kernel, 'remote', 'add', 'origin', KERNEL_URL)
-      git(diff_kernel, 'fetch', '--filter=blob:none', '--depth=1', 'origin', base,
-          *(candidate['commit'] for candidate in discovery['candidates']))
-      for candidate in discovery['candidates']:
-        commit, builder_commit = candidate['commit'], candidate['builder_commit']
-        files = recipe_files(builder, builder_commit)
-        recipe = directory / builder_commit
-        recipe.mkdir(exist_ok=True)
-        for name, data in files.items():
-          (recipe / name.replace('/', '_')).write_bytes(data)
-        # K3 is a local, two-tree diff. The API supplies ancestry ONLY.
-        ancestry = api(f'repos/commaai/agnos-kernel-sdm845/compare/{base}...{commit}')
-        diff = content_diff(diff_kernel, base, commit, ancestry)
-        deps = ROOT / 'follow/reference' / f'{tag}.wifi-deps.txt'
-        pre = prebuild(stock, item['manifest'], item['agnos_py_blob'], expected_agnos_blob(state),
-          recipe / 'vble-qti.key', files, diff, read_json(ROOT / 'follow/reference' / f'{tag}.stock.json'),
-          state['policy'], state['status'], state['pins'], deps.read_text().splitlines() if deps.exists() else None)
-        paths = patch_paths((ROOT / 'follow/kernel-patches/source.diff').read_text())
-        pre['patched_blobs'] = {p: git_text(diff_kernel, 'rev-parse', f'{base}:{p}') for p in paths}
-        item['pre'][commit] = pre
-        print(f"K1: OK: {commit} from {candidate['builder_ref']}@{builder_commit}; branch {candidate['branch']}; proposal only")
-      plan['items'].append(item_id)
-      write_json(directory / 'input.json', item)
+        item.update(stock_hash=sha256(stock), baseline_release=tag, baseline_commit=base,
+                    discovery=discovery, pre={})
+        stage = 'K0-K4'
+        diff_kernel = temp / f'diff-{item_id}'
+        git(temp, 'init', '--bare', diff_kernel)
+        git(diff_kernel, 'remote', 'add', 'origin', KERNEL_URL)
+        git(diff_kernel, 'fetch', '--filter=blob:none', '--depth=1', 'origin', base,
+            *(candidate['commit'] for candidate in discovery['candidates']))
+        for candidate in discovery['candidates']:
+          commit, builder_commit = candidate['commit'], candidate['builder_commit']
+          files = recipe_files(builder, builder_commit)
+          recipe = directory / builder_commit
+          recipe.mkdir(exist_ok=True)
+          for name, data in files.items():
+            (recipe / name.replace('/', '_')).write_bytes(data)
+          # K3 is a local, two-tree diff. The API supplies ancestry ONLY.
+          ancestry = api(f'repos/commaai/agnos-kernel-sdm845/compare/{base}...{commit}')
+          diff = content_diff(diff_kernel, base, commit, ancestry)
+          deps = ROOT / 'follow/reference' / f'{tag}.wifi-deps.txt'
+          pre = prebuild(stock, item['manifest'], item['agnos_py_blob'], expected_agnos_blob(state),
+            recipe / 'vble-qti.key', files, diff, read_json(ROOT / 'follow/reference' / f'{tag}.stock.json'),
+            state['policy'], state['status'], state['pins'], deps.read_text().splitlines() if deps.exists() else None)
+          paths = patch_paths((ROOT / 'follow/kernel-patches/source.diff').read_text())
+          pre['patched_blobs'] = {p: git_text(diff_kernel, 'rev-parse', f'{base}:{p}') for p in paths}
+          item['pre'][commit] = pre
+          print(f"K1: OK: {commit} from {candidate['builder_ref']}@{builder_commit}; branch {candidate['branch']}; proposal only")
+        plan['items'].append(item_id)
+        write_json(directory / 'input.json', item)
+      except Exception as error:
+        # Preserve read-only detection outcomes for the short state-writing job.
+        reason = f'{stage}: {error}'.replace('\n', ' ')[:4000]
+        refs = discovery['refs_fingerprint'] if discovery else getattr(error, 'refs_fingerprint', '0' * 64)
+        wait = follow_state.attempt_wait(state['status']['attempts'].get(boot['hash_raw']), plan['gate_version'],
+                                        refs, datetime.now(timezone.utc), force=force)
+        if wait and not replay:
+          plan['deferred'].append({'stock': boot['hash_raw'], 'reason': wait})
+          continue
+        plan['outcomes'].append({'stock': boot['hash_raw'], 'result': 'error' if isinstance(error, (OSError, subprocess.CalledProcessError)) else 'held',
+          'reason': reason, 'refs_fingerprint': refs})
+        print(f'K*: HOLD: {reason}')
     # One global budget, including retries, across all matrix legs in this run.
     remaining = state['policy']['max_full_builds']
     for item_id in plan['items']:
@@ -204,7 +264,7 @@ def verify_sums(directory):
 def publish(inputs, builds, out):
   state = follow_state.load()
   plan = read_json(inputs / 'plan.json')
-  require(plan['mode'] in ('off', 'dryrun'), 'Part 2 accepts dryrun only')
+  follow_state.mode_value(plan['mode'])
   require(plan['gate_version'] == follow_state.gate_version(), 'gate version changed between jobs')
   out.mkdir(parents=True, exist_ok=True)
   if not plan['items']:
@@ -213,6 +273,7 @@ def publish(inputs, builds, out):
   manual = {v: read_bytes(inputs / 'manual' / f'{v}.img') for v in state['manual']}
   spent = 0
   failures = []
+  outcomes = {}
   for item_id in plan['items']:
     try:
       directory = inputs / 'items' / item_id
@@ -224,12 +285,13 @@ def publish(inputs, builds, out):
       results = {}
       for candidate in candidates:
         artifact = builds / f"kernel-{item_id}-{candidate['commit'][:12]}"
+        require(artifact.is_dir(), 'infra: missing candidate build artifacts')
         verify_sums(artifact)
         result = read_json(artifact / 'result.json')
         require(type(result['full_builds']) is int and 0 <= result['full_builds'] <= candidate['full_build_budget'], 'full-build budget exceeded')
         spent += result['full_builds']
         require(spent <= state['policy']['max_full_builds'], 'global full-build cap exceeded')
-        require(result['result'] in ('complete', 'rejected'), 'candidate job did not finish; uniqueness unresolved')
+        require(result['result'] in ('complete', 'rejected'), 'infra: candidate job did not finish; uniqueness unresolved')
         require(result['full_builds'] >= 1, 'conclusive result without a recorded full build')
         key = directory / candidate['builder_commit'] / 'vble-qti.key'
         fields = bootimg.parse(stock)
@@ -279,12 +341,14 @@ def publish(inputs, builds, out):
       print(f'K10: OK: {tag_note}; N={number}, revert={number + 1}')
     except Exception as error:
       failures.append(f'{item_id}: {error}')
+      outcomes[item_id] = {'result': 'error' if 'infra:' in str(error) or isinstance(error, (OSError, subprocess.CalledProcessError)) else 'held',
+                           'reason': str(error).replace('\n', ' ')[:4000]}
       print(f'K*: FAIL: {failures[-1]}')
-  write_json(out / 'run.json', {'mode': 'dryrun', 'full_builds_spent': spent, 'failures': failures,
+  write_json(out / 'run.json', {'mode': plan['mode'], 'full_builds_spent': spent, 'failures': failures, 'outcomes': outcomes,
     'todos': ['Q1: review and commit dependency, rebuilt-object and Wi-Fi manifests from CI artifacts',
               'Q5: run the identical replay twice; compare wifi-objects.json before qualifying K8',
               'Q7: inspect metrics.txt for hosted runner wall time/free-space minimum; no local estimates used',
-              'Q8/Q10: confirm job/concurrency/checkout behavior on GitHub; no write-token job exists in Part 2']})
+              'Q8/Q10: confirm queue:max and permissions on GitHub in the sandbox']})
   require(not failures, '; '.join(failures))
 
 
@@ -304,7 +368,7 @@ def main():
   args = parser.parse_args()
   try:
     if args.command == 'detect':
-      plan = detect(args.out, '' if args.replay == 'latest' else args.replay, args.mode, args.branch, args.force)
+      plan = detect(args.out, args.replay, args.mode, args.branch, args.force)
       if os.environ.get('GITHUB_OUTPUT'):
         with open(os.environ['GITHUB_OUTPUT'], 'a') as stream:
           stream.write(f"matrix={json.dumps(plan['matrix'], separators=(',', ':'))}\n")

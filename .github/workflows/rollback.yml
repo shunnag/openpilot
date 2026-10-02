@@ -57,10 +57,11 @@ jobs:
             echo "::error::$BRANCH-lastgood is missing; nothing was changed."
             exit 1
           fi
+          gh workflow disable follow.yml --repo "$GH_REPO"
           BARE_REPO="$RUNNER_TEMP/rollback.git"
           git init --bare "$BARE_REPO"
           git -C "$BARE_REPO" remote add origin "$URL"
           git -C "$BARE_REPO" fetch --depth=1 --no-tags --no-recurse-submodules origin "$GOOD"
           git -C "$BARE_REPO" push --force-with-lease="refs/heads/$BRANCH:$F" origin "$GOOD:refs/heads/$BRANCH"
           gh workflow disable nightly.yml --repo "$GH_REPO"
-          echo '::notice::nightly.yml is disabled; publishing for all four branches (nightly, nightly-chestnut, release-mici-staging and release-tizi-staging) is paused until re-enabled.'
+          echo '::notice::follow.yml and nightly.yml are disabled; publishing for all four branches (nightly, nightly-chestnut, release-mici-staging and release-tizi-staging) is paused until re-enabled.'

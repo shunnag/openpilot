@@ -227,3 +227,17 @@ python3 scripts/bootimg.py tag <boot.img> --tag wpa3.sae=4 --key <private.pem> -
 `--skip-download` skips G4 and is only for offline tests. `--published` is the currently published fork commit, used by G6. `compose.py` prints the new commit SHA, then the `WPA3-Inputs` hash. This is the SHA-256 of canonical JSON with the upstream commit, the hashes of the chosen launcher patch and `ui-wpa3.patch`, the resolved pin, the hash of the `wpa_supplicant` license file and the hash of `compose.py`. The commit message also records the resolved pin in a `WPA3-Pin` trailer, immediately followed by `WPA3-Launcher-Patch` with the chosen patch's file name. The author and committer are fixed, and both dates are the upstream commit date.
 
 `--skip-download` は G4 を省略するオプションで、オフラインのテスト専用です。`--published` には公開中の fork のコミットを渡し、G6 で使います。`compose.py` は、新しいコミットの SHA と `WPA3-Inputs` のハッシュをこの順に出力します。このハッシュは、upstream のコミット、選ばれたランチャーパッチと `ui-wpa3.patch` のハッシュ、決定した pin、`wpa_supplicant` のライセンスのファイルのハッシュ、`compose.py` のハッシュを並べた正規化 JSON の SHA-256 です。コミットメッセージには、決定した pin を `WPA3-Pin` として記録し、その直後に `WPA3-Launcher-Patch` として選ばれたパッチのファイル名を記録します。author と committer は固定で、日時はどちらも upstream のコミットの日時を使います。
+
+
+Automatic follow state
+------
+
+Bot state commits land on `wpa3-ci`. Use `git pull --rebase` before pushing; never force-push this branch. Keep repository activity within 60 days if upstream goes quiet, and check that scheduled workflows remain enabled.
+
+<!-- wpa3-status:begin -->
+
+| Automatic release | Status | Tested devices |
+|---|---|---|
+| none | No automatic kernel pins | none |
+
+<!-- wpa3-status:end -->

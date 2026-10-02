@@ -130,6 +130,17 @@ class TestKernelDiscovery(FakeRepos):
       result = discovery.discover('', '', '19.9', b'boot', [], {'refs/heads/a': '1' * 40}, {'max_full_builds': 3})
       self.assertEqual(result['candidates'][0]['full_build_budget'], 2)
 
+  def test_fingerprint_ignores_unrelated_heads(self):
+    proposals = [{'builder_ref': 'refs/heads/agnos', 'builder_commit': 'a' * 40, 'commit': 'b' * 40, 'oracle': True}]
+    candidates = [{'commit': 'b' * 40}]
+    heads = {'refs/heads/release': 'b' * 40, 'refs/heads/unrelated': 'c' * 40}
+    compare = lambda candidate, head: {'behind_by': 0 if head == 'd' * 40 else 1}
+    before = discovery.refs_fingerprint(proposals, candidates, heads, compare)
+    heads['refs/heads/unrelated'] = 'e' * 40
+    self.assertEqual(before, discovery.refs_fingerprint(proposals, candidates, heads, compare))
+    heads['refs/heads/containing'] = 'd' * 40
+    self.assertNotEqual(before, discovery.refs_fingerprint(proposals, candidates, heads, compare))
+
 
 class TestContentGates(FakeRepos):
   def setUp(self):
@@ -429,7 +440,10 @@ class TestAssembly(unittest.TestCase):
     pre = {'patched_blobs': blobs, 'diff': {'paths': ['drivers/usb/host/xhci.h'], 'candidate': 'b' * 40, 'baseline': 'c' * 40}}
     assembly.k6(proof, pre, ROOT / 'follow/kernel-patches', policy)
     pre['diff']['paths'] = paths[:1]
-    with self.assertRaisesRegex(ValueError, 'patched paths'):
+    with self.assertRaisesRegex(ValueError, 'non-qcacld'):
+      assembly.k6(proof, pre, ROOT / 'follow/kernel-patches', policy)
+    pre['diff']['paths'] = [next(p for p in paths if p.startswith('drivers/staging/qcacld-3.0/'))]
+    with self.assertRaisesRegex(assembly.PatchRisk, 'qcacld patched source changed'):
       assembly.k6(proof, pre, ROOT / 'follow/kernel-patches', policy)
     pre['diff']['paths'] = []
     proof['source_diff'] += 'changed\n'
@@ -486,7 +500,7 @@ class TestBuildBoundary(unittest.TestCase):
   def test_modes_and_network_guard(self):
     for mode in ('off', 'dryrun', 'state', 'on'):
       self.assertEqual(follow.effective_mode(mode, '19.9'), 'dryrun')
-      self.assertEqual(follow.effective_mode(mode, ''), 'off' if mode == 'off' else 'dryrun')
+      self.assertEqual(follow.effective_mode(mode, ''), mode)
     for mode in ('canary', 'soak', 'invalid'):
       with self.assertRaises(ValueError):
         follow.effective_mode(mode, '19.9')
@@ -494,20 +508,21 @@ class TestBuildBoundary(unittest.TestCase):
       with self.assertRaisesRegex(ValueError, 'network'):
         discovery.fetch_inputs(Path('/not-used'), Path('/not-used'))
 
-  def test_workflow_yaml_structure_enforces_readonly(self):
+  def test_workflow_yaml_structure_enforces_build_boundary(self):
     # JSON is a strict subset of YAML 1.2. Keeping this workflow in that subset
     # lets stdlib tests parse the *structure*, including every job permission.
     workflow = json.loads((ROOT / '.github/workflows/follow.yml').read_text())
-    self.assertEqual(set(workflow['on']), {'workflow_dispatch'})
+    self.assertEqual(set(workflow['on']), {'workflow_dispatch', 'schedule'})
     self.assertEqual(workflow['permissions'], {})
     jobs = workflow['jobs']
-    self.assertEqual(set(jobs), {'detect', 'kernel-build', 'publish', 'probe', 'wpa-classify', 'wpa-build', 'wpa-test'})
+    self.assertEqual(set(jobs), {'detect', 'kernel-build', 'publish', 'probe', 'wpa-classify', 'wpa-build', 'wpa-test', 'report'})
     self.assertEqual(jobs['kernel-build']['permissions'], {'contents': 'read'})
     self.assertEqual(jobs['kernel-build']['strategy']['max-parallel'], 3)
     self.assertEqual(jobs['kernel-build']['timeout-minutes'], 150)
     banned = re.compile(r'\b(?:git\s+(?:push|commit|tag)|gh\s+(?:release\s+(?:create|upload|edit)|workflow|issue)|curl\s+.*(?:-X|--request)\s*(?:POST|PUT|PATCH))\b')
     for name, job in jobs.items():
-      self.assertEqual(job['permissions'], {'contents': 'read'})
+      expected = {'contents': 'write', 'issues': 'write', 'actions': 'write'} if name == 'publish' else {'issues': 'write'} if name == 'report' else {'contents': 'read'}
+      self.assertEqual(job['permissions'], expected)
       for step in job['steps']:
         self.assertNotIn('secrets.', json.dumps(step))
         if 'uses' in step:
@@ -517,13 +532,16 @@ class TestBuildBoundary(unittest.TestCase):
           if name == 'publish':
             self.assertNotIn('cache', step['uses'])
         if 'run' in step:
-          self.assertNotRegex(step['run'], banned)
+          if name not in ('publish', 'report'):
+            self.assertNotRegex(step['run'], banned)
           self.assertNotIn('${{', step['run'])
           if name == 'kernel-build':
             self.assertNotRegex(step['run'], r'\bgh\b')
         if name == 'kernel-build':
           self.assertNotIn('GH_TOKEN', step.get('env', {}))
-    self.assertEqual(workflow['on']['workflow_dispatch']['inputs']['mode']['options'], ['off', 'dryrun', 'state', 'on'])
+    self.assertNotIn('mode', workflow['on']['workflow_dispatch']['inputs'])
+    self.assertEqual(jobs['publish']['concurrency'], {'group': 'wpa3-state', 'queue': 'max', 'cancel-in-progress': False})
+    self.assertEqual(jobs['publish']['env']['FOLLOW_MODE'], "${{ vars.WPA3_FOLLOW_MODE || 'off' }}")
 
 
 if __name__ == '__main__':

@@ -77,7 +77,10 @@ def prepare(inputs, candidate_id, work, local_kernel=None):
   proof = {'candidate': commit, 'baseline': baseline, 'candidate_blobs': {}, 'baseline_blobs': {}}
   for label, ref in (('candidate_blobs', commit), ('baseline_blobs', baseline)):
     proof[label] = {path: git_text(checkout, 'rev-parse', f'{ref}:{path}') for path in paths}
-  require(proof['candidate_blobs'] == proof['baseline_blobs'] == pre['patched_blobs'], 'patched source files differ from baseline')
+  require(proof['baseline_blobs'] == pre['patched_blobs'], 'baseline patched source files differ from detection')
+  changed = {path for path in paths if proof['candidate_blobs'][path] != proof['baseline_blobs'][path]}
+  require(changed <= set(pre['diff']['paths']) and all(path.startswith('drivers/staging/qcacld-3.0/') for path in changed),
+          'unexplained/non-qcacld patched source change')
   git(checkout, 'read-tree', commit)
   artifacts = work / 'artifacts'
   artifacts.mkdir()

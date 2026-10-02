@@ -123,13 +123,16 @@ def main():
   parser.add_argument("--upstream")
   parser.add_argument("--out", type=Path)
   parser.add_argument("--validate-state", action="store_true")
+  parser.add_argument("--state-root", type=Path, help="data root, only with --validate-state")
   parser.add_argument("--follow-mode", default=os.environ.get("WPA3_FOLLOW_MODE", "off"))
   parser.add_argument("--branch")
   parser.add_argument("--now", help="UTC timestamp for deterministic tests")
   args = parser.parse_args()
   try:
     mode_value(args.follow_mode)
-    state = load(ROOT)
+    if args.state_root is not None and not args.validate_state:
+      raise ValueError("--state-root is only for --validate-state")
+    state = load(args.state_root or ROOT)
     if args.validate_state:
       print("PIN: OK: state valid")
       return 0

@@ -117,11 +117,12 @@ def validate_policy(policy):
   require(len(names) == len(set(names)) and {'boot', 'system'} <= set(names), 'invalid manifest partitions')
   require(policy['on_unknown_stock_wpa'] in ('hold', 'stock'), 'invalid on_unknown_stock_wpa')
   wpa = policy['wpa']
-  keys(wpa, ('auto_publish', 'version_regex', 'orig_tarball_sha256', 'base_image', 'reference_sha256', 'reference_stock_sha256'), 'policy.wpa')
+  keys(wpa, ('auto_publish', 'version_regex', 'orig_tarball_sha256', 'base_image', 'reference_sha256', 'reference_stock_sha256', 'snapshot', 'reference_debian_sha256'), 'policy.wpa')
   require(type(wpa['auto_publish']) is bool, 'wpa.auto_publish must be boolean')
   nonempty(wpa['version_regex'], 'wpa version regex')
   re.compile(wpa['version_regex'])
-  for key in ('orig_tarball_sha256', 'reference_sha256', 'reference_stock_sha256'):
+  match(r'[0-9]{8}T[0-9]{6}Z', wpa['snapshot'], 'wpa snapshot')
+  for key in ('orig_tarball_sha256', 'reference_sha256', 'reference_stock_sha256', 'reference_debian_sha256'):
     match(SHA256, wpa[key], f'wpa.{key}')
   match(r'ubuntu:24\.04@sha256:' + SHA256, wpa['base_image'], 'wpa base image')
 

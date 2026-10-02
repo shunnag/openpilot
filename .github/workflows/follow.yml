@@ -1,5 +1,5 @@
 {
-  "name": "Kernel follow (dryrun only)",
+  "name": "Kernel and wpa_supplicant follow (dryrun only)",
   "on": {
     "workflow_dispatch": {
       "inputs": {
@@ -15,7 +15,7 @@
           ]
         },
         "mode": {
-          "description": "Part 2 clamps state/on to dryrun; replay also forces dryrun.",
+          "description": "Parts 2\u20133 clamp state/on to dryrun; replay also forces dryrun.",
           "type": "choice",
           "default": "dryrun",
           "options": [
@@ -41,6 +41,16 @@
           "description": "Bypass only the younger-than-seven-days held-attempt skip",
           "type": "boolean",
           "default": false
+        },
+        "wpa_reference": {
+          "description": "Rebuild and test the known 0.4 reference even when G8 is seeded (no publishing).",
+          "type": "boolean",
+          "default": false
+        },
+        "wpa_result_id": {
+          "description": "Optional public Mac mini result id; must match all rebuilt asset hashes and suite commit. Empty = T3 PENDING.",
+          "type": "string",
+          "default": ""
         }
       }
     }
@@ -199,9 +209,13 @@
     "publish": {
       "needs": [
         "detect",
-        "kernel-build"
+        "kernel-build",
+        "probe",
+        "wpa-classify",
+        "wpa-build",
+        "wpa-test"
       ],
-      "if": "always() && needs.detect.result == 'success' && needs.detect.outputs.build == 'true'",
+      "if": "always() && needs.detect.result == 'success' && needs.probe.result == 'success'",
       "runs-on": "ubuntu-24.04",
       "timeout-minutes": 30,
       "permissions": {
@@ -221,29 +235,59 @@
         {
           "uses": "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093",
           "with": {
+            "name": "wpa-probe",
+            "path": "probe"
+          }
+        },
+        {
+          "uses": "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093",
+          "if": "needs.probe.outputs.build == 'true'",
+          "with": {
+            "pattern": "wpa-request-*",
+            "path": "wpa-requests"
+          }
+        },
+        {
+          "name": "Verify WPA artifact identities and optional public Mac mini result",
+          "env": {
+            "RESULT_ID": "${{ inputs.wpa_result_id }}"
+          },
+          "run": "python3 scripts/wpa_follow.py publish --inputs probe --builds wpa-requests --result-id \"$RESULT_ID\" 2>&1 | tee wpa-publish.log"
+        },
+        {
+          "name": "WPA dryrun summary",
+          "if": "always()",
+          "run": "{\n  echo \"### WPA follow (dryrun only)\"\n  echo '```text'\n  cat wpa-publish.log || true\n  echo '```'\n} >> \"$GITHUB_STEP_SUMMARY\""
+        },
+        {
+          "uses": "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093",
+          "with": {
             "name": "kernel-detect",
             "path": "detect"
-          }
+          },
+          "if": "needs.detect.outputs.build == 'true'"
         },
         {
           "uses": "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093",
           "with": {
             "pattern": "kernel-*-*",
             "path": "builds"
-          }
+          },
+          "if": "needs.detect.outputs.build == 'true'"
         },
         {
           "name": "Recompute K5-K12 from data and assemble dryrun artifacts",
-          "run": "python3 scripts/kernel_follow.py publish --inputs detect --builds builds --out verified 2>&1 | tee publish.log"
+          "run": "python3 scripts/kernel_follow.py publish --inputs detect --builds builds --out verified 2>&1 | tee publish.log",
+          "if": "needs.detect.outputs.build == 'true'"
         },
         {
           "name": "Verification summary and remaining GitHub measurements",
-          "if": "always()",
+          "if": "always() && needs.detect.outputs.build == 'true'",
           "run": "{\n  echo '### Kernel follow: verified dryrun artifacts'\n  echo '```text'\n  cat publish.log || true\n  echo '```'\n  echo 'TODO Q1: review reference stock.json, wifi-deps.txt, rebuilt-objects.txt and wifi-objects.json from CI artifacts.'\n  echo 'TODO Q5: run this same replay twice and compare stripped Wi-Fi object hashes. K8 remains advisory.'\n  echo 'TODO Q7: inspect metrics.txt for observed wall time and minimum free disk on the selected volume; discovery fallback cost needs a hosted measurement.'\n  echo 'TODO Q8/Q10: confirm concurrency and checkout behavior on GitHub. queue:max is deferred until the writing stage and compatible actionlint; this job is read-only.'\n  echo 'Dryrun only. Artifacts are not device-tested. No WPA3 kernel has been device-tested on comma 3X.'\n} >> \"$GITHUB_STEP_SUMMARY\""
         },
         {
           "uses": "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
-          "if": "always()",
+          "if": "always() && needs.detect.outputs.build == 'true'",
           "with": {
             "name": "kernel-verified-dryrun",
             "path": "verified/",
@@ -252,6 +296,193 @@
           }
         }
       ]
+    },
+    "probe": {
+      "runs-on": "ubuntu-24.04",
+      "timeout-minutes": 60,
+      "permissions": {
+        "contents": "read"
+      },
+      "steps": [
+        {
+          "uses": "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
+          "with": {
+            "persist-credentials": false
+          }
+        },
+        {
+          "name": "Probe distinct system images; leave seeded hashes cached",
+          "id": "probe",
+          "env": {
+            "REPLAY": "${{ inputs.replay }}",
+            "MODE": "${{ inputs.mode }}",
+            "REFERENCE": "${{ inputs.wpa_reference }}"
+          },
+          "run": "flags=()\nif [[ \"$REFERENCE\" == true ]]; then flags+=(--reference); fi\npython3 scripts/wpa_follow.py probe --out probe --replay \"$REPLAY\" --mode \"${MODE:-$FOLLOW_MODE}\" \"${flags[@]}\""
+        },
+        {
+          "uses": "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
+          "if": "always()",
+          "with": {
+            "name": "wpa-probe",
+            "path": "probe/",
+            "retention-days": 14,
+            "if-no-files-found": "error"
+          }
+        }
+      ],
+      "outputs": {
+        "matrix": "${{ steps.probe.outputs.matrix }}",
+        "build": "${{ steps.probe.outputs.build }}"
+      }
+    },
+    "wpa-classify": {
+      "runs-on": "ubuntu-24.04",
+      "timeout-minutes": 60,
+      "permissions": {
+        "contents": "read"
+      },
+      "steps": [
+        {
+          "uses": "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
+          "with": {
+            "persist-credentials": false
+          }
+        },
+        {
+          "uses": "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093",
+          "with": {
+            "name": "wpa-probe",
+            "path": "probe"
+          }
+        },
+        {
+          "name": "W1\u2013W3 from signed Ubuntu indices",
+          "env": {
+            "ITEM_ID": "${{ matrix.id }}"
+          },
+          "run": "sudo apt-get update\nsudo apt-get install -y ubuntu-keyring gnupg zstd\npython3 scripts/wpa_follow.py classify --inputs probe --id \"$ITEM_ID\" --out classified"
+        },
+        {
+          "uses": "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
+          "if": "always()",
+          "with": {
+            "name": "wpa-classified-${{ matrix.id }}",
+            "path": "classified/",
+            "retention-days": 14,
+            "if-no-files-found": "error"
+          }
+        }
+      ],
+      "needs": [
+        "probe"
+      ],
+      "if": "needs.probe.outputs.build == 'true'",
+      "strategy": {
+        "fail-fast": false,
+        "max-parallel": 2,
+        "matrix": "${{ fromJSON(needs.probe.outputs.matrix) }}"
+      }
+    },
+    "wpa-build": {
+      "runs-on": "ubuntu-24.04-arm",
+      "timeout-minutes": 90,
+      "permissions": {
+        "contents": "read"
+      },
+      "steps": [
+        {
+          "uses": "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
+          "with": {
+            "persist-credentials": false
+          }
+        },
+        {
+          "uses": "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093",
+          "with": {
+            "name": "wpa-classified-${{ matrix.id }}",
+            "path": "classified"
+          }
+        },
+        {
+          "name": "Pinned native arm64 build twice; P1/P2/R1",
+          "run": "python3 scripts/wpa_follow.py build --inputs classified --out built"
+        },
+        {
+          "uses": "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
+          "if": "always()",
+          "with": {
+            "name": "wpa-built-${{ matrix.id }}",
+            "path": "built/",
+            "retention-days": 14,
+            "if-no-files-found": "error"
+          }
+        }
+      ],
+      "needs": [
+        "probe",
+        "wpa-classify"
+      ],
+      "if": "needs.probe.outputs.build == 'true'",
+      "strategy": {
+        "fail-fast": false,
+        "max-parallel": 2,
+        "matrix": "${{ fromJSON(needs.probe.outputs.matrix) }}"
+      }
+    },
+    "wpa-test": {
+      "runs-on": "ubuntu-24.04-arm",
+      "timeout-minutes": 60,
+      "permissions": {
+        "contents": "read"
+      },
+      "steps": [
+        {
+          "uses": "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
+          "with": {
+            "persist-credentials": false
+          }
+        },
+        {
+          "uses": "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093",
+          "with": {
+            "name": "wpa-built-${{ matrix.id }}",
+            "path": "built"
+          }
+        },
+        {
+          "name": "T0\u2013T2 against the verified read-only AGNOS image",
+          "run": "sudo apt-get update\nsudo apt-get install -y e2fsprogs binutils wpasupplicant zstd\npython3 scripts/wpa_follow.py test --inputs built"
+        },
+        {
+          "name": "Write test-request.json as an artifact only; publication deferred to Part 4a",
+          "env": {
+            "SUITE_COMMIT": "${{ github.sha }}",
+            "RUN_ID": "${{ github.run_id }}"
+          },
+          "run": "python3 scripts/wpa_follow.py request --inputs built --suite-commit \"$SUITE_COMMIT\" --run-id \"$RUN_ID\""
+        },
+        {
+          "uses": "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
+          "if": "always()",
+          "with": {
+            "name": "wpa-request-${{ matrix.id }}",
+            "path": "built/",
+            "retention-days": 14,
+            "if-no-files-found": "error"
+          }
+        }
+      ],
+      "needs": [
+        "probe",
+        "wpa-build"
+      ],
+      "if": "needs.probe.outputs.build == 'true'",
+      "strategy": {
+        "fail-fast": false,
+        "max-parallel": 2,
+        "matrix": "${{ fromJSON(needs.probe.outputs.matrix) }}"
+      }
     }
   }
 }

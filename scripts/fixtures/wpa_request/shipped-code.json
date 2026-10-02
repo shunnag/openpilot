@@ -1,0 +1,40 @@
+{
+  "schema": 1,
+  "id": "wpa3-123-aaaaaaaaaaaa",
+  "suite_commit": "1111111111111111111111111111111111111111",
+  "created_at": "2026-10-01T00:00:00Z",
+  "deadline": "2026-10-04T00:00:00Z",
+  "assets": {
+    "candidate": {
+      "sha256": "879bc0f4410b43ff8fb3369aaf23a418c6c5e415679a45eedcd7cd449e8f6f97",
+      "size": 33,
+      "url": "https://github.com/shunnag/openpilot/releases/download/wpa-test-wpa3-123-aaaaaaaaaaaa/candidate"
+    },
+    "candidate.deb": {
+      "sha256": "a715f15afd6fc8b9b5ec8ca29d39cb1dcf62500ce2f6e32aefb6d5be278d2271",
+      "size": 37,
+      "url": "https://github.com/shunnag/openpilot/releases/download/wpa-test-wpa3-123-aaaaaaaaaaaa/candidate.deb"
+    },
+    "candidate.copyright": {
+      "sha256": "889f92c11675dd424bcedc7fd8d589b019f1cc9a41b1ceafa312e715aff88b85",
+      "size": 43,
+      "url": "https://github.com/shunnag/openpilot/releases/download/wpa-test-wpa3-123-aaaaaaaaaaaa/candidate.copyright"
+    },
+    "stock": {
+      "sha256": "a7a82d0fa057fc9412952dc64b19ea2eac6554e57854e1d71ab7ace936c251aa",
+      "size": 29,
+      "url": "https://github.com/shunnag/openpilot/releases/download/wpa-test-wpa3-123-aaaaaaaaaaaa/stock"
+    },
+    "stock.copyright": {
+      "sha256": "97650fd7822328160eebb3efc37dd52bb2ef387c0eca73cadf5fe09b68745cef",
+      "size": 39,
+      "url": "https://github.com/shunnag/openpilot/releases/download/wpa-test-wpa3-123-aaaaaaaaaaaa/stock.copyright"
+    },
+    "test-suite.tar.gz": {
+      "sha256": "633bbdd0b167db03180dd29a5709cdb28c8f3f9e0ba4312c5262c8fb200552b6",
+      "size": 41,
+      "url": "https://github.com/shunnag/openpilot/releases/download/wpa-test-wpa3-123-aaaaaaaaaaaa/test-suite.tar.gz"
+    }
+  },
+  "command": "bash test-suite/run.sh"
+}

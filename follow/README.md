@@ -1,4 +1,4 @@
-# Kernel follow, Part 2
+# Follow dryrun, Parts 2 and 3
 
 `follow.yml` implements discovery → pre-build gates → isolated stock/WPA3 builds
 → independent verification and assembly. It is **dryrun only**: outputs are
@@ -176,3 +176,32 @@ pass. Publish retains the job-level `wpa3-state` group. No state-write correctne
 depends on that group here. The future writing stage must restore and verify
 the queue behavior. No `follow-dryrun` issue is written because Part 2 enforces
 the requested no-write workflow boundary.
+
+## Part 3: wpa_supplicant
+
+The same workflow adds `probe`, `wpa-classify`, native `ubuntu-24.04-arm`
+`wpa-build`, and `wpa-test`. Probe deduplicates the four upstream system images,
+reuses known hashes, and emits new probe records only as artifacts. Existing G8
+enforcement and off-mode composition behavior are preserved. A newly discovered
+nonempty 4.9 module directory holds kernel verification.
+
+Known supplicants do not rebuild unless the manual dispatch input `wpa_reference`
+is true. The build authenticates Ubuntu indices, checks W1–W3 and P1/P2, builds
+twice under the pinned image/snapshot, and retains R1/R0 evidence. T0–T2 use the
+verified read-only AGNOS image. See the [recipe](../userspace/wpa-build/README.md).
+
+`test-request.json` and its six assets are uploaded as Actions artifacts only.
+Their future public release URLs are not published in Part 3. The Mac mini
+[runner and Japanese setup guide](macmini/README_ja.md) use public release assets
+for anonymous discovery and a locally reviewed suite commit. Its token is scoped
+only to `shunnag/wpa3-test-results`; the VM has no host mounts or forwarded agent.
+
+Publish rechecks candidate identities and reads a public Mac mini result only
+when `wpa_result_id` is supplied. It must match all rebuilt asset hashes and the
+suite commit. A prior public request can supply the original deadline and ID.
+Otherwise the summary says `T3: PENDING (dryrun)`. `policy.wpa.auto_publish`
+remains false; publishing, async request continuation, deadline issues and state
+writes are Part 4a. No automation depends on the MacBook or research caches.
+
+See [Part 3 verification](PART3-VERIFICATION.md) for exact commands, full outputs,
+and checks that still need the orchestrator's environment.

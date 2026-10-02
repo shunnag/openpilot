@@ -1,0 +1,2 @@
+WPA: HOLD: W1: gpgv: can't open '/Users/nagash/Github/OP_wpa3/wpa3-ci/.autofollow_1001/wpa/InRelease': No such file or directory
+gpgv: verify signatures failed: No such file or directory

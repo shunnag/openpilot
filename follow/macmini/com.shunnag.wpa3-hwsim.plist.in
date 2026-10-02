@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <key>Label</key><string>com.shunnag.wpa3-hwsim</string>
+    <key>ProgramArguments</key>
+    <array>
+      <string>/bin/bash</string>
+      <string>@@REPO@@/follow/macmini/wpa3_hwsim_poll.sh</string>
+      <string>--suite-repo</string><string>@@REPO@@</string>
+      <string>--suite-commit</string><string>@@COMMIT@@</string>
+    </array>
+    <key>WorkingDirectory</key><string>@@REPO@@</string>
+    <key>StartInterval</key><integer>1800</integer>
+    <key>RunAtLoad</key><true/>
+    <key>ProcessType</key><string>Background</string>
+    <key>StandardOutPath</key><string>@@HOME@@/Library/Logs/wpa3-hwsim/stdout.log</string>
+    <key>StandardErrorPath</key><string>@@HOME@@/Library/Logs/wpa3-hwsim/stderr.log</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+      <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+      <key>GIT_TERMINAL_PROMPT</key><string>0</string>
+    </dict>
+  </dict>
+</plist>

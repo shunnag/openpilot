@@ -501,7 +501,7 @@ class TestBuildBoundary(unittest.TestCase):
     self.assertEqual(set(workflow['on']), {'workflow_dispatch'})
     self.assertEqual(workflow['permissions'], {})
     jobs = workflow['jobs']
-    self.assertEqual(set(jobs), {'detect', 'kernel-build', 'publish'})
+    self.assertEqual(set(jobs), {'detect', 'kernel-build', 'publish', 'probe', 'wpa-classify', 'wpa-build', 'wpa-test'})
     self.assertEqual(jobs['kernel-build']['permissions'], {'contents': 'read'})
     self.assertEqual(jobs['kernel-build']['strategy']['max-parallel'], 3)
     self.assertEqual(jobs['kernel-build']['timeout-minutes'], 150)

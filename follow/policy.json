@@ -130,8 +130,10 @@
     "auto_publish": false,
     "base_image": "ubuntu:24.04@sha256:008173c23f95b170204355c12626cb5a965d779a7e1283b09e9cffbb1bf33ca3",
     "orig_tarball_sha256": "b39f85be9d8fd58adee1acae3735ec0a1f7bdc460fe3f6fd76a1d57e9ac910c6",
+    "reference_debian_sha256": "b21bfb61d2b1650f2533a90faba132c3de255531873db26ff721327d0beae2c3",
     "reference_sha256": "139be31dde5f000d99af5f2692b792989bb3d6cbe332d662b2ddf822de89fd93",
     "reference_stock_sha256": "b0f1c8ee9bb32153faed468c68390db4691b252ffd6a90e6d3d7b49f4d106bdd",
+    "snapshot": "20260925T120000Z",
     "version_regex": "^2:2\\.10-21ubuntu0\\.[0-9]+$"
   }
 }

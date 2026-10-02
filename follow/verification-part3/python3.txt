@@ -1,0 +1,306 @@
+test_cli (test_bootimg.TestBootimg.test_cli) ... ok
+test_ondevice_hash_padding (test_bootimg.TestBootimg.test_ondevice_hash_padding) ... ok
+test_parse_rejects_truncation_and_extra_data (test_bootimg.TestBootimg.test_parse_rejects_truncation_and_extra_data) ... ok
+test_pubkey_hash_is_spki_pem (test_bootimg.TestBootimg.test_pubkey_hash_is_spki_pem) ... ok
+test_repack_cmdline_byte_limit_and_nuls (test_bootimg.TestBootimg.test_repack_cmdline_byte_limit_and_nuls) ... ok
+test_repack_preserves_template_and_changes_kernel (test_bootimg.TestBootimg.test_repack_preserves_template_and_changes_kernel) ... ok
+test_repack_rejects_invalid_fdt_tails (test_bootimg.TestBootimg.test_repack_rejects_invalid_fdt_tails) ... ok
+test_repack_rejects_unsupported_headers (test_bootimg.TestBootimg.test_repack_rejects_unsupported_headers) ... ok
+test_repack_round_trip_and_header_fields (test_bootimg.TestBootimg.test_repack_round_trip_and_header_fields) ... ok
+test_signature_verification_and_tampering (test_bootimg.TestBootimg.test_signature_verification_and_tampering) ... ok
+test_with_tag_preserves_kernel_and_other_cmdline_tokens (test_bootimg.TestBootimg.test_with_tag_preserves_kernel_and_other_cmdline_tokens) ... ok
+test_four_identical_repacks_signatures_and_layouts (test_bootimg.TestMountedBootimg.test_four_identical_repacks_signatures_and_layouts) ... ok
+test_manual_pin_ondevice_hashes (test_bootimg.TestMountedBootimg.test_manual_pin_ondevice_hashes) ... ok
+test_midstream_network_error_restarts_download (test_compose.TestBootDownload.test_midstream_network_error_restarts_download) ... boot download: network error on attempt 1/3: interrupted body; retrying in 5s
+ok
+test_network_errors_retry_with_backoff (test_compose.TestBootDownload.test_network_errors_retry_with_backoff) ... boot download: network error on attempt 1/3: <urlopen error CDN unavailable>; retrying in 5s
+boot download: network error on attempt 2/3: <urlopen error CDN unavailable>; retrying in 15s
+boot download: network error on attempt 1/3: read timeout; retrying in 5s
+boot download: network error on attempt 2/3: read timeout; retrying in 15s
+boot download: network error on attempt 1/3: reset; retrying in 5s
+boot download: network error on attempt 2/3: reset; retrying in 15s
+boot download: network error on attempt 1/3: HTTP Error 503: unavailable; retrying in 5s
+boot download: network error on attempt 2/3: HTTP Error 503: unavailable; retrying in 15s
+boot download: network error on attempt 1/3: HTTP Error 429: slow down; retrying in 5s
+boot download: network error on attempt 2/3: HTTP Error 429: slow down; retrying in 15s
+boot download: network error on attempt 1/3: <urlopen error CDN unavailable>; retrying in 5s
+boot download: network error on attempt 2/3: <urlopen error CDN unavailable>; retrying in 15s
+ok
+test_streamed_xz_hash_size_and_corruption (test_compose.TestBootDownload.test_streamed_xz_hash_size_and_corruption) ... ok
+test_unknown_size_hash_and_cap (test_compose.TestBootDownload.test_unknown_size_hash_and_cap) ... ok
+test_ambiguous_launcher_patches_fail (test_compose.TestCompose.test_ambiguous_launcher_patches_fail) ... ok
+test_auto_release_notice_and_withdrawal_render_in_device_first_block (test_compose.TestCompose.test_auto_release_notice_and_withdrawal_render_in_device_first_block) ... ok
+test_derived_resolve_gates_and_compose (test_compose.TestCompose.test_derived_resolve_gates_and_compose) ... ok
+test_deterministic_commit_and_inputs (test_compose.TestCompose.test_deterministic_commit_and_inputs) ... ok
+test_g6_published_tag_hash_invariant (test_compose.TestCompose.test_g6_published_tag_hash_invariant) ... ok
+test_g7_rejects_invalid_supplicant (test_compose.TestCompose.test_g7_rejects_invalid_supplicant) ... ok
+test_g8_cli_enforcement_and_revoke_override (test_compose.TestCompose.test_g8_cli_enforcement_and_revoke_override) ... ok
+test_gates_reject_drift (test_compose.TestCompose.test_gates_reject_drift) ... ok
+test_inputs_hash_uses_chosen_launcher_patch (test_compose.TestCompose.test_inputs_hash_uses_chosen_launcher_patch) ... ok
+test_launch_environment_and_runtime_patch (test_compose.TestCompose.test_launch_environment_and_runtime_patch) ... ok
+test_launcher_bash_unit (test_compose.TestCompose.test_launcher_bash_unit) ... ok
+test_launcher_patches_are_exclusive (test_compose.TestCompose.test_launcher_patches_are_exclusive) ... ok
+test_manifest_and_symlink (test_compose.TestCompose.test_manifest_and_symlink) ... ok
+test_manifest_format_drift_is_rejected (test_compose.TestCompose.test_manifest_format_drift_is_rejected) ... ok
+test_manifest_without_trailing_newline_is_preserved (test_compose.TestCompose.test_manifest_without_trailing_newline_is_preserved) ... ok
+test_native_post_checks_protect_manifest_and_runtime (test_compose.TestCompose.test_native_post_checks_protect_manifest_and_runtime) ... ok
+test_native_requires_launcher_patch_applicability (test_compose.TestCompose.test_native_requires_launcher_patch_applicability) ... ok
+test_native_resolve_gates_and_compose_with_override (test_compose.TestCompose.test_native_resolve_gates_and_compose_with_override) ... ok
+test_native_supplicant_validation_and_inputs (test_compose.TestCompose.test_native_supplicant_validation_and_inputs) ... ok
+test_native_without_optional_supplicant (test_compose.TestCompose.test_native_without_optional_supplicant) ... ok
+test_offline_gates (test_compose.TestCompose.test_offline_gates) ... ok
+test_only_allowed_paths_change_and_no_lfs (test_compose.TestCompose.test_only_allowed_paths_change_and_no_lfs) ... ok
+test_pin_without_supplicant (test_compose.TestCompose.test_pin_without_supplicant) ... ok
+test_publish_requires_non_shallow_upstream (test_compose.TestCompose.test_publish_requires_non_shallow_upstream) ... ok
+test_release_launcher_selection_and_compose (test_compose.TestCompose.test_release_launcher_selection_and_compose) ... ok
+test_resolved_json_is_canonical_and_inputs_include_resolution (test_compose.TestCompose.test_resolved_json_is_canonical_and_inputs_include_resolution) ... ok
+test_stock_manifest_post_checks_reject_content_and_mode_drift (test_compose.TestCompose.test_stock_manifest_post_checks_reject_content_and_mode_drift) ... ok
+test_supplicant_bash_unit (test_compose.TestCompose.test_supplicant_bash_unit) ... ok
+test_supplicant_files (test_compose.TestCompose.test_supplicant_files) ... ok
+test_supplicant_inputs_cover_binary_and_copyright (test_compose.TestCompose.test_supplicant_inputs_cover_binary_and_copyright) ... ok
+test_supplicant_launch_value_post_check (test_compose.TestCompose.test_supplicant_launch_value_post_check) ... ok
+test_supplicant_post_checks_reject_content_and_mode_drift (test_compose.TestCompose.test_supplicant_post_checks_reject_content_and_mode_drift) ... ok
+test_ui_patch_already_applied (test_compose.TestCompose.test_ui_patch_already_applied) ... ok
+test_unknown_launcher_fails_gates_compose_and_inputs (test_compose.TestCompose.test_unknown_launcher_fails_gates_compose_and_inputs) ... ok
+test_updated_trigger_is_read_only_and_preserves_version_updates (test_compose.TestCompose.test_updated_trigger_is_read_only_and_preserves_version_updates) ... ok
+test_wrong_supplicant_sha_fails_compose (test_compose.TestCompose.test_wrong_supplicant_sha_fails_compose) ... ok
+test_known_probe_and_stock_policy_agree_with_resolved_files (test_compose.TestG8.test_known_probe_and_stock_policy_agree_with_resolved_files) ... ok
+test_modes_for_missing_probe_missing_wpa_and_mismatch (test_compose.TestG8.test_modes_for_missing_probe_missing_wpa_and_mismatch) ... ok
+test_forbidden_commands_even_when_not_executed (test_compose.TestLaunchParser.test_forbidden_commands_even_when_not_executed) ... ok
+test_literals_only_and_no_shell_process (test_compose.TestLaunchParser.test_literals_only_and_no_shell_process) ... ok
+test_missing_duplicated_indirect_or_unrecognized_assignments_fail_closed (test_compose.TestLaunchParser.test_missing_duplicated_indirect_or_unrecognized_assignments_fail_closed) ... ok
+test_cli_success_difference_and_invalid_input (test_dt_wifi.TestBoardComparison.test_cli_success_difference_and_invalid_input) ... ok
+test_differing_node_paths_are_reported (test_dt_wifi.TestBoardComparison.test_differing_node_paths_are_reported) ... ok
+test_missing_added_duplicate_and_invalid_boards_fail_closed (test_dt_wifi.TestBoardComparison.test_missing_added_duplicate_and_invalid_boards_fail_closed) ... ok
+test_pair_by_both_board_ids_independent_of_order (test_dt_wifi.TestBoardComparison.test_pair_by_both_board_ids_independent_of_order) ... ok
+test_header_bounds_and_layout_fail_closed (test_dt_wifi.TestFdtParser.test_header_bounds_and_layout_fail_closed) ... ok
+test_malformed_token_streams (test_dt_wifi.TestFdtParser.test_malformed_token_streams) ... ok
+test_nesting_limit_includes_root (test_dt_wifi.TestFdtParser.test_nesting_limit_includes_root) ... ok
+test_overlapping_blocks_and_unterminated_reservations (test_dt_wifi.TestFdtParser.test_overlapping_blocks_and_unterminated_reservations) ... ok
+test_property_names_are_bounded_by_strings_block (test_dt_wifi.TestFdtParser.test_property_names_are_bounded_by_strings_block) ... ok
+test_round_trip_tokens_and_reordering (test_dt_wifi.TestFdtParser.test_round_trip_tokens_and_reordering) ... ok
+test_identical_stock_dtbs_and_usb_only_change (test_dt_wifi.TestMountedWifi.test_identical_stock_dtbs_and_usb_only_change) ... ok
+test_added_removed_or_renamed_nodes_and_properties (test_dt_wifi.TestWifiDigest.test_added_removed_or_renamed_nodes_and_properties) ... ok
+test_compatible_substrings_select_nodes (test_dt_wifi.TestWifiDigest.test_compatible_substrings_select_nodes) ... ok
+test_cycles_are_bounded (test_dt_wifi.TestWifiDigest.test_cycles_are_bounded) ... ok
+test_every_aligned_matching_cell_is_a_reference_including_plain_values (test_dt_wifi.TestWifiDigest.test_every_aligned_matching_cell_is_a_reference_including_plain_values) ... ok
+test_invalid_phandles_fail_closed_even_outside_selection (test_dt_wifi.TestWifiDigest.test_invalid_phandles_fail_closed_even_outside_selection) ... ok
+test_phandle_renumbering_and_serialization_order (test_dt_wifi.TestWifiDigest.test_phandle_renumbering_and_serialization_order) ... ok
+test_plain_value_blind_spot_during_phandle_renumbering (test_dt_wifi.TestWifiDigest.test_plain_value_blind_spot_during_phandle_renumbering) ... ok
+test_references_on_second_level_still_normalize (test_dt_wifi.TestWifiDigest.test_references_on_second_level_still_normalize) ... ok
+test_selected_properties_and_two_reference_levels (test_dt_wifi.TestWifiDigest.test_selected_properties_and_two_reference_levels) ... ok
+test_third_level_and_unrelated_changes_are_outside_selection (test_dt_wifi.TestWifiDigest.test_third_level_and_unrelated_changes_are_outside_selection) ... ok
+test_allowed_paths (test_follow_state.TestAllowlist.test_allowed_paths) ... ok
+test_readme_outside_markers_or_missing_duplicate_reversed_markers (test_follow_state.TestAllowlist.test_readme_outside_markers_or_missing_duplicate_reversed_markers) ... ok
+test_reject_deletions_renames_modes_symlinks_and_unknown_paths (test_follow_state.TestAllowlist.test_reject_deletions_renames_modes_symlinks_and_unknown_paths) ... ok
+test_auto_urls_are_exact (test_follow_state.TestAutoValidation.test_auto_urls_are_exact) ... ok
+test_metadata_revert_and_withdrawal_schema (test_follow_state.TestAutoValidation.test_metadata_revert_and_withdrawal_schema) ... ok
+test_apply_brakes_and_immutability (test_follow_state.TestFollowState.test_apply_brakes_and_immutability) ... ok
+test_canonical_bytes_and_status_not_in_pin (test_follow_state.TestFollowState.test_canonical_bytes_and_status_not_in_pin) ... ok
+test_duplicate_live_pin_holds_even_when_ignored (test_follow_state.TestFollowState.test_duplicate_live_pin_holds_even_when_ignored) ... ok
+test_gate_version_covers_scripts_policy_and_reference_but_not_status (test_follow_state.TestFollowState.test_gate_version_covers_scripts_policy_and_reference_but_not_status) ... ok
+test_load_missing_malformed_duplicate_keys_and_patch_tampering (test_follow_state.TestFollowState.test_load_missing_malformed_duplicate_keys_and_patch_tampering) ... ok
+test_malformed_state_fails_closed (test_follow_state.TestFollowState.test_malformed_state_fails_closed) ... ok
+test_manual_fix_overrides_withdrawn_directly_and_as_base (test_follow_state.TestFollowState.test_manual_fix_overrides_withdrawn_directly_and_as_base) ... ok
+test_modes_and_all_allowed_branches_adopt_immediately (test_follow_state.TestFollowState.test_modes_and_all_allowed_branches_adopt_immediately) ... ok
+test_reservation_never_reuses_releases_reverts_or_abandoned_drafts (test_follow_state.TestFollowState.test_reservation_never_reuses_releases_reverts_or_abandoned_drafts) ... ok
+test_reserve_before_pin_is_a_separate_transition (test_follow_state.TestFollowState.test_reserve_before_pin_is_a_separate_transition) ... ok
+test_seeds_and_reference_qualification (test_follow_state.TestFollowState.test_seeds_and_reference_qualification) ... ok
+test_union_includes_ignored_auto_and_revert_identities (test_follow_state.TestFollowState.test_union_includes_ignored_auto_and_revert_identities) ... ok
+test_withdrawal_precedes_mode_branch_and_pause (test_follow_state.TestFollowState.test_withdrawal_precedes_mode_branch_and_pause) ... ok
+test_branch_is_required (test_issues.TestIssues.test_branch_is_required) ... ok
+test_close_only_listed_issues_for_branch_and_kind (test_issues.TestIssues.test_close_only_listed_issues_for_branch_and_kind) ... ok
+test_close_without_matches_leaves_other_branch_alone (test_issues.TestIssues.test_close_without_matches_leaves_other_branch_alone) ... ok
+test_create_uses_both_labels_and_branch_title_and_body (test_issues.TestIssues.test_create_uses_both_labels_and_branch_title_and_body) ... ok
+test_edit_and_consolidation_are_isolated_by_branch_and_kind (test_issues.TestIssues.test_edit_and_consolidation_are_isolated_by_branch_and_kind) ... ok
+test_pin_and_gate_failure_reason_from_log (test_issues.TestIssues.test_pin_and_gate_failure_reason_from_log) ... ok
+test_branch_environment_refs_and_job_concurrency (test_issues.TestNightlyWorkflow.test_branch_environment_refs_and_job_concurrency) ... ok
+test_branch_names_only_in_matrix (test_issues.TestNightlyWorkflow.test_branch_names_only_in_matrix) ... ok
+test_every_issue_call_passes_branch (test_issues.TestNightlyWorkflow.test_every_issue_call_passes_branch) ... ok
+test_resolve_step_and_pin_file_plumbing (test_issues.TestNightlyWorkflow.test_resolve_step_and_pin_file_plumbing) ... ok
+test_branch_environment_refs_concurrency_and_guard (test_issues.TestRollbackWorkflow.test_branch_environment_refs_concurrency_and_guard) ... ok
+test_placeholder_exits_before_git_or_gh (test_issues.TestRollbackWorkflow.test_placeholder_exits_before_git_or_gh) ... ok
+test_added_initramfs_member_is_not_identity (test_kernel_equiv.TestKernelEquiv.test_added_initramfs_member_is_not_identity) ... ok
+test_bad_ikconfig_even_in_both_images_is_rejected (test_kernel_equiv.TestKernelEquiv.test_bad_ikconfig_even_in_both_images_is_rejected) ... ok
+test_build_strings_may_only_grow_into_nul_padding (test_kernel_equiv.TestKernelEquiv.test_build_strings_may_only_grow_into_nul_padding) ... ok
+test_cert_and_buildid_mutations_are_identity (test_kernel_equiv.TestKernelEquiv.test_cert_and_buildid_mutations_are_identity) ... ok
+test_cert_shape_and_length_must_match (test_kernel_equiv.TestKernelEquiv.test_cert_shape_and_length_must_match) ... ok
+test_cli (test_kernel_equiv.TestKernelEquiv.test_cli) ... ok
+test_differing_run_crosses_pointer_word_boundary (test_kernel_equiv.TestKernelEquiv.test_differing_run_crosses_pointer_word_boundary) ... ok
+test_identity_markers_cannot_authorize_new_masks (test_kernel_equiv.TestKernelEquiv.test_identity_markers_cannot_authorize_new_masks) ... ok
+test_identity_only_with_date_and_initramfs_length_changes (test_kernel_equiv.TestKernelEquiv.test_identity_only_with_date_and_initramfs_length_changes) ... ok
+test_initramfs_flags_and_size_word_slot (test_kernel_equiv.TestKernelEquiv.test_initramfs_flags_and_size_word_slot) ... ok
+test_initramfs_gzip_headers_cannot_expand_mask_over_data (test_kernel_equiv.TestKernelEquiv.test_initramfs_gzip_headers_cannot_expand_mask_over_data) ... ok
+test_initramfs_non_mtime_content_change (test_kernel_equiv.TestKernelEquiv.test_initramfs_non_mtime_content_change) ... ok
+test_initramfs_padding_and_former_slack_are_checked (test_kernel_equiv.TestKernelEquiv.test_initramfs_padding_and_former_slack_are_checked) ... ok
+test_initramfs_size_word_must_match_member (test_kernel_equiv.TestKernelEquiv.test_initramfs_size_word_must_match_member) ... ok
+test_invalid_headers_and_fdt_chains (test_kernel_equiv.TestKernelEquiv.test_invalid_headers_and_fdt_chains) ... ok
+test_mutations_fail_closed (test_kernel_equiv.TestKernelEquiv.test_mutations_fail_closed) ... ok
+test_native_sae (test_kernel_equiv.TestKernelEquiv.test_native_sae) ... ok
+test_only_one_pointer_word_may_track_initramfs (test_kernel_equiv.TestKernelEquiv.test_only_one_pointer_word_may_track_initramfs) ... ok
+test_rsnxe_marker_in_kernel (test_kernel_equiv.TestKernelEquiv.test_rsnxe_marker_in_kernel) ... ok
+test_uts_build_numbers_keep_stock_bounds (test_kernel_equiv.TestKernelEquiv.test_uts_build_numbers_keep_stock_bounds) ... ok
+test_banner_identity (test_kernel_equiv.TestKernelHelpers.test_banner_identity) ... ok
+test_ikconfig_delta_exact (test_kernel_equiv.TestKernelHelpers.test_ikconfig_delta_exact) ... ok
+test_image_layout (test_kernel_equiv.TestKernelHelpers.test_image_layout) ... ok
+test_reference_rebuilds_and_negatives (test_kernel_equiv.TestMountedRebuilds.test_reference_rebuilds_and_negatives) ... ok
+test_real_sae_markers (test_kernel_equiv.TestRealBoots.test_real_sae_markers) ... skipped 'set WPA3_REAL_BOOTS_DIR for real stock/WPA3 images'
+test_stock_vs_wpa3 (test_kernel_equiv.TestRealBoots.test_stock_vs_wpa3) ... skipped 'set WPA3_REAL_BOOTS_DIR for real stock/WPA3 images'
+test_three_stock_pairs (test_kernel_equiv.TestRealBoots.test_three_stock_pairs) ... skipped 'set WPA3_REAL_BOOTS_DIR for real stock/WPA3 images'
+test_cli_modes (test_kernel_equiv.TestRebuildEquiv.test_cli_modes) ... ok
+test_dtb_blobs_rejects_invalid_chains (test_kernel_equiv.TestRebuildEquiv.test_dtb_blobs_rejects_invalid_chains) ... ok
+test_dtb_multiset_retains_duplicates_and_exact_bytes (test_kernel_equiv.TestRebuildEquiv.test_dtb_multiset_retains_duplicates_and_exact_bytes) ... ok
+test_dtb_order_is_rebuild_only (test_kernel_equiv.TestRebuildEquiv.test_dtb_order_is_rebuild_only) ... ok
+test_proc_banner_mask_is_bounded_and_rebuild_only (test_kernel_equiv.TestRebuildEquiv.test_proc_banner_mask_is_bounded_and_rebuild_only) ... ok
+test_rebuild_preserves_other_stock_requirements (test_kernel_equiv.TestRebuildEquiv.test_rebuild_preserves_other_stock_requirements) ... ok
+test_both_tags_avoid_all_collisions (test_kernel_follow.TestAssembly.test_both_tags_avoid_all_collisions) ... ok
+test_config_markers_layout_signature_size_and_revert (test_kernel_follow.TestAssembly.test_config_markers_layout_signature_size_and_revert) ... ok
+test_k0_shape_agnos_signature_and_repack (test_kernel_follow.TestAssembly.test_k0_shape_agnos_signature_and_repack) ... ok
+test_k5_code_change_is_not_identity (test_kernel_follow.TestAssembly.test_k5_code_change_is_not_identity) ... ok
+test_publish_uses_wrapped_image_dtb_with_raw_image_present (test_kernel_follow.TestAssembly.test_publish_uses_wrapped_image_dtb_with_raw_image_present) ... ok
+test_rebuilt_and_wifi_manifests (test_kernel_follow.TestAssembly.test_rebuilt_and_wifi_manifests) ... ok
+test_replay_allows_identity_dtb_order_and_expected_tag_only (test_kernel_follow.TestAssembly.test_replay_allows_identity_dtb_order_and_expected_tag_only) ... ok
+test_source_diff_and_blob_proof (test_kernel_follow.TestAssembly.test_source_diff_and_blob_proof) ... ok
+test_uniqueness_requires_all_jobs_and_prefers_oracle (test_kernel_follow.TestAssembly.test_uniqueness_requires_all_jobs_and_prefers_oracle) ... ok
+test_archive_rejects_git_and_escape (test_kernel_follow.TestBuildBoundary.test_archive_rejects_git_and_escape) ... ok
+test_dependency_closure_and_symlink_refusal (test_kernel_follow.TestBuildBoundary.test_dependency_closure_and_symlink_refusal) ... ok
+test_modes_and_network_guard (test_kernel_follow.TestBuildBoundary.test_modes_and_network_guard) ... ok
+test_q5_comparison_and_artifact_tampering (test_kernel_follow.TestBuildBoundary.test_q5_comparison_and_artifact_tampering) ... ok
+test_workflow_yaml_structure_enforces_readonly (test_kernel_follow.TestBuildBoundary.test_workflow_yaml_structure_enforces_readonly) ... ok
+test_divergence_sees_reverse_tested_change (test_kernel_follow.TestContentGates.test_divergence_sees_reverse_tested_change) ... ok
+test_dtb_multiset_and_chain_limit (test_kernel_follow.TestContentGates.test_dtb_multiset_and_chain_limit) ... ok
+test_line_commit_binary_and_rename_gates (test_kernel_follow.TestContentGates.test_line_commit_binary_and_rename_gates) ... ok
+test_recipe_only_cmdline_normalized (test_kernel_follow.TestContentGates.test_recipe_only_cmdline_normalized) ... ok
+test_risk_paths_dependency_closure_and_all_config (test_kernel_follow.TestContentGates.test_risk_paths_dependency_closure_and_all_config) ... ok
+test_budget_dedup_and_oracle_order (test_kernel_follow.TestKernelDiscovery.test_budget_dedup_and_oracle_order) ... ok
+test_moved_version_path (test_kernel_follow.TestKernelDiscovery.test_moved_version_path) ... ok
+test_oracle_at_build_last_and_same_repo_pr (test_kernel_follow.TestKernelDiscovery.test_oracle_at_build_last_and_same_repo_pr) ... ok
+test_pull_refs_never_propose_or_prove_membership (test_kernel_follow.TestKernelDiscovery.test_pull_refs_never_propose_or_prove_membership) ... ok
+test_tip_api_and_outage_fallback (test_kernel_follow.TestKernelDiscovery.test_tip_api_and_outage_fallback) ... ok
+test_every_mode_kind_cell_and_stage_b_policy (test_pins.TestFollowCLI.test_every_mode_kind_cell_and_stage_b_policy) ... ok
+test_missing_or_malformed_state_cli_is_hold_in_every_mode (test_pins.TestFollowCLI.test_missing_or_malformed_state_cli_is_hold_in_every_mode) ... ok
+test_only_recorded_kernel_attempt_holds_escalate_without_time_policy (test_pins.TestFollowCLI.test_only_recorded_kernel_attempt_holds_escalate_without_time_policy) ... ok
+test_validate_state_cli_and_unknown_mode (test_pins.TestFollowCLI.test_validate_state_cli_and_unknown_mode) ... ok
+test_g8_explicit_manual_mismatch_and_probe_pending (test_pins.TestFollowResolver.test_g8_explicit_manual_mismatch_and_probe_pending) ... ok
+test_known_supplicant_resolves_independently_from_base_in_enforced_modes (test_pins.TestFollowResolver.test_known_supplicant_resolves_independently_from_base_in_enforced_modes) ... ok
+test_live_auto_ignored_until_on_then_all_four_adopt (test_pins.TestFollowResolver.test_live_auto_ignored_until_on_then_all_four_adopt) ... ok
+test_manual_fix_overrides_withdrawn_derived_base (test_pins.TestFollowResolver.test_manual_fix_overrides_withdrawn_derived_base) ... ok
+test_native_agnos_requires_qualification_and_known_stock_needs_no_base (test_pins.TestFollowResolver.test_native_agnos_requires_qualification_and_known_stock_needs_no_base) ... ok
+test_probe_and_wpa_not_raised_off_dryrun_json_unchanged (test_pins.TestFollowResolver.test_probe_and_wpa_not_raised_off_dryrun_json_unchanged) ... ok
+test_state_validation_precedes_reader_and_fetch_even_in_off (test_pins.TestFollowResolver.test_state_validation_precedes_reader_and_fetch_even_in_off) ... ok
+test_unknown_stock_policy_and_stage_b (test_pins.TestFollowResolver.test_unknown_stock_policy_and_stage_b) ... ok
+test_withdrawn_derived_base_precedes_unrelated_newer_download (test_pins.TestFollowResolver.test_withdrawn_derived_base_precedes_unrelated_newer_download) ... ok
+test_withdrawn_direct_and_derived_never_wait_for_probe_wpa_or_attempt (test_pins.TestFollowResolver.test_withdrawn_direct_and_derived_never_wait_for_probe_wpa_or_attempt) ... ok
+test_supplicant_digests (test_pins.TestPinValidation.test_supplicant_digests) ... ok
+test_supplicant_is_optional (test_pins.TestPinValidation.test_supplicant_is_optional) ... ok
+test_supplicant_keys_and_object (test_pins.TestPinValidation.test_supplicant_keys_and_object) ... ok
+test_supplicant_paths_stay_inside_repo (test_pins.TestPinValidation.test_supplicant_paths_stay_inside_repo) ... ok
+test_all_pins_are_validated_before_fetch_in_every_mode (test_pins.TestResolver.test_all_pins_are_validated_before_fetch_in_every_mode) ... ok
+test_bases_are_numeric_descending (test_pins.TestResolver.test_bases_are_numeric_descending) ... ok
+test_changed_kernel_holds_with_first_reason (test_pins.TestResolver.test_changed_kernel_holds_with_first_reason) ... ok
+test_cli_canonical_output_and_hold_diagnostics (test_pins.TestResolver.test_cli_canonical_output_and_hold_diagnostics) ... ok
+test_derived_preserves_tested_pin_and_replaces_origin (test_pins.TestResolver.test_derived_preserves_tested_pin_and_replaces_origin) ... ok
+test_download_failure_holds (test_pins.TestResolver.test_download_failure_holds) ... ok
+test_equivalent_with_agnos_py_change_holds (test_pins.TestResolver.test_equivalent_with_agnos_py_change_holds) ... ok
+test_hash_failure_holds_for_upstream_and_base (test_pins.TestResolver.test_hash_failure_holds_for_upstream_and_base) ... ok
+test_invalid_stock_holds (test_pins.TestResolver.test_invalid_stock_holds) ... ok
+test_native_does_not_download_bases_or_require_agnos_py (test_pins.TestResolver.test_native_does_not_download_bases_or_require_agnos_py) ... ok
+test_native_uses_supplicant_from_newest_pin (test_pins.TestResolver.test_native_uses_supplicant_from_newest_pin) ... ok
+test_partial_sae_holds_without_base_download (test_pins.TestResolver.test_partial_sae_holds_without_base_download) ... ok
+test_pin_tag_hash_mapping_is_one_to_one (test_pins.TestResolver.test_pin_tag_hash_mapping_is_one_to_one) ... ok
+test_pinned_has_no_downloads (test_pins.TestResolver.test_pinned_has_no_downloads) ... ok
+test_repository_198_and_199_pins_resolve_with_distinct_tag_hash_pairs (test_pins.TestResolver.test_repository_198_and_199_pins_resolve_with_distinct_tag_hash_pairs) ... ok
+test_sae_without_rsnxe_holds_without_base_download (test_pins.TestResolver.test_sae_without_rsnxe_holds_without_base_download) ... ok
+test_complete_offline_classification_with_clearsigned_descriptor (test_wpa_follow.ClassificationTests.test_complete_offline_classification_with_clearsigned_descriptor) ... ok
+test_deb_member_without_installing (test_wpa_follow.ClassificationTests.test_deb_member_without_installing) ... ok
+test_descriptor_paths_reject_traversal_and_duplicates (test_wpa_follow.ClassificationTests.test_descriptor_paths_reject_traversal_and_duplicates) ... ok
+test_gpgv_failure_cannot_be_bypassed (test_wpa_follow.ClassificationTests.test_gpgv_failure_cannot_be_bypassed) ... ok
+test_signed_index_file_mutation_rejected (test_wpa_follow.ClassificationTests.test_signed_index_file_mutation_rejected) ... ok
+test_signed_release_uses_only_gpgv_output (test_wpa_follow.ClassificationTests.test_signed_release_uses_only_gpgv_output) ... ok
+test_w2_versions (test_wpa_follow.ClassificationTests.test_w2_versions) ... ok
+test_w3_allows_only_patch_and_changelog_updates (test_wpa_follow.ClassificationTests.test_w3_allows_only_patch_and_changelog_updates) ... ok
+test_w3_mode_only_rules_change_holds (test_wpa_follow.ClassificationTests.test_w3_mode_only_rules_change_holds) ... ok
+test_w3_patch_removal_and_reorder_hold (test_wpa_follow.ClassificationTests.test_w3_patch_removal_and_reorder_hold) ... ok
+test_w3_rules_control_and_config_hold (test_wpa_follow.ClassificationTests.test_w3_rules_control_and_config_hold) ... ok
+test_bundle_does_not_depend_on_checkout_time (test_wpa_follow.OrchestrationTests.test_bundle_does_not_depend_on_checkout_time) ... ok
+test_deduplicate_systems_and_reject_conflicts (test_wpa_follow.OrchestrationTests.test_deduplicate_systems_and_reject_conflicts) ... ok
+test_off_does_not_fetch (test_wpa_follow.OrchestrationTests.test_off_does_not_fetch) ... ok
+test_pinned_suite_never_reads_request_bundle (test_wpa_follow.OrchestrationTests.test_pinned_suite_never_reads_request_bundle) ... ok
+test_prior_result_requires_identical_rebuilt_assets (test_wpa_follow.OrchestrationTests.test_prior_result_requires_identical_rebuilt_assets) ... ok
+test_seeded_replay_does_not_download (test_wpa_follow.OrchestrationTests.test_seeded_replay_does_not_download) ... ok
+test_t0_rejects_wrong_arch_and_missing_now (test_wpa_follow.OrchestrationTests.test_t0_rejects_wrong_arch_and_missing_now) ... ok
+test_t0_subset_and_bind_now (test_wpa_follow.OrchestrationTests.test_t0_subset_and_bind_now) ... ok
+test_vm_stops_even_when_start_fails (test_wpa_follow.OrchestrationTests.test_vm_stops_even_when_start_fails) ... ok
+test_actual_reverse_patch_holds_before_quilt (test_wpa_follow.PatchTests.test_actual_reverse_patch_holds_before_quilt) ... ok
+test_changed_global_c_text_holds (test_wpa_follow.PatchTests.test_changed_global_c_text_holds) ... ok
+test_function_identity_ignores_unrelated_function (test_wpa_follow.PatchTests.test_function_identity_ignores_unrelated_function) ... ok
+test_fuzz_rejected_offsets_recorded (test_wpa_follow.PatchTests.test_fuzz_rejected_offsets_recorded) ... ok
+test_reverse_is_reported_separately (test_wpa_follow.PatchTests.test_reverse_is_reported_separately) ... ok
+test_hash_mismatch_rejected (test_wpa_follow.RequestTests.test_hash_mismatch_rejected) ... ok
+test_request_asking_to_run_shipped_code_rejected (test_wpa_follow.RequestTests.test_request_asking_to_run_shipped_code_rejected) ... ok
+test_result_all_tests_hashes_and_commit_must_match (test_wpa_follow.RequestTests.test_result_all_tests_hashes_and_commit_must_match) ... ok
+test_shipped_asset_code_and_metadata_rejected (test_wpa_follow.RequestTests.test_shipped_asset_code_and_metadata_rejected) ... ok
+test_valid_fixture_every_hash_verified (test_wpa_follow.RequestTests.test_valid_fixture_every_hash_verified) ... ok
+test_wrong_pin_url_path_deadline_hold (test_wpa_follow.RequestTests.test_wrong_pin_url_path_deadline_hold) ... ok
+test_all_four_chunks_and_holes (test_wpa_follow.SparseTests.test_all_four_chunks_and_holes) ... ok
+test_bad_crc_and_header_crc (test_wpa_follow.SparseTests.test_bad_crc_and_header_crc) ... ok
+test_extended_headers_and_truncation (test_wpa_follow.SparseTests.test_extended_headers_and_truncation) ... ok
+test_hash_mismatch_discards_before_debugfs (test_wpa_follow.SparseTests.test_hash_mismatch_discards_before_debugfs) ... ok
+test_lengths_and_types_rejected (test_wpa_follow.SparseTests.test_lengths_and_types_rejected) ... ok
+test_xz_streaming (test_wpa_follow.SparseTests.test_xz_streaming) ... ok
+
+----------------------------------------------------------------------
+Ran 237 tests in 49.092s
+
+OK (skipped=3)
+
+Deterministic compose SHA (two runs): 67a9ebd4155f9abc1cc028c682c3c62168ce3c79
+WPA3-Inputs: 1c9c8e0fb187a5a127e03a368e42233be4351d7687ec40f6a4a5dfdf47cbbf9f
+
+WPA3 boot tag missing; attempt 1/3 for hash-a
+WPA3 boot tag missing; attempt 2/3 for hash-a
+WPA3 boot tag missing; attempt 3/3 for hash-a
+WPA3 boot retry limit reached for hash-a
+WPA3 boot retry limit reached for hash-a
+WPA3 boot tag missing; attempt 1/3 for hash-b
+WPA3 boot retry limit reached for hash-b
+WPA3 boot tag missing; attempt 1/3 for hash-c
+PASS: wpa3_boot_needed (tokens, counts 1/2/3, brake, hash reset, empty tag/hash)
+AGNOS update manifest: /Users/nagash/Github/OP_wpa3/wpa3-ci/.tmp/test-compose-pa6pavw3/device/openpilot/system/hardware/comma/agnos.json
+WPA3 boot tag missing; attempt 1/3 for hash-a
+AGNOS update manifest: /Users/nagash/Github/OP_wpa3/wpa3-ci/.tmp/test-compose-pa6pavw3/device/openpilot/system/hardware/comma/agnos.json
+WPA3 boot tag missing; attempt 2/3 for hash-a
+AGNOS update manifest: /Users/nagash/Github/OP_wpa3/wpa3-ci/.tmp/test-compose-pa6pavw3/device/openpilot/system/hardware/comma/agnos.json
+WPA3 boot tag missing; attempt 3/3 for hash-a
+AGNOS update manifest: /Users/nagash/Github/OP_wpa3/wpa3-ci/.tmp/test-compose-pa6pavw3/device/openpilot/system/hardware/comma/agnos.json
+WPA3 boot retry limit reached for hash-a
+AGNOS update manifest: /Users/nagash/Github/OP_wpa3/wpa3-ci/.tmp/test-compose-pa6pavw3/device/openpilot/common/hardware/comma/agnos.stock.json
+WPA3 boot retry limit reached for hash-a
+AGNOS update manifest: /Users/nagash/Github/OP_wpa3/wpa3-ci/.tmp/test-compose-pa6pavw3/device/openpilot/common/hardware/comma/agnos.stock.json
+WPA3 boot retry limit reached for hash-a
+AGNOS update manifest: /Users/nagash/Github/OP_wpa3/wpa3-ci/.tmp/test-compose-pa6pavw3/device/openpilot/common/hardware/comma/agnos.stock.json
+WPA3 boot retry limit reached for hash-a
+AGNOS update manifest: /Users/nagash/Github/OP_wpa3/wpa3-ci/.tmp/test-compose-pa6pavw3/device/openpilot/common/hardware/comma/agnos.stock.json
+WPA3 boot retry limit reached for hash-a
+AGNOS update manifest: /Users/nagash/Github/OP_wpa3/wpa3-ci/.tmp/test-compose-pa6pavw3/device/openpilot/common/hardware/comma/agnos.stock.json
+WPA3 boot retry limit reached for hash-a
+AGNOS update manifest: /Users/nagash/Github/OP_wpa3/wpa3-ci/.tmp/test-compose-pa6pavw3/device/openpilot/common/hardware/comma/agnos.stock.json
+WPA3 boot retry limit reached for hash-a
+AGNOS update manifest: /Users/nagash/Github/OP_wpa3/wpa3-ci/.tmp/test-compose-pa6pavw3/device/openpilot/common/hardware/comma/agnos.stock.json
+WPA3 boot retry limit reached for hash-a
+AGNOS update manifest: /Users/nagash/Github/OP_wpa3/wpa3-ci/.tmp/test-compose-pa6pavw3/device/openpilot/system/hardware/comma/agnos.json
+WPA3 boot tag missing; attempt 1/3 for hash-a
+AGNOS update manifest: /Users/nagash/Github/OP_wpa3/wpa3-ci/.tmp/test-compose-pa6pavw3/device/openpilot/system/hardware/comma/agnos.json
+PASS: wpa3_update_manifest (version mismatch, proven tag, attempts 1/2/3, stock fallback, malformed, missing stock)
+AGNOS update manifest: /Users/nagash/Github/OP_wpa3/wpa3-ci/.tmp/test-compose-pa6pavw3/device/openpilot/system/hardware/comma/agnos.json
+PASS: native boot placeholders (no boot trigger or version retry counting)
+
+WPA3: reverted to stock wpa_supplicant after service failure
+WPA3: reverted to stock wpa_supplicant after service failure
+WPA3: reverted to stock wpa_supplicant after service failure
+WPA3: reverted to stock wpa_supplicant after service failure
+PASS: wpa3_supplicant_override (guards, MainPID executable, failure reasons/threshold, busy bind, verified rollback, retained crash hook, unit quoting)
+PROBE: dryrun; 0 distinct stock builds; no state changes
+G8: WARN: 80d9373348ddff2a5d1f534fab3420383939c96f3eba60baab6b15339fc602c7: known stock/override; dryrun
+PROBE: dryrun; 0 distinct stock builds; no state changes
+T3: PENDING (dryrun)

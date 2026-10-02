@@ -1,0 +1,15 @@
+usage: runner.py [-h] [--dry-run] [--self-test] [--suite-commit SUITE_COMMIT]
+                 [--suite-repo SUITE_REPO] [--state-dir STATE_DIR]
+                 [--results-repo RESULTS_REPO]
+
+Pull-only, data-only Mac mini runner. Never grants the VM a host mount or
+token.
+
+options:
+  -h, --help            show this help message and exit
+  --dry-run
+  --self-test
+  --suite-commit SUITE_COMMIT
+  --suite-repo SUITE_REPO
+  --state-dir STATE_DIR
+  --results-repo RESULTS_REPO

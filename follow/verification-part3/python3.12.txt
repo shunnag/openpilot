@@ -1,0 +1,69 @@
+.............boot download: network error on attempt 1/3: interrupted body; retrying in 5s
+.boot download: network error on attempt 1/3: <urlopen error CDN unavailable>; retrying in 5s
+boot download: network error on attempt 2/3: <urlopen error CDN unavailable>; retrying in 15s
+boot download: network error on attempt 1/3: read timeout; retrying in 5s
+boot download: network error on attempt 2/3: read timeout; retrying in 15s
+boot download: network error on attempt 1/3: reset; retrying in 5s
+boot download: network error on attempt 2/3: reset; retrying in 15s
+boot download: network error on attempt 1/3: HTTP Error 503: unavailable; retrying in 5s
+boot download: network error on attempt 2/3: HTTP Error 503: unavailable; retrying in 15s
+boot download: network error on attempt 1/3: HTTP Error 429: slow down; retrying in 5s
+boot download: network error on attempt 2/3: HTTP Error 429: slow down; retrying in 15s
+boot download: network error on attempt 1/3: <urlopen error CDN unavailable>; retrying in 5s
+boot download: network error on attempt 2/3: <urlopen error CDN unavailable>; retrying in 15s
+.......................................................................................................................sss.....................................................................................................
+----------------------------------------------------------------------
+Ran 237 tests in 55.921s
+
+OK (skipped=3)
+
+Deterministic compose SHA (two runs): 67a9ebd4155f9abc1cc028c682c3c62168ce3c79
+WPA3-Inputs: 1c9c8e0fb187a5a127e03a368e42233be4351d7687ec40f6a4a5dfdf47cbbf9f
+
+WPA3 boot tag missing; attempt 1/3 for hash-a
+WPA3 boot tag missing; attempt 2/3 for hash-a
+WPA3 boot tag missing; attempt 3/3 for hash-a
+WPA3 boot retry limit reached for hash-a
+WPA3 boot retry limit reached for hash-a
+WPA3 boot tag missing; attempt 1/3 for hash-b
+WPA3 boot retry limit reached for hash-b
+WPA3 boot tag missing; attempt 1/3 for hash-c
+PASS: wpa3_boot_needed (tokens, counts 1/2/3, brake, hash reset, empty tag/hash)
+AGNOS update manifest: /Users/nagash/Github/OP_wpa3/wpa3-ci/.tmp/test-compose-4a2xjhgb/device/openpilot/system/hardware/comma/agnos.json
+WPA3 boot tag missing; attempt 1/3 for hash-a
+AGNOS update manifest: /Users/nagash/Github/OP_wpa3/wpa3-ci/.tmp/test-compose-4a2xjhgb/device/openpilot/system/hardware/comma/agnos.json
+WPA3 boot tag missing; attempt 2/3 for hash-a
+AGNOS update manifest: /Users/nagash/Github/OP_wpa3/wpa3-ci/.tmp/test-compose-4a2xjhgb/device/openpilot/system/hardware/comma/agnos.json
+WPA3 boot tag missing; attempt 3/3 for hash-a
+AGNOS update manifest: /Users/nagash/Github/OP_wpa3/wpa3-ci/.tmp/test-compose-4a2xjhgb/device/openpilot/system/hardware/comma/agnos.json
+WPA3 boot retry limit reached for hash-a
+AGNOS update manifest: /Users/nagash/Github/OP_wpa3/wpa3-ci/.tmp/test-compose-4a2xjhgb/device/openpilot/common/hardware/comma/agnos.stock.json
+WPA3 boot retry limit reached for hash-a
+AGNOS update manifest: /Users/nagash/Github/OP_wpa3/wpa3-ci/.tmp/test-compose-4a2xjhgb/device/openpilot/common/hardware/comma/agnos.stock.json
+WPA3 boot retry limit reached for hash-a
+AGNOS update manifest: /Users/nagash/Github/OP_wpa3/wpa3-ci/.tmp/test-compose-4a2xjhgb/device/openpilot/common/hardware/comma/agnos.stock.json
+WPA3 boot retry limit reached for hash-a
+AGNOS update manifest: /Users/nagash/Github/OP_wpa3/wpa3-ci/.tmp/test-compose-4a2xjhgb/device/openpilot/common/hardware/comma/agnos.stock.json
+WPA3 boot retry limit reached for hash-a
+AGNOS update manifest: /Users/nagash/Github/OP_wpa3/wpa3-ci/.tmp/test-compose-4a2xjhgb/device/openpilot/common/hardware/comma/agnos.stock.json
+WPA3 boot retry limit reached for hash-a
+AGNOS update manifest: /Users/nagash/Github/OP_wpa3/wpa3-ci/.tmp/test-compose-4a2xjhgb/device/openpilot/common/hardware/comma/agnos.stock.json
+WPA3 boot retry limit reached for hash-a
+AGNOS update manifest: /Users/nagash/Github/OP_wpa3/wpa3-ci/.tmp/test-compose-4a2xjhgb/device/openpilot/common/hardware/comma/agnos.stock.json
+WPA3 boot retry limit reached for hash-a
+AGNOS update manifest: /Users/nagash/Github/OP_wpa3/wpa3-ci/.tmp/test-compose-4a2xjhgb/device/openpilot/system/hardware/comma/agnos.json
+WPA3 boot tag missing; attempt 1/3 for hash-a
+AGNOS update manifest: /Users/nagash/Github/OP_wpa3/wpa3-ci/.tmp/test-compose-4a2xjhgb/device/openpilot/system/hardware/comma/agnos.json
+PASS: wpa3_update_manifest (version mismatch, proven tag, attempts 1/2/3, stock fallback, malformed, missing stock)
+AGNOS update manifest: /Users/nagash/Github/OP_wpa3/wpa3-ci/.tmp/test-compose-4a2xjhgb/device/openpilot/system/hardware/comma/agnos.json
+PASS: native boot placeholders (no boot trigger or version retry counting)
+
+WPA3: reverted to stock wpa_supplicant after service failure
+WPA3: reverted to stock wpa_supplicant after service failure
+WPA3: reverted to stock wpa_supplicant after service failure
+WPA3: reverted to stock wpa_supplicant after service failure
+PASS: wpa3_supplicant_override (guards, MainPID executable, failure reasons/threshold, busy bind, verified rollback, retained crash hook, unit quoting)
+PROBE: dryrun; 0 distinct stock builds; no state changes
+G8: WARN: 80d9373348ddff2a5d1f534fab3420383939c96f3eba60baab6b15339fc602c7: known stock/override; dryrun
+PROBE: dryrun; 0 distinct stock builds; no state changes
+T3: PENDING (dryrun)

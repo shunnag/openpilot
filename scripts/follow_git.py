@@ -1,6 +1,8 @@
 """Fast-forward-only state transactions. The worktree is never a build tree."""
 from contextlib import contextmanager
 from dataclasses import dataclass
+import hashlib
+import json
 from pathlib import Path
 import subprocess
 import sys
@@ -43,18 +45,30 @@ def final_allowlist(work, base):
       fs.require(not git(work, 'ls-tree', base, '--', directory), 'wpa build directory already exists')
 
 
-def status_readme(text, state):
+def status_readme(text, state, mode="off", provenance=None):
   begin, end = '<!-- wpa3-status:begin -->', '<!-- wpa3-status:end -->'
   fs.require(text.count(begin) == text.count(end) == 1, 'README status markers missing/duplicate')
   left, right = text.index(begin) + len(begin), text.index(end)
   fs.require(left <= right, 'README status markers reversed')
-  rows = ['\n\n| Automatic release | Status | Tested devices |', '|---|---|---|']
+  fs.mode_value(mode)
+  provenance = provenance or {}
+  rows = [f'\n\n`WPA3_FOLLOW_MODE` is currently `{mode}`. / 現在の `WPA3_FOLLOW_MODE` は `{mode}` です。',
+          '\n| Automatic release | Status | Tested devices |', '|---|---|---|']
   for version, pin in sorted(state['pins'].items()):
     devices = state['status']['device_tested'].get(pin['release_tag'], {}).get('devices', [])
     status = 'WITHDRAWN; stock revert' if pin['withdrawn'] else 'device-tested' if devices else 'NOT device-tested'
     rows.append(f"| {pin['release_tag']} | {status} | {', '.join(devices) or 'none'} |")
   if not state['pins']:
     rows.append('| none | No automatic kernel pins | none |')
+  for version, pin in sorted(state['pins'].items()):
+    from release_notes import evidence
+    facts = provenance[pin['release_tag']]
+    checks, toolchain, assets = evidence(facts)
+    baseline = facts.get('baseline_tested') or {}
+    rows.append(f"\n<details><summary>{pin['release_tag']} — provenance</summary>\n\n" +
+                f"Last device-tested baseline: {', '.join(baseline.get('devices', [])) or 'not recorded'}\n\n" +
+                f"wpa_supplicant: {facts['wpa_status']}\n\n" +
+                '\n\n'.join((checks, toolchain, assets)) + '\n\n</details>')
   if state['status']['paused']:
     rows.append('\nAutomatic kernel publishing is paused.')
   return text[:left] + '\n'.join(rows) + '\n\n' + text[right:]
@@ -102,7 +116,18 @@ class StateWriter:
         state = fs.apply(old, facts, brakes=True)
         files = fs.state_files(state)
         if readme:
-          files['README.md'] = status_readme((work / 'README.md').read_text(), state).encode()
+          provenance = {}
+          for pin in state['pins'].values():
+            # Immutable provenance supplies facts; status supplies mutable tests/withdrawals.
+            tag = pin['release_tag']
+            release = self.brakes.github.by_tag(tag)
+            fs.require(release.get('immutable') is True, 'README requires immutable provenance')
+            with tempfile.TemporaryDirectory(prefix='status-provenance-') as tmp:
+              self.brakes.github.download(release, Path(tmp), ['provenance.json'])
+              data = (Path(tmp) / 'provenance.json').read_bytes()
+            fs.require(hashlib.sha256(data).hexdigest() == pin['auto']['provenance_sha256'], 'README provenance hash mismatch')
+            provenance[tag] = json.loads(data)
+          files['README.md'] = status_readme((work / 'README.md').read_text(), state, self.mode, provenance).encode()
         changed = []
         for name, data in files.items():
           path = work / name

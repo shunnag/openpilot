@@ -144,17 +144,24 @@ class GitHub:
     run('gh', 'workflow', 'run', workflow, '--repo', self.repository, '--ref', 'wpa3-ci',
         '--json', data=fs.dumps(inputs or {}).encode())
 
-  def issue(self, label, title, body):
+  def issue(self, label, title, body, *, key=''):
     self.writable()
-    # Labels are owned by this code, never arbitrary input.
+    from issues import escaped, labels_for
     require(label in ('follow-paused', 'follow-hold', 'revoke-blocked'), 'invalid follow label')
-    run('gh', 'label', 'create', label, '--repo', self.repository, '--color', 'B60205', '--force')
-    issues = self.pages(f'issues?state=open&labels={label}&per_page=100')
-    existing = next((i for i in issues if 'pull_request' not in i and i['title'] == title), None)
-    fields = {'title': title, 'body': body}
+    if key:
+      fs.match(fs.SHA256, key, 'issue key')
+    labels = labels_for(label, key=key)
+    for name in labels:
+      run('gh', 'label', 'create', name, '--repo', self.repository, '--color', 'B60205', '--force')
+    candidates = self.pages(f'issues?state=open&labels={",".join(labels)}&per_page=100')
+    marker = f'<!-- wpa3-key:{key} -->'
+    existing = next((i for i in candidates if 'pull_request' not in i and
+                     (marker in (i.get('body') or '') if key else
+                      label == 'follow-paused' or i['title'] == escaped(title))), None)
+    fields = {'title': escaped(title), 'body': (marker + '\n\n' if key else '') + escaped(body)}
     if existing:
       return self.api(f"issues/{existing['number']}", 'PATCH', fields)
-    return self.api('issues', 'POST', {**fields, 'labels': [label]})
+    return self.api('issues', 'POST', {**fields, 'labels': labels})
 
 
 def asset_limit(name):
@@ -289,25 +296,9 @@ def gate_disposition(facts, *, publishing=False, approval=False):
 
 
 def release_notes(provenance):
-  pin, facts = provenance['pin'], provenance['facts']
-  risks = gate_disposition(facts)
-  approval = provenance.get('approval')
-  device = approval['device'] if approval and approval['device_tested'] else ''
-  tested = f'device-tested ({device})' if device else 'NOT device-tested'
-  notice = 'No WPA3 kernel has ever booted on a comma 3X.' if device != 'tizi' else 'Device-tested on comma 3X (tizi).'
-  title = f"AGNOS {provenance['version']} WPA3 boot image ({pin['tag']}): auto-built, {tested}"
-  if risks:
-    title += '; risk check ' + ', '.join(risks) + ' FAILED'
-  body = (f"<!-- wpa3-follow key={provenance['key']} stock={pin['derived_from']['boot_hash_raw']} -->\n\n"
-          f"<!-- wpa3-follow-gates: {pin['auto']['gate_version']} -->\n\n"
-          f'Auto-built modified kernel; {tested}. {notice}\n\n'
-          f"Source: `{pin['auto']['kernel_commit']}`. Baseline: `{pin['auto']['baseline_release']}`.\n\n"
-          f"Run: {pin['auto']['run_url']}\n\nStock revert: `{pin['revert']['tag']}`. "
-          'Withdraw with follow-admin revoke. The boot signature checks integrity, not builder identity.\n\n'
-          'The release assets include source, patches, gate evidence, build log and SHA256SUMS.\n')
-  if risks:
-    body += '\nRisk checks FAILED: ' + ', '.join(risks) + ('. Maintainer approved this risk.\n' if approval else '. Maintainer approval is required.\n')
-  return title, body
+  from release_notes import render
+  gate_disposition(provenance['facts'])
+  return render(provenance)
 
 
 def matching_releases(github, stock):
@@ -381,7 +372,7 @@ class Publisher:
         body += f'\n\nDraft: https://github.com/{self.gh.repository}/releases/tag/{tag}'
       if result == 'risk_held':
         body += f'\n\nTo approve after review or device testing: follow-admin approve, target={stock}, device_tested=yes|no.'
-      self.gh.issue('follow-hold', f'WPA3 follow held [{stock[:12]}]', body)
+      self.gh.issue('follow-hold', f'WPA3 follow held [{stock[:12]}]', body, key=stock)
     return commit
 
   def reserve(self, target, key):
@@ -443,7 +434,16 @@ class Publisher:
                  K10=f'reserved {number} and {number + 1} in a prior fast-forward state commit',
                  notice='Auto-built; NOT device-tested. No WPA3 kernel has ever booted on a comma 3X.')
     provenance = {'schema': 'wpa3-follow-release-v1', 'key': key, 'version': item['version'], 'pin': pin,
-                  'facts': facts, 'approval': None}
+                  'facts': facts, 'approval': None,
+                  'assets': sorted(p.name for p in dest.iterdir()) + ['provenance.json', 'SHA256SUMS'],
+                  'baseline_tested': state['status']['device_tested'].get(item['baseline_release']),
+                  'wpa_status': 'stock system not yet probed'}
+    facts['toolchain'] = policy['toolchain']
+    probe = state['system_probe'].get(pin['derived_from']['system_hash_raw'])
+    if probe:
+      entry = state['supplicants'].get(probe['stock_wpa_sha256'])
+      provenance['wpa_status'] = ('matched stock SHA-256 ' + probe['stock_wpa_sha256'] +
+                                  ('; override ' + entry['build_version'] if entry else '; no matching override'))
     write_json(dest / 'provenance.json', provenance)
     checksums(dest, write=True)
     return provenance
@@ -475,6 +475,8 @@ class Publisher:
     require((pin['auto']['patchset_sha256'], pin['auto']['recipe_sha256']) == recipe_identity(policy),
             'release recipe/patchset identity differs from policy')
     facts = provenance['facts']
+    require(set(provenance['assets']) == {p.name for p in directory.iterdir()}, 'provenance asset inventory differs')
+    require(facts['toolchain'] == policy['toolchain'], 'provenance toolchain differs from policy')
     require(facts['candidate']['commit'] == pin['auto']['kernel_commit']
             and facts['candidate']['builder_commit'] == pin['auto']['builder_commit']
             and facts['stock_hash_raw'] == pin['derived_from']['boot_hash_raw'], 'provenance inputs differ from pin')
@@ -698,11 +700,24 @@ class Publisher:
         require((source / name).is_file() and not (source / name).is_symlink(), 'missing WPA evidence')
         shutil.copyfile(source / name, directory / name)
       write_json(directory / 'test-request.json', request)
+      build = read_json(directory / 'build-report.json')
+      tests = read_json(directory / 'test-report.json')
+      provenance = {'schema': 'wpa3-wpa-release-v1', 'request': request,
+        'publication_status': 'DRAFT; auto_publish=false',
+        'wpa_status': 'test-request only; no public binary or supplicant pin',
+        'publication_requirements': 'Publication requires policy.wpa.auto_publish AND a matching public Mac mini T3 result.',
+        'assets': sorted(p.name for p in directory.iterdir()) + ['provenance.json', 'SHA256SUMS'],
+        'facts': {'build': build, 'toolchain': {'base_image': state['policy']['wpa']['base_image'],
+          'snapshot': state['policy']['wpa']['snapshot']}, 'gates': [
+          {'gate': gate, 'result': result, 'detail': 'recorded in build/test report', 'line': f'{gate}: {result}'}
+          for gate, result in {**build, **tests}.items() if re.fullmatch('[RT][0-9]+', gate)]}}
+      write_json(directory / 'provenance.json', provenance)
+      from release_notes import render
+      title, body = render(provenance, 'wpa')
       checksums(directory, write=True)
       self.writer.read(target, 'probe')
       draft = self.gh.api('releases', 'POST', {'tag_name': tag, 'target_commitish': head,
-        'name': f"WPA T3 request {request['id']} (DRAFT; auto_publish=false)",
-        'body': 'Test-request data only. Rebuilt supplicant publication requires policy.wpa.auto_publish AND a matching public Mac mini T3 result.',
+        'name': title, 'body': body,
         'draft': True, 'prerelease': True, 'make_latest': 'false'})
       self.gh.upload(draft, directory)
       with tempfile.TemporaryDirectory(prefix='wpa-draft-check-') as check:

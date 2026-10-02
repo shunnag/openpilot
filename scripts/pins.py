@@ -128,6 +128,7 @@ def main():
   parser.add_argument("--branch")
   parser.add_argument("--now", help="UTC timestamp for deterministic tests")
   args = parser.parse_args()
+  follow_needed = None
   try:
     mode_value(args.follow_mode)
     if args.state_root is not None and not args.validate_state:
@@ -144,6 +145,7 @@ def main():
                          state=state, mode=args.follow_mode, branch=args.branch, now=args.now,
                          warn=lambda line: print(line, file=sys.stderr))
     except FollowNeeded as needed:
+      follow_needed = needed
       rc = follow_exit(needed, args.follow_mode, state['policy'], state['status'])
       if rc == 3:
         print(f"PIN: FOLLOW: {needed.kind} {needed.key} {needed.detail}", file=sys.stderr)
@@ -153,6 +155,8 @@ def main():
     print(f"PIN: OK: {pin_description(resolved)}")
   except Exception as error:
     print(f"PIN: FAIL: {error_text(error)}", file=sys.stderr)
+    if follow_needed is not None and args.follow_mode in ('state', 'on'):
+      print(f"PIN: KEY: {follow_needed.kind} {follow_needed.key} {follow_needed.detail}", file=sys.stderr)
     return 1
   return 0
 

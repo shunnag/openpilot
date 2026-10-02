@@ -146,7 +146,7 @@ class TestNightlyWorkflow(unittest.TestCase):
     steps = workflow.split("      - ")
     fetch = next(i for i, step in enumerate(steps) if "id: fetch\n" in step)
     self.assertIn("name: Resolve AGNOS pin\n        id: pin\n", steps[fetch + 1])
-    self.assertIn('python3 scripts/pins.py --repo "$BARE_REPO" --upstream "$UPSTREAM" --out "$RUNNER_TEMP/pin.json" 2>&1 | tee -a "$NIGHTLY_LOG"', steps[fetch + 1])
+    self.assertIn('python3 scripts/pins.py --repo "$BARE_REPO" --upstream "$UPSTREAM" --out "$RUNNER_TEMP/pin.json" --follow-mode "$MODE" --branch "$BRANCH" 2>&1 | tee -a "$NIGHTLY_LOG"', steps[fetch + 1])
     self.assertIn("if pin['mode'] != 'pinned':", steps[fetch + 1])
     self.assertIn('::notice::AGNOS pin:', steps[fetch + 1])
     self.assertIn("steps.pin.outcome == 'failure' && 'AGNOS pin could not be resolved'", workflow)

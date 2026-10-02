@@ -1,17 +1,17 @@
 openpilot + WPA3
 ======
 
-**This is an unofficial fork for personal use. It ships a modified kernel and is not supported by comma.**
+**This is an unofficial fork for personal use. Automatically built kernels and wpa_supplicant builds are published WITHOUT any device test.** CI checks do not establish that a build boots or works on a device. The device-tested history is limited to one comma four: AGNOS 19.8 (`wpa3.sae=2`), AGNOS 19.9 (`wpa3.sae=3`), and the 19.8 → 19.9 migration on `nightly-chestnut`. This does not test future automatic builds or other devices. **No WPA3 kernel has ever booted on a comma 3X.** If an auto-built kernel doesn't boot, the bootloader should switch back to the previous kernel. This was seen on one comma four only. The fork retries at most 3 times and then installs comma's kernel for the new AGNOS. That can mean about 20 restarts, and a boot that hangs needs a power cycle. Recovery may need a computer and [flash.comma.ai](https://flash.comma.ai). comma has not reviewed or tested these builds. **Do not report problems to comma.**
 
-**個人利用向けの非公式 fork です。変更したカーネルを配布しており、comma のサポート対象ではありません。**
+**個人利用向けの非公式 fork です。自動ビルドのカーネルと wpa_supplicant は、実機テストなしで公開します。** CI の確認は、実機で起動・動作することを保証しません。実機で確認した履歴は、comma four 1 台での AGNOS 19.8（`wpa3.sae=2`）、AGNOS 19.9（`wpa3.sae=3`）、および `nightly-chestnut` での 19.8 → 19.9 の移行だけです。今後の自動ビルドや、ほかの端末を確認したものではありません。**comma 3X では、WPA3 カーネルを一度も起動していません。** 自動ビルドのカーネルが起動しない場合、ブートローダーは前のカーネルに戻るはずですが、これを確認したのも comma four 1 台だけです。fork は最大 3 回試したあと、新しい AGNOS 用の comma のカーネルを入れます。その間に約 20 回再起動することがあり、起動中に止まった場合は電源を入れ直す必要があります。復旧にはパソコンと [flash.comma.ai](https://flash.comma.ai) が必要になることがあります。これらのビルドは comma のレビューもテストも受けていません。**問題を comma に報告しないでください。**
 
 **`release-mici-staging` and `release-tizi-staging` have NOT been tested on any device. Nobody has run them yet.** They combine comma's AGNOS 19.6 with this fork's WPA3 boot image from AGNOS 19.8 (`wpa3.sae=2`). That boot image was device-tested only on one comma four running `nightly-chestnut` on AGNOS 19.8. Running it with AGNOS 19.6, the release launcher, and switching from this fork's `nightly` (AGNOS 19.9) down to 19.6 are all untested. **No WPA3 kernel has ever booted on a comma 3X.** (On the comma four, the bootloader picked the right device tree from the WPA3 boot image, which suggests it selects by board ID rather than by position; this was not checked on a comma 3X.) If it fails on your device, you may need a computer and [flash.comma.ai](https://flash.comma.ai) to recover it. comma has not reviewed or tested these builds. Do not report problems with them to comma.
 
 **`release-mici-staging` と `release-tizi-staging` は、どの実機でもテストしていません。まだ誰も動かしたことがありません。** これらは comma の AGNOS 19.6 に、この fork の AGNOS 19.8 用 WPA3 boot イメージ（`wpa3.sae=2`）を組み合わせたものです。この boot イメージを実機で確認したのは、AGNOS 19.8 の `nightly-chestnut` を動かした comma four 1 台だけです。AGNOS 19.6 との組み合わせ、release 用のランチャー、この fork の `nightly`（AGNOS 19.9）から 19.6 への切り替えは、どれも未確認です。**comma 3X では、WPA3 カーネルを一度も起動していません。**（comma four では、ブートローダーが WPA3 boot イメージから正しいデバイスツリーを選んでいたため、並び順ではなくボード ID で選んでいると考えられます。comma 3X では確かめていません。）端末で動かなかった場合、復旧にはパソコンと [flash.comma.ai](https://flash.comma.ai) が必要になることがあります。これらのビルドは comma のレビューもテストも受けていません。問題があっても comma に報告しないでください。
 
-This fork adds WPA3 (SAE) Wi-Fi support to openpilot on the comma four. Every night, it rebuilds four prebuilt branches from comma's branches of the same name: two device-tested nightly branches and two UNTESTED release-staging branches. This `wpa3-ci` branch holds the workflows, scripts and patches that build them.
+This fork adds WPA3 (SAE) Wi-Fi support to openpilot on the comma four. Every night, it rebuilds four prebuilt branches from comma's branches of the same name: two nightly branches and two UNTESTED release-staging branches. This `wpa3-ci` branch holds the workflows, scripts and patches that build them.
 
-この fork は、comma four の openpilot に WPA3（SAE）の Wi-Fi 対応を追加します。comma の同名ブランチをもとに、実機で確認済みの nightly 2 ブランチと、実機では未確認の release-staging 2 ブランチ、計 4 つのビルド済みブランチを毎晩作り直します。この `wpa3-ci` ブランチには、それを作るワークフロー、スクリプト、パッチを置いています。
+この fork は、comma four の openpilot に WPA3（SAE）の Wi-Fi 対応を追加します。comma の同名ブランチをもとに、nightly 2 ブランチと、実機では未確認の release-staging 2 ブランチ、計 4 つのビルド済みブランチを毎晩作り直します。この `wpa3-ci` ブランチには、それを作るワークフロー、スクリプト、パッチを置いています。
 
 
 Branches
@@ -73,13 +73,18 @@ The WPA3 boot image adds a tag such as `wpa3.sae=2` to the kernel command line (
 
 To prevent boot loops, the launcher tries at most 3 times per boot image hash. Attempts are recorded in `/data/wpa3_boot_attempts` as `<hash_raw> <count>`. After 3 attempts, it stops, and the device keeps running the stock kernel. The count resets when the boot image hash changes, and the file is removed once the tag is present. A malformed count, or a count that can't be saved, also stops the retries. `updated` only reads the count.
 
-AGNOS version updates use the same count. If the running kernel doesn't have the tag, each update attempt counts, and after 3 attempts the launcher and `updated` flash comma's manifest (`agnos.stock.json`) instead. If the running kernel already has the tag, the WPA3 kernel has proven itself on this device, so the update uses the WPA3 manifest without counting.
+AGNOS version updates use the same count. If the running kernel doesn't have the tag, each update attempt counts, and after 3 attempts the launcher and `updated` flash comma's manifest (`agnos.stock.json`) instead. If the running kernel already has the tag, the update uses the WPA3 manifest without counting; the tag proves only that the kernel started.
 
 WPA3 の boot イメージは、カーネルのコマンドラインに `wpa3.sae=2` のようなタグを追加します（タグは boot イメージごとに異なります）。`launch_chffrplus.sh` は起動のたびに、このタグが `/proc/cmdline` にあるかを確認します。なければ、AGNOS 更新と同じ A/B の手順を実行します。待機中のスロットにイメージが用意済みならそのスロットに切り替え、なければ先にそのスロットへ書き込みます。`updated` も同じ条件で、バックグラウンドでイメージを準備します。
 
 起動の繰り返しを防ぐため、ランチャーの試行は boot イメージのハッシュごとに 3 回までです。試行回数は `/data/wpa3_boot_attempts` に `<hash_raw> <count>` の形で記録します。3 回試してもタグがなければ試行をやめ、純正カーネルのまま動き続けます。boot イメージのハッシュが変わると回数はリセットされ、タグを確認できた時点で記録ファイルは削除されます。記録の内容が壊れている場合や、記録を保存できない場合も、試行を止めます。`updated` は回数を読むだけで、増やしません。
 
-AGNOS のバージョン更新でも、同じ回数を使います。起動中のカーネルにタグがなければ、更新のたびに 1 回と数え、3 回を超えたらランチャーと `updated` は comma の manifest（`agnos.stock.json`）で書き込みます。起動中のカーネルにすでにタグがあれば、その端末で WPA3 カーネルが動くことは確認済みなので、回数を数えずに WPA3 の manifest で更新します。
+AGNOS のバージョン更新でも、同じ回数を使います。起動中のカーネルにタグがなければ、更新のたびに 1 回と数え、3 回を超えたらランチャーと `updated` は comma の manifest（`agnos.stock.json`）で書き込みます。起動中のカーネルにすでにタグがあれば、回数を数えずに WPA3 の manifest で更新します。タグで分かるのは、カーネルが起動したことだけです。
+
+
+These retry limits help only when the kernel cannot start openpilot. The launcher marks a boot successful immediately (`abctl --set_success`). A kernel that boots but breaks Wi-Fi or crashes later is not undone automatically. A device without another working network cannot receive a revert; recovery may need [flash.comma.ai](https://flash.comma.ai).
+
+この試行回数の制限が役立つのは、カーネルが openpilot の起動まで進めない場合だけです。ランチャーは起動するとすぐに成功を記録します（`abctl --set_success`）。起動しても Wi-Fi が壊れる場合や、あとで落ちる場合は、自動では元に戻りません。ほかに使えるネットワークがない端末は取り下げの更新を受け取れず、復旧に [flash.comma.ai](https://flash.comma.ai) が必要になることがあります。
 
 
 wpa_supplicant
@@ -89,7 +94,7 @@ AGNOS ships Ubuntu's wpa_supplicant 2.10, which never uses SAE hash-to-element (
 
 On every boot, the launcher bind-mounts it over `/usr/sbin/wpa_supplicant` and restarts the service, but only if:
 
-* the stock binary is exactly Ubuntu's `2:2.10-21ubuntu0.4` (its SHA-256 is pinned), so a different AGNOS keeps its own,
+* the stock binary matches the SHA-256 recorded for that build (the manual builds target Ubuntu's `2:2.10-21ubuntu0.4`),
 * the patched binary runs (`wpa_supplicant -v`), and
 * it hasn't failed on this device before.
 
@@ -99,11 +104,16 @@ AGNOS には Ubuntu の wpa_supplicant 2.10 が入っています。この版は
 
 ランチャーは起動のたびに、これを `/usr/sbin/wpa_supplicant` に bind mount して、サービスを再起動します。ただし、次の場合に限ります。
 
-* 純正のバイナリが Ubuntu の `2:2.10-21ubuntu0.4` と完全に一致する（SHA-256 を pin に固定）。別の AGNOS では純正のまま使う。
+* 純正バイナリが、そのビルド用に記録した SHA-256 と一致する（手動ビルドの対象は Ubuntu の `2:2.10-21ubuntu0.4`）。
 * 修正版が起動できる（`wpa_supplicant -v`）。
 * その端末で、以前に失敗していない。
 
 15 秒以内に修正版がサービスとして動いていなければ、ランチャーは bind mount を外して純正を起動し直します。起動後に修正版が異常終了した場合も、`/run` に置いた systemd の一時設定が同じように戻します。失敗は `/data/wpa3_supplicant_failed` に `<sha256> <理由>` の形で記録し、起動時の失敗 1 回、または異常終了 3 回で、その端末では差し替えをやめます。system パーティションには何も書き込まないので、fork をやめて再起動すれば純正に戻ります。手動で差し替えを止めるには、このファイルに `<wpa3/wpa_supplicant の sha256> start` という行を足して再起動してください。
+
+
+An auto-built wpa_supplicant is used only if the stock binary matches; on failure the device keeps stock. The system image is probed before selecting an override. A rebuilt binary must pass its source, reproducibility, ABI and CI checks, including the separately enabled hwsim result gate. These checks are not a device test; automatic wpa_supplicant builds are published without device testing.
+
+自動ビルドの wpa_supplicant は、純正バイナリが一致する場合だけ使い、失敗した端末では純正を使います。system イメージを調べてから差し替えを選びます。再ビルドしたバイナリには、ソース、再現性、ABI、CI、および別途有効にする hwsim 結果の確認が必要です。これらは実機テストではなく、自動ビルドの wpa_supplicant は実機テストなしで公開します。
 
 
 Nightly builds
@@ -125,6 +135,7 @@ First, `scripts/pins.py` picks the boot image for the upstream `AGNOS_VERSION`. 
 | G4    | The pinned boot image downloads, and its decompressed SHA-256 and size match.               | pin の boot イメージをダウンロードでき、展開後の SHA-256 とサイズが一致する。                   |
 | G5    | The UI patch applies, or is already applied.                                                | UI のパッチが当たる、または適用済みである。                                                     |
 | G6    | The command line tag and the boot image hash still match one to one, compared with the published build. | 公開中のビルドと比べて、コマンドラインのタグと boot イメージのハッシュが 1 対 1 のままである。 |
+| G8    | Probed stock supplicant and selected override agree; advisory in off/dryrun and during withdrawal. | 調査した純正 supplicant と差し替え先が一致する。off/dryrun と取り下げ時は警告のみ。 |
 | G7    | The bundled `wpa_supplicant` matches its pinned SHA-256 and is an aarch64 ELF, and its license file exists. | 同梱の `wpa_supplicant` が pin の SHA-256 と一致する aarch64 の ELF で、ライセンスのファイルがある。 |
 
 If a check fails, that branch isn't published and keeps its last build. The workflow opens or updates one issue per branch, labeled `nightly-hold` and `branch:<branch>`, and closes it after the next successful build.
@@ -143,31 +154,31 @@ When comma bumps `AGNOS_VERSION`, `scripts/pins.py` resolves the new version in 
 
 | mode      | when                                                                                                           | result                                                                   |
 |-----------|----------------------------------------------------------------------------------------------------------------|--------------------------------------------------------------------------|
-| `pinned`  | `agnos/pins.json` has a pin for this version.                                                                  | The pinned WPA3 boot image is used.                                      |
+| `pinned`  | A manual pin or an enabled automatic pin exists for this version.                                                                  | The pinned WPA3 boot image is used.                                      |
 | `derived` | comma's new stock kernel is the same kernel as a pin's stock kernel, and `agnos.py` is unchanged.             | That pin's WPA3 boot image is reused. The rest of AGNOS is comma's new version. |
 | `native`  | comma's new stock kernel already supports SAE and RSNXE (H2E).                                                 | The boot image isn't replaced. The UI patch and the `wpa_supplicant` override are still applied. |
 | hold      | Anything else, e.g. the kernel code changed, or a download failed.                                             | Nothing is published. A `nightly-hold` issue explains why.               |
 
-"Same kernel" is checked on the decompressed boot images. The boot header, command line, device tree and kernel config must be identical. In the kernel image, only build identity may differ: the build date strings, the GNU build ID, the autogenerated module signing certificate and the timestamps in the built-in initramfs. Each allowed difference must be at the same place in both images and within a size limit. comma's stock kernels for AGNOS 19.6, 19.7 and 19.8 all pass this check, so the WPA3 kernel is reused without a new build. A `derived` pin reuses a kernel that was device-tested with a different AGNOS system image; that pairing itself is not device-tested.
+"Same kernel" is checked on the decompressed boot images. The boot header, command line, device tree and kernel config must be identical. In the kernel image, only build identity may differ: the build date strings, the GNU build ID, the autogenerated module signing certificate and the timestamps in the built-in initramfs. Each allowed difference must be at the same place in both images and within a size limit. comma's stock kernels for AGNOS 19.6, 19.7 and 19.8 all pass this check, so the WPA3 kernel is reused without a new build. A `derived` pin reuses a kernel from a different AGNOS system image; that pairing itself is not device-tested, even if the original kernel was tested.
 
 The `native` check looks for four SAE log strings and the RSNXE log string in comma's kernel. A partial match, or SAE without RSNXE, holds the nightly.
 
-A hold because the kernel code changed needs a new WPA3 boot image: build it, test it on a device, and add a pin.
+With automatic kernel publishing enabled, a changed kernel becomes pending and requests follow. Otherwise it holds for a manual pin. Pending issues become red holds after 48 hours (a rate deferral gets until its deadline plus 48 hours), or immediately when follow records a hold.
 
 comma が `AGNOS_VERSION` を上げると、`scripts/pins.py` は新しいバージョンを次の 4 通りのどれかで扱います。
 
 | モード    | 条件                                                                                           | 結果                                                                            |
 |-----------|------------------------------------------------------------------------------------------------|---------------------------------------------------------------------------------|
-| `pinned`  | `agnos/pins.json` にこのバージョンの pin がある。                                             | pin の WPA3 boot イメージを使う。                                               |
+| `pinned`  | この版の手動 pin または有効な自動 pin がある。                                             | pin の WPA3 boot イメージを使う。                                               |
 | `derived` | comma の新しい純正カーネルが、既存の pin の元になった純正カーネルと同じで、`agnos.py` も変わっていない。 | その pin の WPA3 boot イメージを使い回す。ほかの AGNOS は comma の新しいもの。 |
 | `native`  | comma の新しい純正カーネルが、すでに SAE と RSNXE（H2E）に対応している。                     | boot イメージは差し替えない。UI のパッチと `wpa_supplicant` の差し替えは続ける。 |
 | 保留      | それ以外（カーネルのコードが変わった、ダウンロードに失敗した、など）。                       | 公開しない。`nightly-hold` の issue で理由を知らせる。                          |
 
-「同じカーネル」かどうかは、展開した boot イメージで判定します。boot のヘッダー、コマンドライン、デバイスツリー、カーネル設定は完全に一致している必要があります。カーネル本体で違ってよいのは、ビルドのたびに変わる情報だけです。具体的には、ビルド日時の文字列、GNU の build ID、自動生成されるモジュール署名用の証明書、組み込みの initramfs に入る時刻です。許容する違いは、どちらのイメージでも同じ位置にあり、決められた大きさに収まっていなければなりません。comma の AGNOS 19.6、19.7、19.8 の純正カーネルは、どれもこの判定を通ります。そのため、WPA3 カーネルを新しくビルドせずに使い回せます。`derived` の pin は、別の AGNOS system イメージと組み合わせて実機で確認したカーネルを使い回すものであり、その組み合わせ自体は実機で確認していません。
+「同じカーネル」かどうかは、展開した boot イメージで判定します。boot のヘッダー、コマンドライン、デバイスツリー、カーネル設定は完全に一致している必要があります。カーネル本体で違ってよいのは、ビルドのたびに変わる情報だけです。具体的には、ビルド日時の文字列、GNU の build ID、自動生成されるモジュール署名用の証明書、組み込みの initramfs に入る時刻です。許容する違いは、どちらのイメージでも同じ位置にあり、決められた大きさに収まっていなければなりません。comma の AGNOS 19.6、19.7、19.8 の純正カーネルは、どれもこの判定を通ります。そのため、WPA3 カーネルを新しくビルドせずに使い回せます。`derived` の pin は、別の AGNOS system イメージ用のカーネルを使い回します。元のカーネルが確認済みでも、新しい組み合わせ自体は実機で確認していません。
 
 `native` の判定では、comma のカーネルに SAE のログ文字列 4 つと、RSNXE のログ文字列があるかを調べます。一部だけの場合や、SAE だけで RSNXE がない場合は、公開を止めます。
 
-カーネルのコードが変わって保留になった場合は、新しい WPA3 boot イメージが必要です。ビルドして実機で確認し、pin を追加してください。
+カーネルの自動公開が有効なら、カーネル変更時は pending として follow を要求します。それ以外は手動の pin が必要です。pending は 48 時間後（公開間隔による延期は期限の 48 時間後）、または follow が hold を記録した時点で赤い hold の issue になります。
 
 
 Maintenance
@@ -184,10 +195,34 @@ Maintenance
 * **fork の準備:** `agnos/pins.json` に書かれたリリースに boot イメージをアップロードし、`wpa3-ci` を既定のブランチにします（定期実行は既定のブランチでしか動きません）。Actions と Issues を有効にしてから、**Nightly WPA3** を手動で実行します。手動実行でも 4 つすべてのブランチを作ります。`force` を付けると入力が変わっていなくても作り直しますが、確認は省略しません。
 
 
+Automatic kernel builds
+------
+
+The owner controls `WPA3_FOLLOW_MODE`: `off` → `dryrun` → `state` → `on`. In `on`, all four allowed branches, including `release-tizi-staging`, adopt a new automatic pin in the same run. Automatic releases are prereleases and do not become GitHub's latest release. They are published without any device test. Each release carries its exact pin, gate output, toolchain URL and SHA-256, asset names, baseline device type and supplicant status in `provenance.json`; release notes and the status block are rendered from that evidence.
+
+所有者が `WPA3_FOLLOW_MODE` を `off` → `dryrun` → `state` → `on` の順に切り替えます。`on` では、`release-tizi-staging` を含む許可済みの 4 ブランチすべてが、同じ実行で新しい自動 pin を採用します。自動リリースは prerelease として実機テストなしで公開し、GitHub の latest にはしません。各リリースの `provenance.json` に、正確な pin、確認結果、ツールチェーンの URL と SHA-256、ファイル名、基準とした実機の種類、supplicant の状態を記録し、リリースノートと状態欄をその記録から生成します。
+
+| Checks | English | 日本語 |
+|---|---|---|
+| K0–K2 | Input shape, source discovery and trusted recipe. | 入力形式、ソースの特定、信頼するビルド手順。 |
+| K3–K4, K4(e), K4(f) | Limited changes from a tested baseline, including Wi-Fi dependencies and device trees. | 確認済みの基準からの変更範囲、Wi-Fi の依存ファイルとデバイスツリー。 |
+| K5–K8, K7b | Stock rebuild identity, patch proof, configuration and changed objects; Wi-Fi object identity remains advisory until qualified. | 純正再ビルドの一致、パッチ、設定、変更したオブジェクト。Wi-Fi オブジェクトの一致は適格性確認までは参考情報。 |
+| K9–K11 | Image integrity and format, unique reserved tags, and a verified stock revert image. | イメージの整合性と形式、重複しない予約済みタグ、確認済みの純正への復帰イメージ。 |
+| K12–K13 | Brakes, global publication limit and immutable release verification. | 停止条件、全体の公開間隔、変更不能なリリースの検証。 |
+
+The global limit is one automatic kernel per 7 days and at most 3 untested kernels in a row. Failures open `follow-hold`; risk holds may produce a draft for owner review, while integrity failures cannot be approved. Held inputs retry after 7 days or a gate change (source discovery also retries when relevant refs change). A yellow `nightly-pending` means a branch has requested follow, not that it published. The public signing key verifies integrity, not who built the image. Nightly's G1–G8 checks still apply.
+
+全体の制限は自動カーネルを 7 日に 1 回まで、実機未確認のカーネルを連続 3 回までです。失敗は `follow-hold` で知らせます。リスクによる停止では所有者の確認用 draft を作ることがありますが、整合性の失敗は承認で解除できません。停止した入力は 7 日後か確認コードの変更後に再試行します（ソース特定は関連 ref の変更でも再試行）。黄色の `nightly-pending` は follow を要求した状態で、公開済みという意味ではありません。公開テスト鍵による署名は整合性の確認で、ビルドした人の証明ではありません。nightly の G1〜G8 も適用します。
+
+
 Rolling back
 ------
 
 Run **Roll back WPA3 nightly** and pick a branch. It restores `<branch>-lastgood`, the previous build, with a lease, then disables **Nightly WPA3**. This pauses publishing for **all four** branches. A branch, including each release-staging branch, has no `<branch>-lastgood` until its second build; in that case, nothing is changed. To resume, run `gh workflow enable nightly.yml --repo shunnag/openpilot`, or re-enable it from the Actions tab.
+
+Prefer **follow-admin → revoke** with the release tag and a reason for an automatic kernel. It pauses automatic kernels, marks the release WITHDRAWN and dispatches nightly with `upstream=published`. Each affected branch composes its already-published upstream with comma's kernel for the same AGNOS version and the reserved revert tag. This does not downgrade AGNOS. A bad release does not replace `-lastgood`. No issue label triggers withdrawal. Offline devices need another network or [flash.comma.ai](https://flash.comma.ai). **Roll back WPA3 nightly** also disables follow; restoring `-lastgood` may restore another untested kernel or downgrade AGNOS, which has not been tested.
+
+自動カーネルは **follow-admin → revoke** でリリースタグと理由を指定して取り下げる方法を優先してください。自動公開を停止し、リリースを WITHDRAWN にして、`upstream=published` で nightly を実行します。影響する各ブランチは、公開中の upstream に同じ AGNOS 用の comma のカーネルと予約済みの復帰タグを組み合わせます。AGNOS のダウングレードはしません。問題のあるリリースで `-lastgood` を上書きしません。issue のラベルでは取り下げを起動しません。オフラインの端末には別のネットワークか [flash.comma.ai](https://flash.comma.ai) が必要です。**Roll back WPA3 nightly** は follow も無効にします。`-lastgood` への復元では別の未確認カーネルに戻る場合や、未確認の AGNOS ダウングレードになる場合があります。
 
 To go back to comma's openpilot, reinstall it from comma's URL. **The WPA3 kernel stays** until comma's next AGNOS version bump, because openpilot only reflashes AGNOS when the version changes. To remove it right away, reflash AGNOS from [flash.comma.ai](https://flash.comma.ai).
 
@@ -232,9 +267,17 @@ python3 scripts/bootimg.py tag <boot.img> --tag wpa3.sae=4 --key <private.pem> -
 Automatic follow state
 ------
 
-Bot state commits land on `wpa3-ci`. Use `git pull --rebase` before pushing; never force-push this branch. Keep repository activity within 60 days if upstream goes quiet, and check that scheduled workflows remain enabled.
+Bot state commits land on `wpa3-ci`. Use `git pull --rebase` before pushing; never force-push this branch. Commit at least every 60 days if upstream goes quiet, and check that scheduled workflows remain enabled. Before enabling automatic publication, the owner should post and pin an announcement for all four branches with the start date and the instructions above for returning to comma's openpilot.
+
+The owner can run **follow-admin** with an action, target and note: `revoke` withdraws an automatic release and pauses publishing; `mark-tested` records the release's tested device (`mici` = comma four, `tizi` = comma 3X); `approve` publishes a risk-hold draft after verification, recording `device_tested=yes|no`; `unpause` clears the pause and its issue mirror; `retry` clears a stock-hash attempt and requests follow. Approval cannot bypass integrity failures. Changing the mode is the owner's separate repository-variable operation. Turning automatic follow off is a brake; it does not undo a kernel. Withdrawn pins still resolve to their stock revert in every mode.
+
+bot の状態コミットは `wpa3-ci` に入ります。push 前に `git pull --rebase` を行い、このブランチを force-push しないでください。upstream が静かな場合も少なくとも 60 日ごとにコミットし、定期実行が有効か確認してください。自動公開を有効にする前に、所有者が開始日と上記の comma への戻し方を含む、4 ブランチ向けの告知 issue を投稿・固定してください。
+
+所有者は **follow-admin** で操作、対象、メモを指定できます。`revoke` は自動リリースを取り下げて公開を停止し、`mark-tested` は確認した実機（`mici` = comma four、`tizi` = comma 3X）を記録します。`approve` はリスクで停止した draft を再検証して公開し、`device_tested=yes|no` を記録します。`unpause` は停止状態と対応する issue を解除し、`retry` は stock ハッシュの試行記録を消して follow を要求します。承認で整合性の失敗を迂回することはできません。モード変更は別途、所有者がリポジトリ変数を操作します。自動 follow の無効化は停止操作で、カーネルを元に戻す操作ではありません。取り下げた pin は、どのモードでも純正への復帰イメージを選びます。
 
 <!-- wpa3-status:begin -->
+
+`WPA3_FOLLOW_MODE` is currently `off`. / 現在の `WPA3_FOLLOW_MODE` は `off` です。
 
 | Automatic release | Status | Tested devices |
 |---|---|---|

@@ -533,6 +533,7 @@ class TestFollowCLI(unittest.TestCase):
       self.assertEqual(rc, 1 if result in ('held', 'risk_held') else 3)
       if rc == 1:
         self.assertIn('PIN: FAIL: K4: risky driver change', stderr)
+        self.assertIn(f'PIN: KEY: kernel {needed.key}', stderr)
     self.state['status']['attempts'] = {}
     self.state['status']['wpa_attempts'][needed.key] = attempt()
     self.assertEqual(self.cli(needed, 'on')[0], 3)

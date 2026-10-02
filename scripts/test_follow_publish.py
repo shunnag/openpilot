@@ -154,7 +154,7 @@ class MemoryGitHub:
       if names is None or name in names:
         (directory / name).write_bytes(data)
 
-  def issue(self, label, title, body):
+  def issue(self, label, title, body, *, key=''):
     self.events.append(('issue', label, title))
     if label == 'follow-paused':
       self.issues.append({'number': 10, 'title': title, 'body': body})
@@ -354,6 +354,24 @@ class PublicationTests(unittest.TestCase):
     self.facts['prebuild']['gates'] = [{'gate': 'K4(a)', 'result': 'FAIL', 'kind': 'risk', 'detail': 'Wi-Fi path'}]
     write_json(self.verified / 'provenance.json', self.facts)
     publish.checksums(self.verified, write=True)
+
+  def test_wpa_draft_notes_are_rendered_from_its_provenance(self):
+    source = self.root / 'wpa'
+    shutil.copytree(ROOT / 'scripts/fixtures/wpa_request/assets', source)
+    shutil.copyfile(ROOT / 'scripts/fixtures/wpa_request/valid.json', source / 'test-request.json')
+    write_json(source / 'build-report.json', {'R1': 'PASS', 'device_tested': False})
+    write_json(source / 'test-report.json', {'T0': 'PASS', 'T1': 'PASS', 'T2': 'PASS', 'T3': 'PENDING (dryrun)'})
+    self.pub.wpa_draft(source)
+    release = self.gh.release(1)
+    self.assertTrue(release['draft'])
+    provenance = json.loads(self.gh.assets[1]['provenance.json'])
+    from release_notes import render
+    title, body = render(provenance, 'wpa')
+    self.assertEqual((release['name'], release['body']), (title, body))
+    self.assertIn('WITHOUT any device test', body)
+    self.assertIn('T3: PENDING (dryrun)', body)
+    self.assertIn('policy.wpa.auto_publish AND a matching public Mac mini T3 result', body)
+    self.assertEqual(set(provenance['assets']), set(self.gh.assets[1]))
 
   def test_two_phase_publish_assets_then_pin_then_dispatch(self):
     self.kernel()
@@ -792,6 +810,16 @@ class ProtocolTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'WITHDRAWN'):
           gh.edit(release, **fields)
       api.assert_not_called()
+
+  def test_follow_hold_uses_full_key_and_escapes_log_mentions(self):
+    gh = publish.GitHub('shunnag/openpilot', 'on')
+    key = 'a' * 64
+    old = {'number': 7, 'title': 'older reason', 'body': f'<!-- wpa3-key:{key} -->'}
+    with patch.object(gh, 'pages', return_value=[old]), patch.object(gh, 'api') as api, patch.object(publish, 'run') as run:
+      gh.issue('follow-hold', 'held @owner', 'K4: @owner', key=key)
+    self.assertEqual(api.call_args.args[:2], ('issues/7', 'PATCH'))
+    self.assertNotIn('@owner', api.call_args.args[2]['body'])
+    self.assertEqual({c.args[3] for c in run.call_args_list}, {'follow-hold', 'follow:kernel', 'stock:' + key[:12]})
 
   def test_t3_requires_policy_and_anonymous_matching_result(self):
     fixture = ROOT / 'scripts/fixtures/wpa_request'

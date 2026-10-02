@@ -91,9 +91,8 @@ class Admin:
     release = self.gh.release(release['id'])
     require(not (release.get('name') or '').startswith('WITHDRAWN'), 'cannot clear withdrawal while marking tested')
     devices = result.state['status']['device_tested'][tag]['devices']
-    notice = 'Device-tested on comma 3X (tizi).' if 'tizi' in devices else 'No WPA3 kernel has ever booted on a comma 3X.'
-    body = re.sub(r'Auto-built modified kernel;[^\n]*', f"Auto-built modified kernel; device-tested ({', '.join(devices)}). {notice}",
-                  release.get('body') or '')
+    provenance['device_tested'] = result.state['status']['device_tested'][tag]
+    _, body = release_notes(provenance)
     self.gh.edit(release, name=f"AGNOS {provenance['version']} WPA3 boot image ({pin['tag']}): device-tested ({', '.join(devices)})",
                  body=body + f'\nDevice-tested on {device} by `{self.actor}` at {at}.\n',
                  prerelease=False, make_latest='false')

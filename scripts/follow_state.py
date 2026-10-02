@@ -402,7 +402,8 @@ class FollowNeeded(ValueError):
 def follow_exit(needed, mode, policy, status):
   mode_value(mode)
   # Only recorded holds escalate here. Time-based escalation belongs to issues.py.
-  attempt = status['attempts'].get(needed.key)
+  attempts = status['wpa_attempts'] if needed.kind == 'wpa' else status['attempts']
+  attempt = attempts.get(needed.key)
   if attempt and attempt['result'] in ('held', 'risk_held'):
     raise ValueError(attempt['reason'])
   if needed.kind == 'kernel':
@@ -435,7 +436,11 @@ def resolve_supplicant(resolved, system_hash, state, mode):
   pin = result if result['mode'] == 'native' else result['pin']
   if entry is None:
     needed = FollowNeeded('wpa', digest, 'stock wpa_supplicant has no patched binary')
-    if follow_exit(needed, mode, state['policy'], state['status']) != 0 or mode in ('off', 'dryrun'):
+    try:
+      rc = follow_exit(needed, mode, state['policy'], state['status'])
+    except ValueError as error:
+      raise FollowNeeded('wpa', digest, str(error)) from error
+    if rc != 0 or mode in ('off', 'dryrun'):
       raise needed
     pin.pop('wpa_supplicant', None)
     return result

@@ -63,6 +63,7 @@ class WorkflowPolicyTests(unittest.TestCase):
       ('follow', 'report'): {'issues': 'write'},
       ('admin', 'admin'): {'contents': 'write', 'issues': 'write', 'actions': 'write'},
       ('nightly', 'publish'): {'contents': 'write', 'issues': 'write'},
+      ('nightly', 'request-follow'): {'actions': 'write'},
       ('rollback', 'rollback'): {'contents': 'write', 'actions': 'write'},
     }
     self.assertEqual({(name, job) for name, w in workflows.items() for job in w['jobs']}, set(expected))
@@ -74,7 +75,7 @@ class WorkflowPolicyTests(unittest.TestCase):
           if (name, job_name) in (('follow', 'publish'), ('admin', 'admin')):
             self.assertNotIn('concurrency', workflow)
             self.assertEqual(concurrency, {'group': 'wpa3-state', 'queue': 'max', 'cancel-in-progress': False})
-          elif name == 'nightly':
+          elif (name, job_name) == ('nightly', 'publish'):
             self.assertEqual(concurrency, {'group': 'publish-${{ matrix.branch }}', 'cancel-in-progress': False})
           elif name == 'rollback':
             self.assertEqual(concurrency, {'group': 'publish-${{ inputs.branch }}', 'cancel-in-progress': False})

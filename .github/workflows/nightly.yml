@@ -6,24 +6,36 @@ on:
     - cron: '30 12 * * *'
   workflow_dispatch:
     inputs:
+      upstream:
+        description: Compose latest upstream or the published upstream for withdrawal
+        type: choice
+        options: [latest, published]
+        default: latest
       force:
         description: Run gates and compose even if inputs are unchanged
         type: boolean
         default: false
 
-permissions:
-  contents: write
-  issues: write
+permissions: {}
 
 env:
   GIT_LFS_SKIP_SMUDGE: '1'
   GIT_LFS_SKIP_PUSH: '1'
   GIT_TERMINAL_PROMPT: '0'
   GH_TOKEN: ${{ github.token }}
+  WPA3_FOLLOW_MODE: ${{ vars.WPA3_FOLLOW_MODE || 'off' }}
   GH_REPO: ${{ github.repository }}
 
 jobs:
   publish:
+    permissions:
+      contents: write
+      issues: write
+    outputs:
+      pending_nightly: ${{ steps.pin.outputs.pending_nightly }}
+      pending_nightly_chestnut: ${{ steps.pin.outputs.pending_nightly_chestnut }}
+      pending_release_mici_staging: ${{ steps.pin.outputs.pending_release_mici_staging }}
+      pending_release_tizi_staging: ${{ steps.pin.outputs.pending_release_tizi_staging }}
     strategy:
       fail-fast: false
       matrix:
@@ -32,6 +44,7 @@ jobs:
       group: publish-${{ matrix.branch }}
       cancel-in-progress: false
     env:
+      UPSTREAM_SOURCE: ${{ inputs.upstream || 'latest' }}
       BRANCH: ${{ matrix.branch }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -55,25 +68,39 @@ jobs:
           echo "NIGHTLY_LOG=$NIGHTLY_LOG" >> "$GITHUB_ENV"
           {
             gh auth setup-git --hostname github.com
-            U=$(git ls-remote https://github.com/commaai/openpilot "refs/heads/$BRANCH" | awk '{print $1}')
-            [[ "$U" =~ ^[0-9a-f]{40}$ ]]
-            echo "UPSTREAM=$U" >> "$GITHUB_ENV"
-            echo "Upstream: $U"
             F=$(git ls-remote "https://github.com/$GH_REPO.git" "refs/heads/$BRANCH" | awk '{print $1}')
             [[ -z "$F" || "$F" =~ ^[0-9a-f]{40}$ ]]
             echo "FORK=$F" >> "$GITHUB_ENV"
             echo "Current fork: ${F:-absent}"
             git init --bare "$BARE_REPO"
             git -C "$BARE_REPO" remote add origin "https://github.com/$GH_REPO.git"
-            if ! [ "$(gh api "repos/commaai/openpilot/commits/$U" --jq '.parents | length')" = 0 ]; then
-              echo "::error::Upstream $BRANCH is no longer an orphan commit; this fork's publish design assumes one."
-              exit 1
+            if [ "$UPSTREAM_SOURCE" = published ]; then
+              if [ -z "$F" ]; then
+                echo 'skip=true' >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+              # A revoke needs the parent; never shallow-fetch the published fork.
+              git -C "$BARE_REPO" fetch --no-tags --no-recurse-submodules origin "$F"
+              U=$(python3 scripts/nightly.py published-upstream --repo "$BARE_REPO" --published "$F")
+              if [ -z "$U" ]; then
+                echo 'skip=true' >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+            else
+              U=$(git ls-remote https://github.com/commaai/openpilot "refs/heads/$BRANCH" | awk '{print $1}')
+              [[ "$U" =~ ^[0-9a-f]{40}$ ]]
+              if ! [ "$(gh api "repos/commaai/openpilot/commits/$U" --jq '.parents | length')" = 0 ]; then
+                echo "::error::Upstream $BRANCH is no longer an orphan commit; this fork's publish design assumes one."
+                exit 1
+              fi
+              # --depth=1 marks even a root shallow; receive-pack rejects "shallow update not allowed".
+              git -C "$BARE_REPO" fetch --no-tags --no-recurse-submodules https://github.com/commaai/openpilot "$U"
+              if [ -n "$F" ]; then
+                git -C "$BARE_REPO" fetch --depth=1 --no-tags --no-recurse-submodules origin "$F"
+              fi
             fi
-            # --depth=1 marks even a root shallow; receive-pack rejects "shallow update not allowed".
-            git -C "$BARE_REPO" fetch --no-tags --no-recurse-submodules https://github.com/commaai/openpilot "$U"
-            if [ -n "$F" ]; then
-              git -C "$BARE_REPO" fetch --depth=1 --no-tags --no-recurse-submodules origin "$F"
-            fi
+            echo "UPSTREAM=$U" >> "$GITHUB_ENV"
+            echo "Upstream: $U"
             if [ -f "$BARE_REPO/shallow" ] && grep -Fxq "$U" "$BARE_REPO/shallow"; then
               echo '::error::Upstream commit is recorded as shallow; publishing would be rejected.'
               exit 1
@@ -82,8 +109,18 @@ jobs:
 
       - name: Resolve AGNOS pin
         id: pin
+        if: steps.fetch.outputs.skip != 'true'
         run: |
-          python3 scripts/pins.py --repo "$BARE_REPO" --upstream "$UPSTREAM" --out "$RUNNER_TEMP/pin.json" 2>&1 | tee -a "$NIGHTLY_LOG"
+          MODE="$WPA3_FOLLOW_MODE"
+          if [ "$UPSTREAM_SOURCE" = published ]; then MODE=off; fi
+          if python3 scripts/pins.py --repo "$BARE_REPO" --upstream "$UPSTREAM" --out "$RUNNER_TEMP/pin.json" --follow-mode "$MODE" --branch "$BRANCH" 2>&1 | tee -a "$NIGHTLY_LOG"; then rc=0; else rc=${PIPESTATUS[0]}; fi
+          if [ "$rc" = 3 ]; then
+            echo 'pending=true' >> "$GITHUB_OUTPUT"
+            python3 scripts/issues.py pending --branch "$BRANCH" --upstream "$UPSTREAM" --log "$NIGHTLY_LOG" 2>&1 | tee -a "$NIGHTLY_LOG"
+            echo "pending_${BRANCH//-/_}=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "$rc" != 0 ]; then exit "$rc"; fi
           python3 - <<'PY'
           import json
           import os
@@ -96,6 +133,7 @@ jobs:
 
       - name: Skip identical published inputs
         id: inputs
+        if: steps.fetch.outputs.skip != 'true' && steps.pin.outputs.pending != 'true'
         env:
           FORCE: ${{ inputs.force || false }}
         run: |
@@ -112,17 +150,18 @@ jobs:
 
       - name: Gate upstream and download-verify pinned boot
         id: gates
-        if: steps.inputs.outputs.unchanged != 'true'
+        if: steps.fetch.outputs.skip != 'true' && steps.pin.outputs.pending != 'true' && steps.inputs.outputs.unchanged != 'true'
         run: |
           PUBLISHED_ARGS=()
           if [ -n "$FORK" ]; then
             PUBLISHED_ARGS=(--published "$FORK")
           fi
+          if [ "$UPSTREAM_SOURCE" = published ]; then PUBLISHED_ARGS+=(--revoke); fi
           python3 scripts/gates.py --repo "$BARE_REPO" --upstream "$UPSTREAM" --pin-file "$RUNNER_TEMP/pin.json" "${PUBLISHED_ARGS[@]}" 2>&1 | tee -a "$NIGHTLY_LOG"
 
       - name: Compose and validate deterministic commit
         id: compose
-        if: steps.inputs.outputs.unchanged != 'true'
+        if: steps.fetch.outputs.skip != 'true' && steps.pin.outputs.pending != 'true' && steps.inputs.outputs.unchanged != 'true'
         run: |
           python3 scripts/compose.py --repo "$BARE_REPO" --upstream "$UPSTREAM" --pin-file "$RUNNER_TEMP/pin.json" 2>&1 | tee "$RUNNER_TEMP/composed.txt" | tee -a "$NIGHTLY_LOG"
           mapfile -t RESULT < "$RUNNER_TEMP/composed.txt"
@@ -131,7 +170,7 @@ jobs:
 
       - name: Back up previous nightly and publish with lease
         id: push
-        if: steps.inputs.outputs.unchanged != 'true'
+        if: steps.fetch.outputs.skip != 'true' && steps.pin.outputs.pending != 'true' && steps.inputs.outputs.unchanged != 'true'
         env:
           NEW: ${{ steps.compose.outputs.new }}
         run: |
@@ -141,7 +180,10 @@ jobs:
           fi
           {
             if [ -n "$FORK" ]; then
-              git -C "$BARE_REPO" push --force origin "$FORK:refs/heads/$BRANCH-lastgood"
+              KEEP_LASTGOOD=$(python3 scripts/nightly.py keep-lastgood --repo "$BARE_REPO" --published "$FORK")
+              if [ "$KEEP_LASTGOOD" != true ]; then
+                git -C "$BARE_REPO" push --force origin "$FORK:refs/heads/$BRANCH-lastgood"
+              fi
             fi
             git -C "$BARE_REPO" push --force-with-lease="refs/heads/$BRANCH:$FORK" origin "$NEW:refs/heads/$BRANCH"
             echo 'published=true' >> "$GITHUB_OUTPUT"
@@ -152,11 +194,17 @@ jobs:
         env:
           REASON: ${{ steps.pin.outcome == 'failure' && 'AGNOS pin could not be resolved' || steps.gates.outcome == 'failure' && 'gate checks failed' || steps.compose.outcome == 'failure' && 'compose failed' || steps.push.outcome == 'failure' && 'publish failed' || 'fetch or inputs failed' }}
         run: |
-          python3 scripts/issues.py hold --branch "$BRANCH" --upstream "${UPSTREAM:-unknown}" --reason "$REASON" --log "$NIGHTLY_LOG"
+          KIND=hold
+          if [ "$UPSTREAM_SOURCE" = published ]; then KIND=revoke-blocked; fi
+          python3 scripts/issues.py "$KIND" --branch "$BRANCH" --upstream "${UPSTREAM:-unknown}" --reason "$REASON" --log "$NIGHTLY_LOG"
           exit 1
 
       - name: Close resolved hold issues
-        run: python3 scripts/issues.py hold --branch "$BRANCH" --close --upstream "$UPSTREAM"
+        if: steps.pin.outputs.pending != 'true' && (steps.push.outcome == 'success' || steps.inputs.outputs.unchanged == 'true')
+        run: |
+          python3 scripts/issues.py hold --branch "$BRANCH" --close --upstream "$UPSTREAM"
+          python3 scripts/issues.py pending --branch "$BRANCH" --close --upstream "$UPSTREAM"
+          python3 scripts/issues.py revoke-blocked --branch "$BRANCH" --close --upstream "$UPSTREAM"
 
       - name: Smoke test installer (warning only; never roll back)
         id: smoke
@@ -192,3 +240,15 @@ jobs:
         if: steps.smoke.outcome == 'success'
         continue-on-error: true
         run: python3 scripts/issues.py smoke --branch "$BRANCH" --close --upstream "$UPSTREAM"
+
+  request-follow:
+    needs: publish
+    if: always()
+    permissions:
+      actions: write
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Request follow once for all pending branches
+        if: needs.publish.outputs.pending_nightly == 'true' || needs.publish.outputs.pending_nightly_chestnut == 'true' || needs.publish.outputs.pending_release_mici_staging == 'true' || needs.publish.outputs.pending_release_tizi_staging == 'true'
+        run: gh workflow run follow.yml --ref wpa3-ci --repo "$GH_REPO" -f reason=nightly-pending

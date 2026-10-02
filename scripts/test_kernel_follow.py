@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import struct
 import subprocess
 import tempfile
@@ -14,7 +15,7 @@ import unittest
 from unittest.mock import patch
 
 import bootimg
-from boot_fixture import boot_image
+from boot_fixture import BANNER, boot_image
 import follow_state
 import kernel_assemble as assembly
 import kernel_build_data as build
@@ -241,12 +242,99 @@ class TestAssembly(unittest.TestCase):
     config = b'# CONFIG_MODULE_SIG_FORCE is not set\n' + (b'CONFIG_WLAN_FEATURE_SAE=y\n' if sae else b'# CONFIG_WLAN_FEATURE_SAE is not set\n')
     raw = boot_image(config=config, sae=4 if sae else 0, rsnxe=sae)
     image, chain = ke.split_kernel(bootimg.parse(raw)['kernel'])
-    image = bytearray(image) + bytes(20)
-    image[:16] = b'UNCOMPRESSED_IMG'
-    struct.pack_into('<I', image, 16, len(image) - 20)
-    struct.pack_into('<3Q', image, 28, 0x80000, len(image), 0xa)
-    image[76:80] = b'ARM\x64'
-    return bootimg.repack(raw, bytes(image) + chain, 'console=tty0', cls.key)
+    image = bytearray(image)
+    image[:2] = b'MZ'
+    struct.pack_into('<3Q', image, 8, 0x80000, len(image), 0xa)
+    image[56:60] = b'ARM\x64'
+    banner = b'Linux version 4.9.103 (user@host) (gcc 8.2) #1 SMP PREEMPT Sep 2 12:34:56 UTC 2026'
+    image[BANNER:BANNER + 256] = banner.ljust(256, b'\0')
+    wrapped = b'UNCOMPRESSED_IMG' + struct.pack('<I', len(image)) + image
+    return bootimg.repack(raw, wrapped + chain, 'console=tty0', cls.key)
+
+  def test_publish_uses_wrapped_image_dtb_with_raw_image_present(self):
+    with tempfile.TemporaryDirectory() as temporary:
+      root = Path(temporary)
+      inputs, builds, out = root / 'detect', root / 'builds', root / 'verified'
+      item_id, commit, builder = sha256(self.stock)[:12], 'b' * 40, 'c' * 40
+      directory = inputs / 'items' / item_id
+      recipe = directory / builder
+      artifact = builds / f'kernel-{item_id}-{commit[:12]}'
+      recipe.mkdir(parents=True)
+      artifact.mkdir(parents=True)
+      (inputs / 'manual').mkdir()
+      shutil.copyfile(self.key, recipe / 'vble-qti.key')
+      for name in (*self.policy['recipe'], 'tools/aarch64-linux-gnu-gcc.tar.gz'):
+        if name != 'vble-qti.key':
+          (recipe / name.replace('/', '_')).write_bytes(b'fixture recipe')
+      (directory / 'stock.img').write_bytes(self.stock)
+      # Both files exist, just as in CI. Reading the raw MZ Image breaks K9/Q1.
+      for name, boot in (('stock', self.stock), ('wpa3', self.wpa)):
+        (artifact / f'{name}.Image').write_bytes(ke.split(boot)[1][20:])
+        (artifact / f'{name}.Image-dtb').write_bytes(bootimg.parse(boot)['kernel'])
+      self.assertEqual((artifact / 'wpa3.Image').read_bytes()[:2], b'MZ')
+      source = (ROOT / 'follow/kernel-patches/source.diff').read_text()
+      blobs = dict.fromkeys(gates.patch_paths(source), 'a' * 40)
+      proof = {'source_diff': source, 'candidate': commit, 'baseline': 'd' * 40,
+               'candidate_blobs': blobs, 'baseline_blobs': blobs}
+      pre = {'patched_blobs': blobs, 'diff': {'paths': [], 'candidate': commit, 'baseline': 'd' * 40}, 'risk_hold': False}
+      write_json(artifact / 'patch-proof.json', proof)
+      write_json(artifact / 'result.json', {'result': 'complete', 'full_builds': 1})
+      write_json(artifact / 'manifests.json', {'rebuilt_objects': ['kernel/configs.o'],
+                 'wifi_objects': {'net/wireless/test.o': '0' * 64}})
+      for name in ('source.diff', *self.policy['patches']):
+        shutil.copyfile(ROOT / 'follow/kernel-patches' / name, artifact / name)
+      (artifact / 'SHA256SUMS').write_text(''.join(
+        f'{sha256(path.read_bytes())}  {path.name}\n' for path in sorted(artifact.iterdir())))
+      state = follow_state.load()
+      state['policy'] = self.policy
+      manual = bootimg.with_tag(self.wpa, 'wpa3.sae=3', self.key)
+      for version, pin in state['manual'].items():
+        (inputs / 'manual' / f'{version}.img').write_bytes(manual)
+        pin['boot'].update(hash_raw=sha256(manual), size=len(manual), ondevice_hash=bootimg.ondevice_hash(manual))
+      candidate = {'commit': commit, 'builder_commit': builder, 'tree': 'e' * 40, 'oracle': True, 'full_build_budget': 1}
+      write_json(inputs / 'plan.json', {'mode': 'dryrun', 'items': [item_id],
+                 'gate_version': follow_state.gate_version(), 'release_names': [], 'tag_names': []})
+      write_json(directory / 'input.json', {'stock_hash': sha256(self.stock), 'scheduled': [commit],
+        'replay': '19.9', 'baseline_release': 'fixture', 'manifest': [], 'agnos_py_blob': 'fixture',
+        'pre': {commit: pre}, 'discovery': {'candidates': [candidate], 'fetch_metrics': {},
+                                          'fallback_measurements': {}, 'refs_fingerprint': 'fixture'}})
+      # Source discovery/recipe gates have separate coverage. All artifact
+      # checks, stock selection, assembly, signing and replay comparison run.
+      with patch.object(follow_state, 'load', return_value=state), \
+           patch.object(gates, 'k0'), patch.object(gates, 'k2'), redirect_stdout(io.StringIO()):
+        follow.publish(inputs, builds, out)
+      facts = read_json(out / item_id / 'provenance.json')
+      results = {row['gate']: row['result'] for row in facts['gates']}
+      for gate in ('K5', 'K6', 'K7', 'K9', 'K11', 'K12', 'Q1-WPA3'):
+        self.assertEqual(results[gate], 'OK', gate)
+      self.assertEqual(facts['boot']['layout']['header_offset'], 20)
+      self.assertEqual(read_json(out / 'run.json')['failures'], [])
+
+  def test_replay_allows_identity_dtb_order_and_expected_tag_only(self):
+    reference = bootimg.with_tag(self.wpa, 'wpa3.sae=3', self.key)
+    image, chain = ke.split(self.wpa)[1:]
+    changed = image.replace(b'user@host', b'user@ci01')
+    reordered = b''.join(reversed(ke.dtb_blobs(chain)))
+    assembled = bootimg.repack(self.wpa, changed + reordered, 'console=tty0 wpa3.sae=4', self.key)
+    self.assertFalse(ke.rebuild_equivalent(reference, assembled)[0])
+    self.assertIn('rebuild-equivalent', assembly.replay_check(reference, assembled, 4, self.key))
+    for cmdline in ('console=tty1 wpa3.sae=4', 'console=tty0  wpa3.sae=4',
+                    'console=tty0 wpa3.sae=5', 'console=tty0 wpa3.sae=4 extra=1',
+                    'console=tty0 wpa3.sae=3 wpa3.sae=4'):
+      with self.subTest(cmdline=cmdline), self.assertRaisesRegex(ValueError, 'cmdline'):
+        wrong = bootimg.repack(self.wpa, changed + reordered, cmdline, self.key)
+        assembly.replay_check(reference, wrong, 4, self.key)
+    for kernel in (image[:9000] + bytes([image[9000] ^ 1]) + image[9001:] + chain,
+                   image + ke.dtb_blobs(chain)[0], image + chain + ke.dtb_blobs(chain)[0],
+                   image[20:] + chain, bootimg.parse(self.stock)['kernel']):
+      with self.subTest(kernel_size=len(kernel)), self.assertRaises(ValueError):
+        wrong = bootimg.repack(self.wpa, kernel, 'console=tty0 wpa3.sae=4', self.key)
+        assembly.replay_check(reference, wrong, 4, self.key)
+    for cmdline in ('console=tty0', 'console=tty0 wpa3.sae=0',
+                    'console=tty0 wpa3.sae=3 wpa3.sae=3', 'console=tty0 wpa3.sae=3 '):
+      with self.subTest(reference_cmdline=cmdline), self.assertRaisesRegex(ValueError, 'manual replay'):
+        wrong = bootimg.repack(self.wpa, image + chain, cmdline, self.key)
+        assembly.replay_check(wrong, assembled, 4, self.key)
 
   def test_k0_shape_agnos_signature_and_repack(self):
     manifest = []

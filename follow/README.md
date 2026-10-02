@@ -91,6 +91,10 @@ SKIP; it does not claim a CI build occurred.
   checks and K12. Both manual boot images are downloaded and hash checked for
   the on-device hash self-test. K10 produces proposed numbers only; historical
   replay numbers are deliberately reused only in local/Actions artifacts.
+- Publish extracts the **wrapped** Image with
+  `kernel_equiv.split_kernel(wpa3.Image-dtb)[0]`. The raw `wpa3.Image` and
+  `stock.Image` files start with `MZ` and are build diagnostics, not assembly
+  inputs. K7 consumes the wrapped Image; K9 and Q1 inspect the assembled boot.
 - K7b and K8 hashes, dependency lists and compilation/source linkage are
   explicitly identified as computed in the build job. They cannot be recovered
   from an Image. Missing reviewed references are SKIP in this dryrun-only part.
@@ -101,6 +105,51 @@ recipe's `dyndbg=\"\"` requires shell-quote-aware cmdline normalization; and the
 real 19.8/19.9 stock config omits `WLAN_FEATURE_SAE` altogether because patch
 0001 introduces that Kconfig symbol. K7 accepts only absent-or-disabled → `y`
 for this one option, with no other option delta and `MODULE_SIG_FORCE` unset.
+
+### Q1 replay equivalence
+
+Q1 compares the assembled WPA3 boot with the hash-checked manual replay boot
+(19.9 tag3 or 19.8 tag2). The only cmdline allowance is replacing its single,
+final `wpa3.sae=<positive decimal>` token with the expected assembly tag.
+Every other cmdline byte, including whitespace, must match. Historical replays
+use the same number, so 19.9 compares tag3 to tag3 without any cmdline change.
+This normalization is confined to Q1; the stock rebuild comparator is unchanged.
+
+After retagging the reference, `rebuild_equivalent` permits exactly its existing
+bounded differences:
+
+- Whole appended DTBs may be reordered, with identical bytes and multiplicity.
+  K9 separately requires the assembled DTBs to retain stock bytes and order.
+- Linux banner, `proc_banner` and standalone `#N SMP PREEMPT` strings must
+  start at matching offsets and terminate within 256 bytes. Length differences
+  are at most 16 bytes, with identical terminators and zero padding in the
+  shorter image. Only those bounded spans are masked.
+- GNU build-id payloads (20 bytes) at matching offsets and validated generated
+  X.509 certificate spans (at most 4096 bytes, identical starts/ends) may differ.
+- Embedded newc initramfs archives must match after zeroing only cpio mtimes.
+  Their gzip encodings may differ with a compressed-length delta at most 16,
+  matching starts and aligned size-word locations, valid size words/padding,
+  and no gzip flags except FNAME. One 32-bit symbol word may change by exactly
+  that length delta if its original value is within 64 bytes of the original
+  compressed member's end offset.
+
+All other Image bytes, Image size, decompressed IKCONFIG and boot header bytes
+must match. The Android SHA1 ID and signature trailer are excluded by the
+comparator; K9 independently verifies the assembled signature, wrapper and
+layout. Code, config, non-tag cmdline, DTB content or multiplicity changes fail.
+
+To rerun a downloaded publish job locally, use the same entry point:
+
+```bash
+python3 scripts/kernel_follow.py publish --inputs /tmp/replay/kernel-detect \
+  --builds .tmp/run36939004599 --out /tmp/replay/verified
+```
+
+If the code changed since detect, copy `kernel-detect` first and update only
+that copy's `plan.json` `gate_version` to `follow_state.gate_version()` for an
+explicit offline re-verification. Record both fingerprints and retain the
+original downloads. This exercises the new verifier on old build bytes; it is
+not a new CI run. Production still rejects fingerprints changed between jobs.
 
 ## Checks still requiring GitHub
 

@@ -140,10 +140,32 @@ def select_candidate(candidates, results):
   return oracles[0]
 
 
+def replay_check(reference, assembled, number, key):
+  """Rebuild equivalence with only the final, single SAE tag renumbered.
+
+  Every other cmdline byte (including whitespace) must match the manual boot.
+  Keep this replay-only normalization out of the stock rebuild comparator.
+  """
+  original = bootimg.parse(reference)['cmdline']
+  tokens = list(re.finditer(r'(?<!\S)wpa3\.sae=\S*', original))
+  require(len(tokens) == 1 and re.search(r' wpa3\.sae=[1-9][0-9]*$', original),
+          'manual replay must have exactly one final positive SAE tag')
+  tag = f'wpa3.sae={number}'
+  expected = original[:tokens[0].start()] + tag
+  require(bootimg.parse(assembled)['cmdline'] == expected, 'replay cmdline differs beyond expected SAE tag')
+  normalized = bootimg.with_tag(reference, tag, key)
+  same, why = ke.rebuild_equivalent(normalized, assembled)
+  require(same, '; '.join(why))
+  return ('assembled WPA3 image rebuild-equivalent to device-tested manual image; '
+          f'{tokens[0].group()} -> {tag}; ' + '; '.join(why))
+
+
 def assemble(stock, rebuilt_kernel, wpa_image, key, policy, number, manual, manual_images,
              *, proof=None, pre=None, manifests=None, reference_dir=None, baseline_release=None,
              status=None, auto_pins=None, replay_image=None, patch_dir=ROOT / 'follow/kernel-patches',
              now=None, local=False):
+  # wpa_image includes the AGNOS UNCOMPRESSED_IMG wrapper, extracted from
+  # Image-dtb or a boot image. The build's raw arm64 Image is not a boot payload.
   gates = Gates()
   facts = {}
   fields = bootimg.parse(stock)
@@ -195,11 +217,7 @@ def assemble(stock, rebuilt_kernel, wpa_image, key, policy, number, manual, manu
   else:
     gates.skip('K12', 'local byte check has no publication state')
   if replay_image is not None:
-    def replay():
-      same, why = ke.rebuild_equivalent(replay_image, wpa)
-      require(same, '; '.join(why))
-      return 'assembled WPA3 image rebuild-equivalent to device-tested manual image'
-    gates.check('Q1-WPA3', replay)
+    gates.check('Q1-WPA3', lambda: replay_check(replay_image, wpa, number, key))
   require(not gates.failed('integrity'), 'integrity hold: ' + '; '.join(
     f"{r['gate']}: {r['detail']}" for r in gates.rows if r['result'] == 'FAIL' and r['kind'] == 'integrity'))
   facts.update(schema=1, mode='dryrun', stock_hash_raw=sha256(stock), gates=gates.rows,

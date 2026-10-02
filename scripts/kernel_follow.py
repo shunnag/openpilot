@@ -255,7 +255,7 @@ def publish(inputs, builds, out):
       recipe = directory / chosen['builder_commit']
       k2({p: read_bytes(recipe / p.replace('/', '_')) for p in (*state['policy']['recipe'], 'tools/aarch64-linux-gnu-gcc.tar.gz')}, state['policy'])
       wpa, revert, facts = assembly.assemble(stock, read_bytes(artifact / 'stock.Image-dtb'),
-        read_bytes(artifact / 'wpa3.Image'), key, state['policy'], number, state['manual'], manual,
+        ke.split_kernel(read_bytes(artifact / 'wpa3.Image-dtb'))[0], key, state['policy'], number, state['manual'], manual,
         proof=read_json(artifact / 'patch-proof.json'), pre=item['pre'][chosen['commit']],
         manifests=read_json(artifact / 'manifests.json'), baseline_release=item['baseline_release'],
         status=state['status'], auto_pins=state['pins'], replay_image=manual.get(item['replay']), patch_dir=artifact)

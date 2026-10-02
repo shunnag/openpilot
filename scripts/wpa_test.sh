@@ -73,7 +73,7 @@ start() {
       echo 'T2: wpa_supplicant exited before control interface readiness' >&2
       return 1
     fi
-    if [[ -S $runtime/ctrl/wpa3test ]] && [[ $(cli ping) == PONG ]]; then return; fi
+    if [[ $(cli ping 2>/dev/null) == PONG ]]; then return; fi
     sleep 0.2
   done
   echo 'T2: control interface readiness timed out' >&2

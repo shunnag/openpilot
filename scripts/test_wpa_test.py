@@ -11,9 +11,10 @@ ROOT = Path(__file__).resolve().parents[1]
 
 # One executable stub is symlinked under each command name. The real shell and
 # wpa_abi.py execute; synthetic ELF headers/readelf output substitute for T0.
-# The fake daemon uses a real Unix socket and persists sae_pwe in the config.
+# File-based control state avoids sockets, which local sandboxes may prohibit.
+# The fake daemon persists sae_pwe in the config and uses real process signals.
 STUB = r'''
-import json, os, pathlib, signal, socket, sys
+import json, os, pathlib, signal, sys
 base = pathlib.Path(os.environ['T2_FIXTURE'])
 name = pathlib.Path(sys.argv[0]).name
 args = sys.argv[1:]
@@ -62,48 +63,44 @@ elif name == 'chroot':
       sys.exit(1)
     # Fail if the harness did not provide the mounts needed by the real client.
     commands = [json.loads(line) for line in (base / 'commands.jsonl').read_text().splitlines()]
-    assert any(c[:4] == ['mount', '-t', 'tmpfs', '-o'] for c in commands)
+    assert ['mount', '-t', 'tmpfs', '-o', 'mode=1777,nosuid,nodev', 'tmpfs', str(root / 'tmp')] in commands
     assert ['mount', '-o', 'remount,bind,ro', str(root / 'dev')] in commands
     value = '0' if 'sae_pwe=0' in (runtime / 'wpa.conf').read_text() else '2'
     endpoint.parent.mkdir(exist_ok=True)
-    endpoint.unlink(missing_ok=True)
+    (runtime / 'value').write_text(value)
+    (runtime / 'pid').write_text(str(os.getpid()))
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
-    with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as server:
-      server.bind(str(endpoint))
-      try:
-        while True:
-          data, client = server.recvfrom(4096)
-          command = data.decode()
-          response = 'OK'
-          if command == 'ping': response = 'PONG'
-          elif command == 'get sae_pwe': response = '9' if mode == 'get' else value
-          elif command == 'set sae_pwe 0': value = '0'
-          elif command == 'save_config':
-            if mode == 'save': response = 'FAIL'
-            else:
-              with (runtime / 'wpa.conf').open('a') as out: out.write('sae_pwe=' + value + '\n')
-          server.sendto(response.encode(), client)
-          if command == 'terminate': break
-      finally:
-        endpoint.unlink(missing_ok=True)
+    endpoint.touch()
+    try:
+      while True: signal.pause()
+    finally:
+      endpoint.unlink(missing_ok=True)
   else:
     assert executable == '/usr/sbin/wpa_cli' and options[:4] == ['-p', '/run/ctrl', '-i', 'wpa3test']
+    if not endpoint.exists(): sys.exit(1)
     local = root / 'tmp' / ('cli-' + str(os.getpid()))
-    with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as client:
-      client.settimeout(2)
-      client.bind(str(local))
-      try:
-        client.connect(str(endpoint))
-        client.send(' '.join(options[4:]).encode())
-        print(client.recv(4096).decode())
-      finally:
-        local.unlink(missing_ok=True)
+    local.touch()
+    try:
+      command = ' '.join(options[4:])
+      response = 'OK'
+      if command == 'ping': response = 'PONG'
+      elif command == 'get sae_pwe': response = '9' if mode == 'get' else (runtime / 'value').read_text()
+      elif command == 'set sae_pwe 0': (runtime / 'value').write_text('0')
+      elif command == 'save_config':
+        if mode == 'save': response = 'FAIL'
+        else:
+          with (runtime / 'wpa.conf').open('a') as out:
+            out.write('sae_pwe=' + (runtime / 'value').read_text() + '\n')
+      elif command == 'terminate': os.kill(int((runtime / 'pid').read_text()), signal.SIGTERM)
+      else: raise AssertionError('unexpected control command: ' + command)
+      print(response)
+    finally:
+      local.unlink(missing_ok=True)
 '''
 
 
 class ChrootShellTests(unittest.TestCase):
   def exercise(self, failure=''):
-    # Short paths also respect macOS's Unix socket pathname length limit.
     with tempfile.TemporaryDirectory(prefix='t2-', dir='/tmp') as tmp:
       base = Path(tmp)
       binaries = base / 'bin'

@@ -1,0 +1,36 @@
+Package: wpa
+Binary: hostapd, wpagui, wpasupplicant, wpasupplicant-udeb, eapoltest, libwpa-client-dev
+Version: 2:2.10-21ubuntu0.4
+Priority: optional
+Section: net
+Maintainer: Ubuntu Developers <ubuntu-devel-discuss@lists.ubuntu.com>
+Build-Depends: debhelper-compat (= 13), libdbus-1-dev, libssl-dev, qtbase5-dev [linux-any] <!pkg.wpa.nogui>, libncurses5-dev, libpcsclite-dev, libnl-3-dev [linux-any], libnl-genl-3-dev [linux-any], libnl-route-3-dev [linux-any], libpcap-dev [kfreebsd-any], libbsd-dev [kfreebsd-any], libreadline-dev, pkgconf | pkg-config, docbook-to-man <!nodoc>, docbook-utils <!nodoc>
+Architecture: linux-any kfreebsd-any
+Standards-Version: 4.4.1
+Format: 3.0 (quilt)
+Directory: pool/main/w/wpa
+Files:
+ 65a019b87548bbe385635f93cfa9cddb 2549336 wpa_2.10.orig.tar.xz
+ d17821883572d98596a002f718e019c4 93956 wpa_2.10-21ubuntu0.4.debian.tar.xz
+ 5e5285bda4b55d5bf150bc01463cfe78 2794 wpa_2.10-21ubuntu0.4.dsc
+Checksums-Sha1:
+ 5995b205af351c4f39fd136fbfef5bb2264c3a5d 2549336 wpa_2.10.orig.tar.xz
+ d49f6a37609b63b115976ffd77910f9df871b749 93956 wpa_2.10-21ubuntu0.4.debian.tar.xz
+ fff6fa6914643217909ccd93d3b724290bd787d5 2794 wpa_2.10-21ubuntu0.4.dsc
+Checksums-Sha256:
+ b39f85be9d8fd58adee1acae3735ec0a1f7bdc460fe3f6fd76a1d57e9ac910c6 2549336 wpa_2.10.orig.tar.xz
+ b21bfb61d2b1650f2533a90faba132c3de255531873db26ff721327d0beae2c3 93956 wpa_2.10-21ubuntu0.4.debian.tar.xz
+ 08ebbe09f42de1b6602d43d267d8e20fa6fabbcf1477d42593b76769b4bf6211 2794 wpa_2.10-21ubuntu0.4.dsc
+Homepage: https://w1.fi/wpa_supplicant/
+Uploaders: Andrej Shadura <andrewsh@debian.org>
+Vcs-Browser: https://salsa.debian.org/debian/wpa
+Vcs-Git: https://salsa.debian.org/debian/wpa.git
+Testsuite: autopkgtest
+Testsuite-Triggers: build-essential
+Package-List: eapoltest deb net optional arch=linux-any,kfreebsd-any
+ hostapd deb net optional arch=linux-any,kfreebsd-any
+ libwpa-client-dev deb libdevel optional arch=linux-any,kfreebsd-any
+ wpagui deb net optional arch=linux-any profile=!pkg.wpa.nogui
+ wpasupplicant deb net optional arch=linux-any,kfreebsd-any
+ wpasupplicant-udeb udeb debian-installer standard arch=linux-any profile=!noudeb
+Original-Maintainer: Debian wpasupplicant Maintainers <wpa@packages.debian.org>

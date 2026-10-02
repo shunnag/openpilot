@@ -1,0 +1,28 @@
+{
+  "W1": "PASS",
+  "W2": "PASS",
+  "W3": "PASS",
+  "base_image": "ubuntu:24.04@sha256:008173c23f95b170204355c12626cb5a965d779a7e1283b09e9cffbb1bf33ca3",
+  "changelog_date": "Wed, 04 Feb 2026 17:33:00 -0600",
+  "debian_changed": [],
+  "dsc_sha256": "08ebbe09f42de1b6602d43d267d8e20fa6fabbcf1477d42593b76769b4bf6211",
+  "schema": 1,
+  "snapshot": "20260925T120000Z",
+  "source_directory": "pool/main/w/wpa",
+  "source_files": {
+    "wpa_2.10-21ubuntu0.4.debian.tar.xz": [
+      "b21bfb61d2b1650f2533a90faba132c3de255531873db26ff721327d0beae2c3",
+      93956
+    ],
+    "wpa_2.10-21ubuntu0.4.dsc": [
+      "08ebbe09f42de1b6602d43d267d8e20fa6fabbcf1477d42593b76769b4bf6211",
+      2794
+    ],
+    "wpa_2.10.orig.tar.xz": [
+      "b39f85be9d8fd58adee1acae3735ec0a1f7bdc460fe3f6fd76a1d57e9ac910c6",
+      2549336
+    ]
+  },
+  "stock_wpa_sha256": "b0f1c8ee9bb32153faed468c68390db4691b252ffd6a90e6d3d7b49f4d106bdd",
+  "version": "2:2.10-21ubuntu0.4"
+}

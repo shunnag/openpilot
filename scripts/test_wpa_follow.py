@@ -131,9 +131,10 @@ class ClassificationTests(unittest.TestCase):
         classify.w3(self.files, candidate)
 
   def test_gpgv_failure_cannot_be_bypassed(self):
-    with patch.object(classify.subprocess, 'run', side_effect=subprocess.CalledProcessError(1, 'gpgv')):
+    with patch.object(classify.subprocess, 'run', side_effect=subprocess.CalledProcessError(1, 'gpgv')) as run:
       with self.assertRaisesRegex(ValueError, 'W1: gpgv failed'):
         classify.signed_release(Path('InRelease'), Path('keyring'))
+      run.assert_called_once()  # A failed signature must never trigger gpg.
 
   def test_signed_release_uses_only_gpgv_output(self):
     def verify(command, **kwargs):
@@ -141,9 +142,60 @@ class ClassificationTests(unittest.TestCase):
       path.write_text('Origin: Ubuntu\nCodename: noble\nSuite: noble-updates\nSHA256:\n ' + 'a' * 64 + ' 12 main/source/Sources.xz\n')
       self.assertIn('--keyring', command)
       return subprocess.CompletedProcess(command, 0)
-    with patch.object(classify.subprocess, 'run', side_effect=verify):
+    with patch.object(classify.subprocess, 'run', side_effect=verify) as run:
       self.assertEqual(classify.signed_release(Path('unread-untrusted-input'), Path('keyring')),
                        {'main/source/Sources.xz': ('a' * 64, 12)})
+      run.assert_called_once()
+
+  def test_gpgv_without_output_requires_verified_gpg_output(self):
+    commands = []
+    def verify(command, **kwargs):
+      commands.append(command)
+      self.assertTrue(kwargs['check'])
+      if command[0] == 'gpg':
+        Path(command[command.index('--output') + 1]).write_text(
+          'Origin: Ubuntu\nCodename: noble\nSuite: noble-updates\nSHA256:\n '
+          + 'a' * 64 + ' 12 main/source/Sources.xz\n')
+      return subprocess.CompletedProcess(command, 0, stdout=b'[GNUPG:] VALIDSIG test-key\n')
+    with patch.object(classify.subprocess, 'run', side_effect=verify):
+      self.assertEqual(classify.signed_release(Path('InRelease'), Path('keyring')),
+                       {'main/source/Sources.xz': ('a' * 64, 12)})
+    self.assertEqual([c[0] for c in commands], ['gpgv', 'gpg'])
+    for option in ('--homedir', '--keyring', '--output'):
+      self.assertEqual(commands[0][commands[0].index(option) + 1], commands[1][commands[1].index(option) + 1])
+    self.assertEqual(commands[1][commands[1].index('--keyring') + 1], str(Path('keyring').resolve()))
+    for option in ('--no-options', '--batch', '--no-default-keyring', '--no-auto-key-retrieve', '--decrypt'):
+      self.assertIn(option, commands[1])
+    self.assertEqual(commands[1][-1], str(Path('InRelease').resolve()))
+    self.assertEqual(commands[1][commands[1].index('--status-fd') + 1], '1')
+    self.assertFalse(Path(commands[1][commands[1].index('--homedir') + 1]).exists())
+
+  def test_gpg_fallback_rejects_unsigned_or_failed_output(self):
+    for status, fails in [(b'', False), (b'[GNUPG:] GOODSIG test-key\n', False),
+                          (b'[GNUPG:] VALIDSIG test-key\n', True)]:
+      def verify(command, **kwargs):
+        if command[0] == 'gpg':
+          Path(command[command.index('--output') + 1]).write_text(
+            'Origin: Ubuntu\nCodename: noble\nSuite: noble-updates\nSHA256:\n '
+            + 'a' * 64 + ' 12 main/source/Sources.xz\n')
+          if fails:
+            raise subprocess.CalledProcessError(1, command, stderr=b'bad signature')
+        return subprocess.CompletedProcess(command, 0, stdout=status)
+      with self.subTest(status=status, fails=fails), patch.object(classify.subprocess, 'run', side_effect=verify) as run:
+        with self.assertRaisesRegex(ValueError, 'W1:'):
+          classify.signed_release(Path('InRelease'), Path('keyring'))
+        self.assertEqual(run.call_count, 2)
+
+  def test_missing_signature_tools_fail_closed(self):
+    for missing in ('gpgv', 'gpg'):
+      def verify(command, **kwargs):
+        if command[0] == missing:
+          raise FileNotFoundError(missing)
+        return subprocess.CompletedProcess(command, 0)
+      with self.subTest(missing=missing), patch.object(classify.subprocess, 'run', side_effect=verify) as run:
+        with self.assertRaises(FileNotFoundError):
+          classify.signed_release(Path('InRelease'), Path('keyring'))
+        self.assertEqual(run.call_count, 1 if missing == 'gpgv' else 2)
 
   def test_signed_index_file_mutation_rejected(self):
     with tempfile.TemporaryDirectory() as tmp:
@@ -218,6 +270,84 @@ class ClassificationTests(unittest.TestCase):
         self.assertEqual(result['dsc_sha256'], probe.sha_file(dsc))
         with self.assertRaisesRegex(ValueError, 'stock binary differs'):
           classify.classify(directory, '0' * 64, classify.REFERENCE, Path('keyring'), policy)
+
+
+class ClassificationArtifactTests(unittest.TestCase):
+  """Exercise the build boundary with the small metadata from run 36949831071."""
+  def setUp(self):
+    self.fixture = ROOT / 'scripts/fixtures/wpa_classified'
+    self.data = request.read_json(self.fixture / 'classification.json')
+    self.item = request.read_json(self.fixture / 'input.json')
+    source = classify.one(classify.paragraphs((self.fixture / 'Sources-wpa').read_text()), 'wpa', self.data['version'])
+    self.checked = {**self.data, 'source_files': classify.checksums(source['Checksums-Sha256'])}
+    self.policy = json.loads((ROOT / 'follow/policy.json').read_text())['wpa']
+
+  def test_relocated_artifact_reaches_recipe_after_reverification(self):
+    class ReachedRecipe(Exception):
+      pass
+    # This is the original failure: tuple checksums versus JSON arrays.
+    self.assertNotEqual(self.checked, self.data)
+    with tempfile.TemporaryDirectory() as tmp:
+      root = Path(tmp)
+      original, relocated = root / 'classify-job', root / 'build-job'
+      original.mkdir()
+      follow.write(original / 'input.json', self.item)
+      # Exercise the producer's actual JSON transport, with different key order.
+      (original / 'classification.json').write_text(json.dumps(dict(reversed(list(self.checked.items())))))
+      shutil.move(original, relocated)
+      with patch.object(classify, 'classify', return_value=self.checked) as reverify, \
+          patch.object(follow, 'sha_file', return_value=self.policy['orig_tarball_sha256']) as sha, \
+          patch.object(follow.shutil, 'copyfile', side_effect=ReachedRecipe) as recipe, \
+          patch.object(follow.subprocess, 'run') as run:
+        with self.assertRaises(ReachedRecipe):
+          follow.build(relocated, root / 'built')
+        self.assertEqual([c.args[0] for c in reverify.call_args_list],
+                         [relocated.resolve() / 'archive', relocated.resolve() / 'reference'])
+        self.assertTrue(all(c.args[3] == classify.KEYRING for c in reverify.call_args_list))
+        self.assertEqual(sha.call_count, 2)
+        recipe.assert_called_once()
+        run.assert_not_called()
+
+  def test_real_classification_differences_hold_before_recipe(self):
+    variants = []
+    for name, value in self.data.items():
+      altered = deepcopy(self.data)
+      altered[name] = value + '-changed' if isinstance(value, str) else None
+      variants.append((name, altered))
+    for name in self.data['source_files']:
+      for index, value in [(0, '0' * 64), (1, self.data['source_files'][name][1] + 1)]:
+        altered = deepcopy(self.data)
+        altered['source_files'][name][index] = value
+        variants.append((f'{name}[{index}]', altered))
+    variants.extend([('missing', {k: v for k, v in self.data.items() if k != 'W1'}),
+                     ('extra', {**self.data, 'unexpected': 'field'}),
+                     ('JSON type', {**self.data, 'schema': True})])
+    with tempfile.TemporaryDirectory() as tmp:
+      inputs, out = Path(tmp) / 'inputs', Path(tmp) / 'built'
+      follow.write(inputs / 'input.json', self.item)
+      for label, altered in variants:
+        follow.write(inputs / 'classification.json', altered)
+        with self.subTest(difference=label), patch.object(classify, 'classify', return_value=self.checked) as reverify, \
+            patch.object(follow, 'sha_file') as sha, patch.object(follow.subprocess, 'run') as run:
+          with self.assertRaisesRegex(ValueError, 'classification artifact differs from recomputed W1-W3'):
+            follow.build(inputs, out)
+          reverify.assert_called_once()
+          sha.assert_not_called()
+          run.assert_not_called()
+          self.assertFalse(out.exists())
+
+  def test_w1_failure_holds_before_comparison_or_recipe(self):
+    with tempfile.TemporaryDirectory() as tmp:
+      inputs, out = Path(tmp) / 'inputs', Path(tmp) / 'built'
+      shutil.copytree(self.fixture, inputs)
+      with patch.object(classify, 'classify', side_effect=ValueError('W1: invalid signature')) as reverify, \
+          patch.object(follow, 'sha_file') as sha, patch.object(follow.subprocess, 'run') as run:
+        with self.assertRaisesRegex(ValueError, 'W1: invalid signature'):
+          follow.build(inputs, out)
+        reverify.assert_called_once()
+        sha.assert_not_called()
+        run.assert_not_called()
+        self.assertFalse(out.exists())
 
 
 class PatchTests(unittest.TestCase):

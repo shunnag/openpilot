@@ -144,7 +144,11 @@ def build(inputs, out):
   # Reverify downloads at the job/artifact boundary, before container execution.
   checked = classify.classify(inputs / 'archive', item['probe']['stock_wpa_sha256'], item['probe']['dpkg_version'],
                               classify.KEYRING, policy, inputs / 'reference')
-  require(checked == data, 'classification artifact differs from recomputed W1-W3')
+  # Compare the JSON contract: checksum tuples become arrays in the artifact.
+  # Canonical encoding ignores object key order, but preserves every field,
+  # value and JSON type (unlike Python equality, where True == 1).
+  require(json.dumps(checked, sort_keys=True, allow_nan=False) == json.dumps(data, sort_keys=True, allow_nan=False),
+          'classification artifact differs from recomputed W1-W3')
   classify.classify(inputs / 'reference', policy['reference_stock_sha256'], classify.REFERENCE,
                     classify.KEYRING, policy, inputs / 'reference')
   for directory in ('archive', 'reference'):

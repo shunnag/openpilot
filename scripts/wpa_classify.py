@@ -74,12 +74,23 @@ def verify_file(path, identity):
 
 
 def signed_release(inrelease, keyring, gpgv='gpgv'):
-  # gpgv's verified output, never a hand-stripped unverified cleartext.
+  # Verified output only, never a hand-stripped or artifact-supplied Release.
   with tempfile.TemporaryDirectory(prefix='wpa-gpgv-') as tmp:
     clear = Path(tmp) / 'Release'
     try:
       subprocess.run([gpgv, '--homedir', tmp, '--keyring', str(keyring.resolve()), '--output', str(clear),
                       str(inrelease.resolve())], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+      if not clear.exists():
+        # Some gpgv builds (including Homebrew 2.5.24) verify successfully but
+        # ignore --output. Require gpgv success AND a second valid signature
+        # from gpg, using only the same keyring and an isolated home/config.
+        verified = subprocess.run(['gpg', '--no-options', '--batch', '--homedir', tmp,
+                                   '--no-default-keyring', '--keyring', str(keyring.resolve()),
+                                   '--no-auto-key-retrieve', '--status-fd', '1', '--output', str(clear),
+                                   '--decrypt', str(inrelease.resolve())], check=True,
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        require(any(line.startswith(b'[GNUPG:] VALIDSIG ') for line in verified.stdout.splitlines()),
+                'W1: gpg output has no valid signature')
     except subprocess.CalledProcessError as error:
       detail = (error.stderr or b'gpgv failed').decode(errors='replace').strip()
       raise ValueError('W1: ' + detail) from error

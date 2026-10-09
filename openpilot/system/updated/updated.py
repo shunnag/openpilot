@@ -209,16 +209,43 @@ def handle_agnos_update() -> None:
   updated_version = run(["bash", "-c", r"unset AGNOS_VERSION && source launch_env.sh && \
                           echo -n $AGNOS_VERSION"], OVERLAY_MERGED).strip()
 
-  cloudlog.info(f"AGNOS version check: {cur_version} vs {updated_version}")
-  if cur_version == updated_version:
+  wpa3_tag = run(["bash", "-c", 'unset WPA3_BOOT_TAG && source launch_env.sh && echo -n "$WPA3_BOOT_TAG"'], OVERLAY_MERGED).strip()
+  wpa3_hash = run(["bash", "-c", 'unset WPA3_BOOT_HASH && source launch_env.sh && echo -n "$WPA3_BOOT_HASH"'], OVERLAY_MERGED).strip()
+  wpa3_needed = False
+  wpa3_blocked = False
+  if wpa3_tag and wpa3_hash:
+    try:
+      wpa3_needed = wpa3_tag not in Path("/proc/cmdline").read_text().split()
+      try:
+        raw_attempts = Path("/data/wpa3_boot_attempts").read_bytes().replace(b"\x00", b"")
+        attempts = [v for v in raw_attempts.replace(b"\t", b" ").replace(b"\n", b" ").split(b" ") if v]
+      except FileNotFoundError:
+        attempts = []
+      # Read only: the launcher counts attempts immediately before the A/B path.
+      if wpa3_needed and attempts and attempts[0] == wpa3_hash.encode("ascii") and attempts[1:] not in ([b"0"], [b"1"], [b"2"]):
+        cloudlog.warning(f"WPA3 boot retry limit reached for {wpa3_hash}")
+        wpa3_blocked = True
+        wpa3_needed = False
+    except (OSError, ValueError):
+      cloudlog.exception("Unable to check WPA3 boot state; skipping extra boot trigger")
+      wpa3_blocked = wpa3_needed
+      wpa3_needed = False
+
+  cloudlog.info(f"AGNOS version check: {cur_version} vs {updated_version}; WPA3 boot needed: {wpa3_needed}")
+  if cur_version == updated_version and not wpa3_needed:
     return
 
   # prevent an openpilot getting swapped in with a mismatched or partially downloaded agnos
   set_consistent_flag(False)
 
-  cloudlog.info(f"Beginning background installation for AGNOS {updated_version}")
+  cloudlog.info(f"Beginning background installation for AGNOS {updated_version}; WPA3 boot needed: {wpa3_needed}")
 
   manifest_path = os.path.join(OVERLAY_MERGED, "openpilot/system/hardware/comma/agnos.json")
+  if cur_version != updated_version and wpa3_blocked:
+    stock_manifest = os.path.join(OVERLAY_MERGED, "openpilot/common/hardware/comma/agnos.stock.json")
+    if Path(stock_manifest).is_file():
+      manifest_path = stock_manifest
+  cloudlog.info(f"AGNOS update manifest: {manifest_path}")
   target_slot_number = get_target_slot_number()
   flash_agnos_update(manifest_path, target_slot_number, cloudlog)
 

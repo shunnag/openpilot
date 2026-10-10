@@ -1,17 +1,17 @@
 openpilot + WPA3
 ======
 
-**This is an unofficial fork for personal use. Automatically built kernels and wpa_supplicant builds are published WITHOUT any device test.** CI checks do not establish that a build boots or works on a device. The device-tested history is limited to one comma four: AGNOS 19.8 (`wpa3.sae=2`), AGNOS 19.9 (`wpa3.sae=3`), and the 19.8 → 19.9 migration on `nightly-chestnut`. This does not test future automatic builds or other devices. **No WPA3 kernel has ever booted on a comma 3X.** If an auto-built kernel doesn't boot, the bootloader should switch back to the previous kernel. This was seen on one comma four only. The fork retries at most 3 times and then installs comma's kernel for the new AGNOS. That can mean about 20 restarts, and a boot that hangs needs a power cycle. Recovery may need a computer and [flash.comma.ai](https://flash.comma.ai). comma has not reviewed or tested these builds. **Do not report problems to comma.**
+**This is an unofficial fork for personal use. Automatically built kernels and wpa_supplicant builds are published WITHOUT any device test.** CI checks do not establish that a build boots or works on a device. The device-tested history is limited to one comma four: AGNOS 19.8 (`wpa3.sae=2`), AGNOS 19.9 (`wpa3.sae=3`), and the 19.8 → 19.9 migration on `nightly-chestnut`. The modem APN fix (item 5 in [What's changed](#whats-changed)) was device-tested on the same comma four with one SoftBank SIM. This does not test future automatic builds or other devices. **No WPA3 kernel has ever booted on a comma 3X.** If an auto-built kernel doesn't boot, the bootloader should switch back to the previous kernel. This was seen on one comma four only. The fork retries at most 3 times and then installs comma's kernel for the new AGNOS. That can mean about 20 restarts, and a boot that hangs needs a power cycle. Recovery may need a computer and [flash.comma.ai](https://flash.comma.ai). comma has not reviewed or tested these builds. **Do not report problems to comma.**
 
-**個人利用向けの非公式 fork です。自動ビルドのカーネルと wpa_supplicant は、実機テストなしで公開します。** CI の確認は、実機で起動・動作することを保証しません。実機で確認した履歴は、comma four 1 台での AGNOS 19.8（`wpa3.sae=2`）、AGNOS 19.9（`wpa3.sae=3`）、および `nightly-chestnut` での 19.8 → 19.9 の移行だけです。今後の自動ビルドや、ほかの端末を確認したものではありません。**comma 3X では、WPA3 カーネルを一度も起動していません。** 自動ビルドのカーネルが起動しない場合、ブートローダーは前のカーネルに戻るはずですが、これを確認したのも comma four 1 台だけです。fork は最大 3 回試したあと、新しい AGNOS 用の comma のカーネルを入れます。その間に約 20 回再起動することがあり、起動中に止まった場合は電源を入れ直す必要があります。復旧にはパソコンと [flash.comma.ai](https://flash.comma.ai) が必要になることがあります。これらのビルドは comma のレビューもテストも受けていません。**問題を comma に報告しないでください。**
+**個人利用向けの非公式 fork です。自動ビルドのカーネルと wpa_supplicant は、実機テストなしで公開します。** CI の確認は、実機で起動・動作することを保証しません。実機で確認した履歴は、comma four 1 台での AGNOS 19.8（`wpa3.sae=2`）、AGNOS 19.9（`wpa3.sae=3`）、および `nightly-chestnut` での 19.8 → 19.9 の移行だけです。モデムの APN の修正（[What's changed](#whats-changed) の 5）は、同じ comma four と SoftBank の SIM 1 枚で実機確認しました。今後の自動ビルドや、ほかの端末を確認したものではありません。**comma 3X では、WPA3 カーネルを一度も起動していません。** 自動ビルドのカーネルが起動しない場合、ブートローダーは前のカーネルに戻るはずですが、これを確認したのも comma four 1 台だけです。fork は最大 3 回試したあと、新しい AGNOS 用の comma のカーネルを入れます。その間に約 20 回再起動することがあり、起動中に止まった場合は電源を入れ直す必要があります。復旧にはパソコンと [flash.comma.ai](https://flash.comma.ai) が必要になることがあります。これらのビルドは comma のレビューもテストも受けていません。**問題を comma に報告しないでください。**
 
 **`release-mici-staging` and `release-tizi-staging` have NOT been tested on any device. Nobody has run them yet.** They combine comma's AGNOS 19.6 with this fork's WPA3 boot image from AGNOS 19.8 (`wpa3.sae=2`). That boot image was device-tested only on one comma four running `nightly-chestnut` on AGNOS 19.8. Running it with AGNOS 19.6, the release launcher, and switching from this fork's `nightly` (AGNOS 19.9) down to 19.6 are all untested. **No WPA3 kernel has ever booted on a comma 3X.** (On the comma four, the bootloader picked the right device tree from the WPA3 boot image, which suggests it selects by board ID rather than by position; this was not checked on a comma 3X.) If it fails on your device, you may need a computer and [flash.comma.ai](https://flash.comma.ai) to recover it. comma has not reviewed or tested these builds. Do not report problems with them to comma.
 
 **`release-mici-staging` と `release-tizi-staging` は、どの実機でもテストしていません。まだ誰も動かしたことがありません。** これらは comma の AGNOS 19.6 に、この fork の AGNOS 19.8 用 WPA3 boot イメージ（`wpa3.sae=2`）を組み合わせたものです。この boot イメージを実機で確認したのは、AGNOS 19.8 の `nightly-chestnut` を動かした comma four 1 台だけです。AGNOS 19.6 との組み合わせ、release 用のランチャー、この fork の `nightly`（AGNOS 19.9）から 19.6 への切り替えは、どれも未確認です。**comma 3X では、WPA3 カーネルを一度も起動していません。**（comma four では、ブートローダーが WPA3 boot イメージから正しいデバイスツリーを選んでいたため、並び順ではなくボード ID で選んでいると考えられます。comma 3X では確かめていません。）端末で動かなかった場合、復旧にはパソコンと [flash.comma.ai](https://flash.comma.ai) が必要になることがあります。これらのビルドは comma のレビューもテストも受けていません。問題があっても comma に報告しないでください。
 
-This fork adds WPA3 (SAE) Wi-Fi support to openpilot on the comma four. Every night, it rebuilds four prebuilt branches from comma's branches of the same name: two nightly branches and two UNTESTED release-staging branches. This `wpa3-ci` branch holds the workflows, scripts and patches that build them.
+This fork adds WPA3 (SAE) Wi-Fi support to openpilot on the comma four, plus a modem APN fix from an open comma PR. Every night, it rebuilds four prebuilt branches from comma's branches of the same name: two nightly branches and two UNTESTED release-staging branches. This `wpa3-ci` branch holds the workflows, scripts and patches that build them.
 
-この fork は、comma four の openpilot に WPA3（SAE）の Wi-Fi 対応を追加します。comma の同名ブランチをもとに、nightly 2 ブランチと、実機では未確認の release-staging 2 ブランチ、計 4 つのビルド済みブランチを毎晩作り直します。この `wpa3-ci` ブランチには、それを作るワークフロー、スクリプト、パッチを置いています。
+この fork は、comma four の openpilot に WPA3（SAE）の Wi-Fi 対応と、comma に出している PR のモデムの APN の修正を追加します。comma の同名ブランチをもとに、nightly 2 ブランチと、実機では未確認の release-staging 2 ブランチ、計 4 つのビルド済みブランチを毎晩作り直します。この `wpa3-ci` ブランチには、それを作るワークフロー、スクリプト、パッチを置いています。
 
 
 Branches
@@ -19,21 +19,21 @@ Branches
 
 | branch             | URL                                         | description                                                                     |
 |--------------------|---------------------------------------------|---------------------------------------------------------------------------------|
-| `nightly`          | installer.comma.ai/shunnag/nightly          | comma's `nightly` with WPA3 support. Use this on a comma four without chestnut. |
-| `nightly-chestnut` | installer.comma.ai/shunnag/nightly-chestnut | comma's `nightly-chestnut` with WPA3 support. For [chestnut](https://comma.ai/shop/chestnut). |
-| `release-mici-staging` | installer.comma.ai/shunnag/release-mici-staging | **UNTESTED: never run on any device.** comma's release-mici-staging (comma four) with WPA3 support. |
-| `release-tizi-staging` | installer.comma.ai/shunnag/release-tizi-staging | **UNTESTED: never run on any device; no WPA3 kernel has ever booted on a comma 3X.** comma's release-tizi-staging (comma 3X) with WPA3 support. |
+| `nightly`          | installer.comma.ai/shunnag/nightly          | comma's `nightly` with WPA3 support and the modem APN fix. Use this on a comma four without chestnut. |
+| `nightly-chestnut` | installer.comma.ai/shunnag/nightly-chestnut | comma's `nightly-chestnut` with WPA3 support and the modem APN fix. For [chestnut](https://comma.ai/shop/chestnut). |
+| `release-mici-staging` | installer.comma.ai/shunnag/release-mici-staging | **UNTESTED: never run on any device.** comma's release-mici-staging (comma four) with WPA3 support and the modem APN fix. |
+| `release-tizi-staging` | installer.comma.ai/shunnag/release-tizi-staging | **UNTESTED: never run on any device; no WPA3 kernel has ever booted on a comma 3X.** comma's release-tizi-staging (comma 3X) with WPA3 support. No modem APN fix. |
 
-The two nightly branches have the same source and the same WPA3 changes. `nightly-chestnut` also includes the large driving model for chestnut (about 773 MB, downloaded through Hugging Face LFS) and a debug panda build (`PANDA_DEBUG_BUILD=1`). These are bleeding edge development branches. Do not expect them to be stable.
+The two nightly branches have the same source and the same WPA3 and modem changes. `nightly-chestnut` also includes the large driving model for chestnut (about 773 MB, downloaded through Hugging Face LFS) and a debug panda build (`PANDA_DEBUG_BUILD=1`). These are bleeding edge development branches. Do not expect them to be stable.
 
 | ブランチ | URL | 説明 |
 |----------|-----|------|
-| `nightly` | installer.comma.ai/shunnag/nightly | comma の `nightly` に WPA3 対応を追加。chestnut を使わない comma four 向け。 |
-| `nightly-chestnut` | installer.comma.ai/shunnag/nightly-chestnut | comma の `nightly-chestnut` に WPA3 対応を追加。[chestnut](https://comma.ai/shop/chestnut) 向け。 |
-| `release-mici-staging` | installer.comma.ai/shunnag/release-mici-staging | **未確認: どの実機でも動かしたことがありません。** comma の release-mici-staging（comma four）に WPA3 対応を追加。 |
-| `release-tizi-staging` | installer.comma.ai/shunnag/release-tizi-staging | **未確認: どの実機でも動かしたことがなく、comma 3X では WPA3 カーネルを一度も起動していません。** comma の release-tizi-staging（comma 3X）に WPA3 対応を追加。 |
+| `nightly` | installer.comma.ai/shunnag/nightly | comma の `nightly` に WPA3 対応とモデムの APN の修正を追加。chestnut を使わない comma four 向け。 |
+| `nightly-chestnut` | installer.comma.ai/shunnag/nightly-chestnut | comma の `nightly-chestnut` に WPA3 対応とモデムの APN の修正を追加。[chestnut](https://comma.ai/shop/chestnut) 向け。 |
+| `release-mici-staging` | installer.comma.ai/shunnag/release-mici-staging | **未確認: どの実機でも動かしたことがありません。** comma の release-mici-staging（comma four）に WPA3 対応とモデムの APN の修正を追加。 |
+| `release-tizi-staging` | installer.comma.ai/shunnag/release-tizi-staging | **未確認: どの実機でも動かしたことがなく、comma 3X では WPA3 カーネルを一度も起動していません。** comma の release-tizi-staging（comma 3X）に WPA3 対応を追加。モデムの APN の修正は入れません。 |
 
-nightly の 2 つのブランチは、ソースも WPA3 の変更も同じです。`nightly-chestnut` には、chestnut 用の大きな運転モデル（約 773 MB、Hugging Face の LFS から取得）と、panda のデバッグビルド（`PANDA_DEBUG_BUILD=1`）が加わります。chestnut を使わない comma four では `nightly` を使ってください。どちらも開発中の最新ブランチなので、安定性は期待しないでください。
+nightly の 2 つのブランチは、ソースも、WPA3 とモデムの変更も同じです。`nightly-chestnut` には、chestnut 用の大きな運転モデル（約 773 MB、Hugging Face の LFS から取得）と、panda のデバッグビルド（`PANDA_DEBUG_BUILD=1`）が加わります。chestnut を使わない comma four では `nightly` を使ってください。どちらも開発中の最新ブランチなので、安定性は期待しないでください。
 
 
 What's changed
@@ -45,7 +45,7 @@ Each build is comma's prebuilt commit with these changes:
 2. **UI:** when the driver supports SAE, WPA3-only networks are listed and connected with a `sae` profile.
 3. **Launcher and updater:** they install the WPA3 kernel if the running kernel doesn't have it. See [Kernel install](#kernel-install).
 4. **wpa_supplicant:** a patched `wpa_supplicant` ships in `wpa3/` and runs instead of AGNOS's stock one. It enables H2E and has SAE security fixes. See [wpa_supplicant](#wpa_supplicant).
-5. **Modem:** `modem.py` includes [commaai/openpilot#39061](https://github.com/commaai/openpilot/pull/39061). It applies a new APN while registration is denied and re-registers with `AT+COPS=2` / `AT+COPS=0` (at most twice, only while denied) if the modem had already tried to attach with the old APN and was denied. This is included only in `nightly`, `nightly-chestnut` and `release-mici-staging`, not `release-tizi-staging` (comma 3X, EG25; untested). It was device-tested only on one comma four (Quectel EG916Q-GL) with one SoftBank SIM. The local patch is dropped automatically once comma merges it or changes `modem.py` so it no longer applies.
+5. **Modem APN fix:** `modem.py` includes [commaai/openpilot#39061](https://github.com/commaai/openpilot/pull/39061). It applies a new APN while registration is denied and re-registers with `AT+COPS=2` / `AT+COPS=0` (at most twice, only while denied) if the modem had already tried to attach with the old APN and was denied. This is included only in `nightly`, `nightly-chestnut` and `release-mici-staging`, not `release-tizi-staging` (comma 3X, EG25; untested). It was device-tested only on one comma four (Quectel EG916Q-GL) with one SoftBank SIM. The local patch is dropped automatically once comma merges it or changes `modem.py` so it no longer applies.
 
 各ビルドは、comma のビルド済みコミットに次の変更を加えたものです。
 
@@ -53,7 +53,7 @@ Each build is comma's prebuilt commit with these changes:
 2. **UI:** ドライバが SAE に対応していれば、WPA3 専用のネットワークを一覧に表示し、`sae` のプロファイルで接続します。
 3. **ランチャーと updater:** 起動中のカーネルが WPA3 対応でなければ、WPA3 カーネルをインストールします。[Kernel install](#kernel-install) を参照してください。
 4. **wpa_supplicant:** 修正版の `wpa_supplicant` を `wpa3/` に同梱し、AGNOS の純正の代わりに動かします。H2E を有効にし、SAE の脆弱性修正も入っています。[wpa_supplicant](#wpa_supplicant) を参照してください。
-5. **モデム:** `modem.py` に [commaai/openpilot#39061](https://github.com/commaai/openpilot/pull/39061) を適用します。登録が拒否されている間も新しい APN を反映し、モデムが古い APN で登録しに行って拒否されていた場合は、`AT+COPS=2` / `AT+COPS=0` で登録し直します（拒否されている間だけ、多くて 2 回）。対象は `nightly`、`nightly-chestnut`、`release-mici-staging` のみで、`release-tizi-staging`（comma 3X、EG25、未確認）には含めません。実機確認は comma four（Quectel EG916Q-GL）1 台と SoftBank SIM 1 枚のみです。comma がマージするか、`modem.py` が変わってパッチが当たらなくなれば、ローカルのパッチは自動的に外れます。
+5. **モデムの APN の修正:** `modem.py` に [commaai/openpilot#39061](https://github.com/commaai/openpilot/pull/39061) を適用します。登録が拒否されている間も新しい APN を反映し、モデムが古い APN で登録しに行って拒否されていた場合は、`AT+COPS=2` / `AT+COPS=0` で登録し直します（拒否されている間だけ、多くて 2 回）。対象は `nightly`、`nightly-chestnut`、`release-mici-staging` のみで、`release-tizi-staging`（comma 3X、EG25、未確認）には含めません。実機確認は comma four（Quectel EG916Q-GL）1 台と SoftBank SIM 1 枚のみです。comma がマージするか、`modem.py` が変わってパッチが当たらなくなれば、ローカルのパッチは自動的に外れます。
 
 
 Installing

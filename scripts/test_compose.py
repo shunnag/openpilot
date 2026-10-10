@@ -10,6 +10,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import textwrap
 import types
 import unittest
 from unittest.mock import Mock, call, patch
@@ -26,6 +27,74 @@ REF = ROOT / "ref/nightly-chestnut"
 RELEASE_REF = ROOT / "ref/release-staging"
 UPDATED = "openpilot/system/updated/updated.py"
 MANIFEST_LINK = "openpilot/system/hardware/comma/agnos.json"
+# Minimal pre-patch modem context; the existing reference tree has no modem.py.
+MODEM_FIXTURE = b'''class Modem:
+  def __init__(self):
+    self._sim_change = False
+    self._apn = ""  # blank = network-provided via PCO
+    self._roaming_allowed = True
+    self.running = True
+    self.S = INITIAL_STATE.copy()
+
+  def _do_initializing(self):
+    if self._at("ATE0") != "OK":
+      logging.warning("AT echo still on, retrying")
+      return State.INITIALIZING
+
+    identity = self._read_identity()
+    if not identity["iccid"] or not identity["imei"]:
+      logging.warning(f"identity read incomplete: {identity}, retrying")
+      return State.INITIALIZING
+
+    self.S.update(identity)
+    self._apn = self._read_param("GsmApn")
+    self._roaming_allowed = self._is_roaming_allowed()
+    # blank APN lets the carrier supply one via PCO
+    self._at(f'AT+CGDCONT={DIAL_CID},"IP","{self._apn}"')
+    logging.info(f"APN '{self._apn or '(network-provided)'}' written to CID {DIAL_CID}, roaming={'on' if self._roaming_allowed else 'off'}")
+    return State.SEARCHING
+
+  def _read_identity(self):
+    imei, iccid, mcc_mnc, modem_version = "", "", "", ""
+    logging.info(f"imei={imei} iccid={iccid} mcc_mnc={mcc_mnc} ver={modem_version}")
+    return {"imei": imei, "iccid": iccid, "mcc_mnc": mcc_mnc, "modem_version": modem_version}
+
+  def _do_searching(self):
+    new_roaming = self._is_roaming_allowed()
+    if new_roaming != self._roaming_allowed:
+      logging.info(f"roaming changed: {self._roaming_allowed} -> {new_roaming}")
+      self._roaming_allowed = new_roaming
+
+    v = self._atv("AT+CREG?", "+CREG:")
+    if not v:
+      return self._searching_idle()
+
+    reg = self._parse_reg(v)
+    greg = self._parse_reg(self._atv("AT+CGREG?", "+CGREG:") or "")
+    logging.debug(f"creg={reg} cgreg={greg} roaming_allowed={self._roaming_allowed}")
+
+    if reg == "roaming" and not self._roaming_allowed:
+      self._publish_state(registration=reg)
+      return State.SEARCHING
+
+    if reg:
+      self._publish_state(registration=reg)
+    return self._searching_idle()
+
+  def _searching_idle(self):
+    if self._sim_change or not os.path.exists(AT_PORT):
+      logging.info(f"-> reconnecting (sim_change={self._sim_change} port={os.path.exists(AT_PORT)})")
+      return State.DISCONNECTING
+    return State.SEARCHING
+
+  def _do_connecting(self):
+    logging.info("starting pppd")
+    self._ppp.reset_fail_counter()
+    self._sim_change = False
+    self._ppp.start()
+    return State.CONNECTED
+
+'''
 
 
 class TestCompose(unittest.TestCase):
@@ -99,7 +168,8 @@ class TestCompose(unittest.TestCase):
     self.assertEqual(self.cli("compose.py", upstream, "--inputs-only").stdout.strip(), inputs)
     self.assertNotEqual(inputs, self.inputs)
     message = compose.git(self.repo, "show", "-s", "--format=%B", commit).decode().strip()
-    self.assertTrue(message.endswith("WPA3-Pin: pinned 19.8\nWPA3-Launcher-Patch: launcher-wpa3-release.patch\nWPA3-Boot-Build: manual"))
+    self.assertTrue(message.endswith("WPA3-Pin: pinned 19.8\nWPA3-Launcher-Patch: launcher-wpa3-release.patch\n"
+                                     "WPA3-Modem-Patch: off\nWPA3-Boot-Build: manual"))
     launcher = compose.blob(self.repo, commit, "launch_chffrplus.sh")
     nightly_launcher = compose.blob(self.repo, self.commit, "launch_chffrplus.sh")
 
@@ -210,7 +280,7 @@ class TestCompose(unittest.TestCase):
     message = compose.git(self.repo, "show", "-s", "--format=%B", self.commit).decode()
     self.assertEqual(message.strip(), f"Synthetic upstream + WPA3\n\nUpstream-Commit: {self.upstream}\n"
                      f"WPA3-Inputs: {self.inputs}\nWPA3-AGNOS: {self.pin['release_tag']}\nWPA3-Pin: pinned 19.8\n"
-                     "WPA3-Launcher-Patch: launcher-wpa3.patch\nWPA3-Boot-Build: manual")
+                     "WPA3-Launcher-Patch: launcher-wpa3.patch\nWPA3-Modem-Patch: off\nWPA3-Boot-Build: manual")
     self.assertEqual(compose.git(self.repo, "show", "-s", "--format=%an <%ae>|%cn <%ce>", self.commit).decode().strip(),
                      "openpilot-wpa3-bot <shunnag@users.noreply.github.com>|openpilot-wpa3-bot <shunnag@users.noreply.github.com>")
     print(f"\nDeterministic compose SHA (two runs): {self.commit}\nWPA3-Inputs: {self.inputs}")
@@ -395,6 +465,174 @@ class TestCompose(unittest.TestCase):
     self.assertFalse((self.repo / "lfs").exists())
     self.assertFalse((self.repo / "index").exists())
     self.assertFalse((self.repo / "launch_env.sh").exists())
+
+  def modem_upstream(self, data=MODEM_FIXTURE):
+    with compose.temporary_index(self.repo, self.upstream) as (env, _):
+      compose.put_blob(self.repo, env, compose.MODEM_PY, data, mode="100755")
+      tree = compose.git(self.repo, "write-tree", env=env).decode().strip()
+      return compose.git(self.repo, "commit-tree", tree, data=b"Upstream modem\n", env=self.identity).decode().strip()
+
+  def patched_modem(self, upstream):
+    with compose.temporary_index(self.repo, upstream) as (env, _):
+      compose.git(self.repo, "apply", "--cached", "--whitespace=error", str(compose.MODEM_PATCH), env=env)
+      return compose.git(self.repo, "show", f":{compose.MODEM_PY}", env=env)
+
+  def assert_modem_trailer(self, commit, result):
+    message = compose.git(self.repo, "show", "-s", "--format=%B", commit).decode()
+    self.assertIn(f"WPA3-Launcher-Patch: launcher-wpa3.patch\nWPA3-Modem-Patch: {result}\n", message)
+    self.assertEqual(message.count("WPA3-Modem-Patch:"), 1)
+
+  def test_modem_applied(self):
+    upstream = self.modem_upstream()
+    expected = self.patched_modem(upstream)
+    self.assertEqual(len(expected.splitlines()) - len(MODEM_FIXTURE.splitlines()), 39)
+    result = self.cli("compose.py", upstream, "--modem", "apply")
+    commit, inputs = result.stdout.splitlines()
+    self.assertEqual(self.cli("compose.py", upstream, "--modem", "apply").stdout, result.stdout)
+    self.assertEqual(self.cli("compose.py", upstream, "--modem", "apply", "--inputs-only").stdout.strip(), inputs)
+    self.assertEqual(compose.blob(self.repo, commit, compose.MODEM_PY), expected)
+    self.assertTrue(compose.git(self.repo, "ls-tree", commit, "--", compose.MODEM_PY).startswith(b"100755 blob "))
+    self.assert_modem_trailer(commit, "applied")
+    skipped = self.cli("compose.py", upstream, "--modem", "skip").stdout.splitlines()[0]
+    self.assertEqual(compose.git(self.repo, "diff-tree", "--no-commit-id", "-r", "--name-only", skipped, commit).decode().splitlines(),
+                     [compose.MODEM_PY])
+    result = self.cli("gates.py", upstream, "--skip-download", "--modem", "apply")
+    self.assertIn("G5: OK: modem patch applies cleanly\n", result.stdout)
+    with compose.temporary_index(self.repo, upstream) as (env, _):
+      before = compose.git(self.repo, "write-tree", env=env)
+      self.assertEqual(compose.apply_modem(self.repo, env, check=True), "applies cleanly")
+      self.assertEqual(compose.git(self.repo, "write-tree", env=env), before)
+
+  def test_modem_already_upstream(self):
+    expected = self.patched_modem(self.modem_upstream())
+    upstream = self.modem_upstream(expected)
+    commit = self.cli("compose.py", upstream, "--modem", "apply").stdout.splitlines()[0]
+    self.assertEqual(compose.blob(self.repo, commit, compose.MODEM_PY), expected)
+    self.assert_modem_trailer(commit, "already upstream")
+    result = self.cli("gates.py", upstream, "--skip-download", "--modem", "apply")
+    self.assertIn("G5: OK: modem patch already upstream\n", result.stdout)
+
+  def test_modem_does_not_apply(self):
+    # Only the last hunk conflicts, so this also proves no earlier hunk leaks in.
+    drift = MODEM_FIXTURE.replace(b'logging.info("starting pppd")', b'logging.info("starting new pppd")')
+    for upstream in (self.modem_upstream(drift), self.upstream):
+      with self.subTest(upstream=upstream):
+        result = self.cli("compose.py", upstream, "--modem", "apply")
+        commit, _ = result.stdout.splitlines()
+        self.assertIn("modem patch: skipped (does not apply)", result.stderr)
+        self.assert_modem_trailer(commit, "skipped (does not apply)")
+        self.assertEqual(compose.git(self.repo, "ls-tree", commit, "--", compose.MODEM_PY),
+                         compose.git(self.repo, "ls-tree", upstream, "--", compose.MODEM_PY))
+        skipped = self.cli("compose.py", upstream, "--modem", "skip").stdout.splitlines()[0]
+        self.assertEqual(compose.git(self.repo, "rev-parse", commit + "^{tree}"),
+                         compose.git(self.repo, "rev-parse", skipped + "^{tree}"))
+        result = self.cli("gates.py", upstream, "--skip-download", "--modem", "apply")
+        self.assertIn("G5: SKIP: modem patch skipped (does not apply)\n", result.stdout)
+
+  def test_modem_skip_preserves_legacy_tree_and_inputs(self):
+    # Tree recorded with these reference fixtures before modem support was added.
+    self.assertEqual(compose.git(self.repo, "rev-parse", self.commit + "^{tree}").decode().strip(),
+                     "21947e1d726a6a0087f9281cf163158cf9231059")
+    upstream = self.modem_upstream()
+    result = self.cli("compose.py", upstream, "--modem", "skip")
+    self.assertEqual(self.cli("compose.py", upstream).stdout, result.stdout)
+    self.assertEqual(result.stderr, "")
+    commit, inputs = result.stdout.splitlines()
+    self.assert_modem_trailer(commit, "off")
+    with compose.temporary_index(self.repo, self.commit) as (env, _):
+      compose.put_blob(self.repo, env, compose.MODEM_PY, MODEM_FIXTURE, mode="100755")
+      self.assertEqual(compose.git(self.repo, "write-tree", env=env), compose.git(self.repo, "rev-parse", commit + "^{tree}"))
+    # Pre-modem inputs formula, using identical compose.py bytes on both sides.
+    launcher = compose.select_launcher_patch(self.repo, upstream)
+    legacy = {
+      "upstream": upstream,
+      "patches": {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in (launcher, compose.UI_PATCH)},
+      "pin": self.resolved,
+      "compose.py": hashlib.sha256(Path(compose.__file__).read_bytes()).hexdigest(),
+      "wpa_supplicant.copyright": hashlib.sha256(compose.repo_path(self.pin["wpa_supplicant"]["copyright"]).read_bytes()).hexdigest(),
+    }
+    expected = hashlib.sha256(json.dumps(legacy, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    self.assertEqual(inputs, expected)
+    self.assertEqual(self.cli("compose.py", upstream, "--modem", "skip", "--inputs-only").stdout.strip(), expected)
+    with patch.object(compose, "MODEM_PATCH", self.work / "missing-modem.patch"):
+      self.assertEqual(compose.inputs_hash(upstream, self.resolved, launcher), expected)
+      self.assertEqual(compose.compose(self.repo, upstream, self.resolved), (commit, expected))
+    result = self.cli("gates.py", upstream, "--skip-download", "--modem", "skip")
+    self.assertNotIn("modem patch", result.stdout + result.stderr)
+    self.assertEqual(result.stdout, self.cli("gates.py", upstream, "--skip-download").stdout)
+
+  def test_modem_inputs_hash_covers_mode_and_patch(self):
+    launcher = compose.select_launcher_patch(self.repo, self.upstream)
+    copied = self.work / compose.MODEM_PATCH.name
+    copied.write_bytes(compose.MODEM_PATCH.read_bytes())
+    with patch.object(compose, "MODEM_PATCH", copied):
+      applied = compose.inputs_hash(self.upstream, self.resolved, launcher, modem="apply")
+      self.assertNotEqual(applied, self.inputs)
+      copied.write_bytes(copied.read_bytes() + b"\n")
+      self.assertNotEqual(compose.inputs_hash(self.upstream, self.resolved, launcher, modem="apply"), applied)
+      self.assertEqual(compose.inputs_hash(self.upstream, self.resolved, launcher, modem="skip"), self.inputs)
+
+  def test_modem_post_checks_require_applied(self):
+    upstream = self.modem_upstream()
+    for resolved in (self.resolved, {"mode": "native", "version": self.version}):
+      with self.subTest(mode=resolved["mode"]):
+        commit, _ = compose.compose(self.repo, upstream, resolved, modem="apply")
+        with compose.temporary_index(self.repo, commit) as (_, scratch):
+          for outcome in ("off", "already upstream", "skipped (does not apply)"):
+            with self.subTest(outcome=outcome), self.assertRaisesRegex(ValueError, "unexpected composed change: " + compose.MODEM_PY):
+              compose.post_checks(self.repo, upstream, commit, resolved, scratch, modem_result=outcome)
+          compose.post_checks(self.repo, upstream, commit, resolved, scratch, modem_result="applied")
+
+  def test_modem_post_checks_compile_python(self):
+    upstream = self.modem_upstream()
+    commit, _ = compose.compose(self.repo, upstream, self.resolved, modem="apply")
+    with compose.temporary_index(self.repo, commit) as (env, scratch):
+      compose.put_blob(self.repo, env, compose.MODEM_PY, b"def broken(:\n")
+      tree = compose.git(self.repo, "write-tree", env=env).decode().strip()
+      with self.assertRaises(compose.py_compile.PyCompileError):
+        compose.post_checks(self.repo, upstream, tree, self.resolved, scratch, modem_result="applied")
+
+  def test_modem_whitespace_error_is_skipped(self):
+    upstream = self.modem_upstream()
+    bad_patch = self.work / "modem-whitespace.patch"
+    original = compose.MODEM_PATCH.read_bytes()
+    bad_patch.write_bytes(original.replace(b'+      self._at("AT+COPS=0")\n', b'+      self._at("AT+COPS=0") \n'))
+    self.assertNotEqual(original, bad_patch.read_bytes())
+    with patch.object(compose, "MODEM_PATCH", bad_patch), patch("sys.stderr", new_callable=io.StringIO) as stderr:
+      for check in (False, True):
+        with self.subTest(check=check), compose.temporary_index(self.repo, upstream) as (env, _):
+          before = compose.git(self.repo, "write-tree", env=env)
+          self.assertEqual(compose.apply_modem(self.repo, env, check=check), "skipped (does not apply)")
+          self.assertEqual(compose.git(self.repo, "write-tree", env=env), before)
+      self.assertIn("whitespace", stderr.getvalue())
+
+  def test_modem_workflow_modes_and_skip_diagnostic(self):
+    workflow = (ROOT / ".github/workflows/nightly.yml").read_text()
+    selector = 'case "$BRANCH" in' + workflow.split('case "$BRANCH" in', 1)[1].split("esac", 1)[0] + "esac"
+    for branch in ("nightly", "nightly-chestnut", "release-mici-staging", "release-tizi-staging"):
+      result = subprocess.run(["bash", "-eu", "-c", selector + '\nprintf "%s" "$MODEM"'],
+                              env={**os.environ, "BRANCH": branch}, text=True, capture_output=True, check=True)
+      self.assertEqual(result.stdout, "skip" if branch == "release-tizi-staging" else "apply")
+    consumers = [line.strip() for line in workflow.splitlines() if "scripts/compose.py" in line or "scripts/gates.py" in line]
+    self.assertEqual(len(consumers), 3)
+    for line in consumers:
+      self.assertIn('--modem "$MODEM"', line)
+    # Exercise the actual workflow pipeline with a real, non-applicable modem patch.
+    step = next(step for step in workflow.split("      - ") if "id: compose\n" in step)
+    pipeline = textwrap.dedent(step.split("        run: |\n", 1)[1].split("          mapfile", 1)[0])
+    with tempfile.TemporaryDirectory(dir=self.work) as directory:
+      log = Path(directory) / "nightly.log"
+      (Path(directory) / "pin.json").write_bytes(self.pin_file.read_bytes())
+      result = subprocess.run(["bash", "-eo", "pipefail", "-c", pipeline], cwd=ROOT, text=True, capture_output=True,
+                              env={**os.environ, "BARE_REPO": str(self.repo), "UPSTREAM": self.upstream, "MODEM": "apply",
+                                   "RUNNER_TEMP": directory, "NIGHTLY_LOG": str(log)})
+      self.assertEqual(result.returncode, 0, result.stderr)
+      commit, inputs = (Path(directory) / "composed.txt").read_text().splitlines()
+      self.assertRegex(commit, r"^[0-9a-f]{40}$")
+      self.assertRegex(inputs, r"^[0-9a-f]{64}$")
+      self.assertIn("modem patch: skipped (does not apply)", result.stdout)
+      self.assertIn("modem patch: skipped (does not apply)", log.read_text())
+      self.assert_modem_trailer(commit, "skipped (does not apply)")
 
   def test_ui_patch_already_applied(self):
     with compose.temporary_index(self.repo, self.upstream) as (env, _):

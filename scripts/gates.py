@@ -7,7 +7,7 @@ from pathlib import Path
 import sys
 
 from boot_download import fetch_boot
-from compose import AGNOS_PY, MANIFEST, apply_ui, blob, error_text, git, launch_values, load_pin, resolve_commit, select_launcher_patch, supplicant_files, temporary_index
+from compose import AGNOS_PY, MANIFEST, apply_modem, apply_ui, blob, error_text, git, launch_values, load_pin, resolve_commit, select_launcher_patch, supplicant_files, temporary_index
 from follow_state import load, mode_value, resolve_supplicant
 
 
@@ -39,7 +39,7 @@ def check_g8(resolved, system_hash, state, mode="off", revoke=False):
     print(f"G8: {level}: probed stock wpa_supplicant and override agree", flush=True)
 
 
-def run_gates(repo, upstream, pin_file, skip_download=False, published=None, follow_mode=None, revoke=False):
+def run_gates(repo, upstream, pin_file, skip_download=False, published=None, follow_mode=None, revoke=False, modem="skip"):
   gate = "G1"
   try:
     upstream = resolve_commit(repo, upstream)
@@ -85,6 +85,10 @@ def run_gates(repo, upstream, pin_file, skip_download=False, published=None, fol
 
       gate = "G5"
       print(f"G5: OK: UI patch {apply_ui(repo, env, check=True)}", flush=True)
+      if modem == "apply":
+        result = apply_modem(repo, env, check=True)
+        level = "SKIP" if result == "skipped (does not apply)" else "OK"
+        print(f"G5: {level}: modem patch {result}", flush=True)
 
     gate = "G6"
     if native:
@@ -132,8 +136,9 @@ def main():
   parser.add_argument("--skip-download", action="store_true", help="skip G4 for offline tests; never use when publishing")
   parser.add_argument("--follow-mode", default=os.environ.get("WPA3_FOLLOW_MODE", "off"))
   parser.add_argument("--revoke", action="store_true", help="G8 is advisory for a withdrawal publish")
+  parser.add_argument("--modem", choices=("apply", "skip"), default="skip", help="optional modem APN patch")
   args = parser.parse_args()
-  return run_gates(args.repo.resolve(), args.upstream, args.pin_file, args.skip_download, args.published, args.follow_mode, args.revoke)
+  return run_gates(args.repo.resolve(), args.upstream, args.pin_file, args.skip_download, args.published, args.follow_mode, args.revoke, args.modem)
 
 
 if __name__ == "__main__":

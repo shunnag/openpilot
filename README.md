@@ -45,6 +45,7 @@ Each build is comma's prebuilt commit with these changes:
 2. **UI:** when the driver supports SAE, WPA3-only networks are listed and connected with a `sae` profile.
 3. **Launcher and updater:** they install the WPA3 kernel if the running kernel doesn't have it. See [Kernel install](#kernel-install).
 4. **wpa_supplicant:** a patched `wpa_supplicant` ships in `wpa3/` and runs instead of AGNOS's stock one. It enables H2E and has SAE security fixes. See [wpa_supplicant](#wpa_supplicant).
+5. **Modem:** `modem.py` includes [commaai/openpilot#39061](https://github.com/commaai/openpilot/pull/39061). It applies a new APN while registration is denied and re-registers with `AT+COPS=2` / `AT+COPS=0` (at most twice, only while denied) if the modem had already tried to attach with the old APN and was denied. This is included only in `nightly`, `nightly-chestnut` and `release-mici-staging`, not `release-tizi-staging` (comma 3X, EG25; untested). It was device-tested only on one comma four (Quectel EG916Q-GL) with one SoftBank SIM. The local patch is dropped automatically once comma merges it or changes `modem.py` so it no longer applies.
 
 各ビルドは、comma のビルド済みコミットに次の変更を加えたものです。
 
@@ -52,6 +53,7 @@ Each build is comma's prebuilt commit with these changes:
 2. **UI:** ドライバが SAE に対応していれば、WPA3 専用のネットワークを一覧に表示し、`sae` のプロファイルで接続します。
 3. **ランチャーと updater:** 起動中のカーネルが WPA3 対応でなければ、WPA3 カーネルをインストールします。[Kernel install](#kernel-install) を参照してください。
 4. **wpa_supplicant:** 修正版の `wpa_supplicant` を `wpa3/` に同梱し、AGNOS の純正の代わりに動かします。H2E を有効にし、SAE の脆弱性修正も入っています。[wpa_supplicant](#wpa_supplicant) を参照してください。
+5. **モデム:** `modem.py` に [commaai/openpilot#39061](https://github.com/commaai/openpilot/pull/39061) を適用します。登録が拒否されている間も新しい APN を反映し、モデムが古い APN で登録しに行って拒否されていた場合は、`AT+COPS=2` / `AT+COPS=0` で登録し直します（拒否されている間だけ、多くて 2 回）。対象は `nightly`、`nightly-chestnut`、`release-mici-staging` のみで、`release-tizi-staging`（comma 3X、EG25、未確認）には含めません。実機確認は comma four（Quectel EG916Q-GL）1 台と SoftBank SIM 1 枚のみです。comma がマージするか、`modem.py` が変わってパッチが当たらなくなれば、ローカルのパッチは自動的に外れます。
 
 
 Installing
@@ -234,13 +236,13 @@ comma の openpilot に戻すには、comma の URL から入れ直します。o
 Development
 ------
 
-The compose and pin scripts need only Python 3 (standard library), git and bash. Each tree is composed in a bare repository with a temporary index, so nothing is checked out, and LFS objects are never downloaded or pushed. `.github/workflows` is removed from the composed tree. A post-check verifies that only the expected files changed: the launcher, `launch_env.sh`, `updated.py`, the manifest, `agnos.stock.json`, the three UI files and `wpa3/wpa_supplicant` with its license file. In `native` mode the manifest and `agnos.stock.json` stay unchanged.
+The compose and pin scripts need only Python 3 (standard library), git and bash. Each tree is composed in a bare repository with a temporary index, so nothing is checked out, and LFS objects are never downloaded or pushed. `.github/workflows` is removed from the composed tree. A post-check verifies that only the expected files changed: the launcher, `launch_env.sh`, `updated.py`, the manifest, `agnos.stock.json`, the three UI files and `wpa3/wpa_supplicant` with its license file. `modem.py` may change only when the modem patch was applied; it gets the same Python compile check as other changed `.py` files. In `native` mode the manifest and `agnos.stock.json` stay unchanged.
 
 The tests need the reference files in the gitignored `ref/nightly-chestnut/` and `ref/release-staging/`; missing fixtures fail the tests. The upstream SHA each fixture came from is in its `UPSTREAM_SHA`. The existing stock/WPA3 comparison tests run only when `WPA3_REAL_BOOTS_DIR` points to a folder of images named `boot-<sha256>.img`.
 
 `bootimg.py` additionally requires the `openssl` CLI. It parses, repacks and verifies Android v0 images with 4096-byte pages and no external ramdisk or second stage. Its synthetic tests run offline; the repacker and rebuild reference tests also run when `/Volumes/agnos` is mounted. `kernel_equiv.py` defaults to `--mode stock`, which is the comparator used by the pin resolver. `--mode rebuild` additionally permits DTB reordering (preserving duplicates) and bounded changes to `proc_banner`.
 
-compose と pin のスクリプトに必要なのは、Python 3（標準ライブラリのみ）、git、bash だけです。ツリーは bare リポジトリと一時的なインデックスだけで組み立てるので、作業ツリーへの展開も、LFS オブジェクトのダウンロードや push も行いません。組み立てたツリーからは `.github/workflows` を取り除きます。そのうえで、想定したファイル以外が変わっていないことを事後に確認します。想定しているのは、ランチャー、`launch_env.sh`、`updated.py`、manifest、`agnos.stock.json`、UI の 3 ファイル、`wpa3/wpa_supplicant` とそのライセンスのファイルです。`native` モードでは、manifest と `agnos.stock.json` は変えません。
+compose と pin のスクリプトに必要なのは、Python 3（標準ライブラリのみ）、git、bash だけです。ツリーは bare リポジトリと一時的なインデックスだけで組み立てるので、作業ツリーへの展開も、LFS オブジェクトのダウンロードや push も行いません。組み立てたツリーからは `.github/workflows` を取り除きます。そのうえで、想定したファイル以外が変わっていないことを事後に確認します。想定しているのは、ランチャー、`launch_env.sh`、`updated.py`、manifest、`agnos.stock.json`、UI の 3 ファイル、`wpa3/wpa_supplicant` とそのライセンスのファイルです。`modem.py` の変更はモデムのパッチが適用された場合だけ許可し、ほかの変更された `.py` ファイルと同じコンパイル確認を行います。`native` モードでは、manifest と `agnos.stock.json` は変えません。
 
 テストには、git の管理対象外の `ref/nightly-chestnut/` と `ref/release-staging/` にある参照ファイルが必要です。参照ファイルがなければ、テストは失敗します。参照元の upstream の SHA は、それぞれの `UPSTREAM_SHA` にあります。既存の stock/WPA3 比較テストは、`WPA3_REAL_BOOTS_DIR` に `boot-<sha256>.img` という名前のイメージを置いたフォルダーを指定したときだけ実行されます。
 
@@ -259,9 +261,9 @@ python3 scripts/bootimg.py verify <boot.img> --pubkey <public.pem>
 python3 scripts/bootimg.py tag <boot.img> --tag wpa3.sae=4 --key <private.pem> --out <tagged.img>
 ```
 
-`--skip-download` skips G4 and is only for offline tests. `--published` is the currently published fork commit, used by G6. `compose.py` prints the new commit SHA, then the `WPA3-Inputs` hash. This is the SHA-256 of canonical JSON with the upstream commit, the hashes of the chosen launcher patch and `ui-wpa3.patch`, the resolved pin, the hash of the `wpa_supplicant` license file and the hash of `compose.py`. The commit message also records the resolved pin in a `WPA3-Pin` trailer, immediately followed by `WPA3-Launcher-Patch` with the chosen patch's file name. The author and committer are fixed, and both dates are the upstream commit date.
+`--skip-download` skips G4 and is only for offline tests. `--published` is the currently published fork commit, used by G6. Both `gates.py` and `compose.py` accept `--modem apply|skip`, defaulting to `skip`. With `apply`, G5 reports whether the modem patch applies, is already upstream, or is skipped because it no longer applies; the last case does not block publication. `compose.py` prints the new commit SHA, then the `WPA3-Inputs` hash. This is the SHA-256 of canonical JSON with the upstream commit, the hashes of the chosen launcher patch and `ui-wpa3.patch`, the resolved pin, the hash of the `wpa_supplicant` license file and the hash of `compose.py`. With `--modem apply`, the JSON also includes the modem mode and the SHA-256 of `modem-apn.patch`; `skip` retains the existing inputs JSON. The commit message also records the resolved pin in a `WPA3-Pin` trailer, immediately followed by `WPA3-Launcher-Patch` with the chosen patch's file name, then `WPA3-Modem-Patch` with `applied`, `already upstream`, `skipped (does not apply)` or `off`. The author and committer are fixed, and both dates are the upstream commit date.
 
-`--skip-download` は G4 を省略するオプションで、オフラインのテスト専用です。`--published` には公開中の fork のコミットを渡し、G6 で使います。`compose.py` は、新しいコミットの SHA と `WPA3-Inputs` のハッシュをこの順に出力します。このハッシュは、upstream のコミット、選ばれたランチャーパッチと `ui-wpa3.patch` のハッシュ、決定した pin、`wpa_supplicant` のライセンスのファイルのハッシュ、`compose.py` のハッシュを並べた正規化 JSON の SHA-256 です。コミットメッセージには、決定した pin を `WPA3-Pin` として記録し、その直後に `WPA3-Launcher-Patch` として選ばれたパッチのファイル名を記録します。author と committer は固定で、日時はどちらも upstream のコミットの日時を使います。
+`--skip-download` は G4 を省略するオプションで、オフラインのテスト専用です。`--published` には公開中の fork のコミットを渡し、G6 で使います。`gates.py` と `compose.py` は `--modem apply|skip` を受け取り、既定値は `skip` です。`apply` の場合は、モデムのパッチが当たるか、upstream に取り込み済みか、当たらないため省略するかを G5 で表示します。当たらなくても公開は止めません。`compose.py` は、新しいコミットの SHA と `WPA3-Inputs` のハッシュをこの順に出力します。このハッシュは、upstream のコミット、選ばれたランチャーパッチと `ui-wpa3.patch` のハッシュ、決定した pin、`wpa_supplicant` のライセンスのファイルのハッシュ、`compose.py` のハッシュを並べた正規化 JSON の SHA-256 です。`--modem apply` では、モデムのモードと `modem-apn.patch` の SHA-256 も JSON に含めます。`skip` では既存の入力 JSON を保ちます。コミットメッセージには、決定した pin を `WPA3-Pin` として記録し、その直後に `WPA3-Launcher-Patch` として選ばれたパッチのファイル名、続けて `WPA3-Modem-Patch` として `applied`、`already upstream`、`skipped (does not apply)`、`off` のいずれかを記録します。author と committer は固定で、日時はどちらも upstream のコミットの日時を使います。
 
 
 Automatic follow state

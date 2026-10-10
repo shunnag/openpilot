@@ -66,6 +66,11 @@ jobs:
           NIGHTLY_LOG="$RUNNER_TEMP/nightly.log"
           echo "BARE_REPO=$BARE_REPO" >> "$GITHUB_ENV"
           echo "NIGHTLY_LOG=$NIGHTLY_LOG" >> "$GITHUB_ENV"
+          case "$BRANCH" in
+            nightly|nightly-chestnut|release-mici-staging) MODEM=apply ;;
+            *) MODEM=skip ;;
+          esac
+          echo "MODEM=$MODEM" >> "$GITHUB_ENV"
           {
             gh auth setup-git --hostname github.com
             F=$(git ls-remote "https://github.com/$GH_REPO.git" "refs/heads/$BRANCH" | awk '{print $1}')
@@ -137,7 +142,7 @@ jobs:
         env:
           FORCE: ${{ inputs.force || false }}
         run: |
-          if INPUTS=$(python3 scripts/compose.py --repo "$BARE_REPO" --upstream "$UPSTREAM" --pin-file "$RUNNER_TEMP/pin.json" --inputs-only 2>> "$NIGHTLY_LOG"); then
+          if INPUTS=$(python3 scripts/compose.py --repo "$BARE_REPO" --upstream "$UPSTREAM" --pin-file "$RUNNER_TEMP/pin.json" --modem "$MODEM" --inputs-only 2>> "$NIGHTLY_LOG"); then
             if [ -n "$FORK" ]; then
               PREVIOUS=$(git -C "$BARE_REPO" show -s --format='%(trailers:key=WPA3-Inputs,valueonly)' "$FORK")
               if [ "$PREVIOUS" = "$INPUTS" ] && [ "$FORCE" != true ]; then
@@ -157,13 +162,15 @@ jobs:
             PUBLISHED_ARGS=(--published "$FORK")
           fi
           if [ "$UPSTREAM_SOURCE" = published ]; then PUBLISHED_ARGS+=(--revoke); fi
-          python3 scripts/gates.py --repo "$BARE_REPO" --upstream "$UPSTREAM" --pin-file "$RUNNER_TEMP/pin.json" "${PUBLISHED_ARGS[@]}" 2>&1 | tee -a "$NIGHTLY_LOG"
+          python3 scripts/gates.py --repo "$BARE_REPO" --upstream "$UPSTREAM" --pin-file "$RUNNER_TEMP/pin.json" --modem "$MODEM" "${PUBLISHED_ARGS[@]}" 2>&1 | tee -a "$NIGHTLY_LOG"
 
       - name: Compose and validate deterministic commit
         id: compose
         if: steps.fetch.outputs.skip != 'true' && steps.pin.outputs.pending != 'true' && steps.inputs.outputs.unchanged != 'true'
         run: |
-          python3 scripts/compose.py --repo "$BARE_REPO" --upstream "$UPSTREAM" --pin-file "$RUNNER_TEMP/pin.json" 2>&1 | tee "$RUNNER_TEMP/composed.txt" | tee -a "$NIGHTLY_LOG"
+          {
+            python3 scripts/compose.py --repo "$BARE_REPO" --upstream "$UPSTREAM" --pin-file "$RUNNER_TEMP/pin.json" --modem "$MODEM" | tee "$RUNNER_TEMP/composed.txt"
+          } 2>&1 | tee -a "$NIGHTLY_LOG"
           mapfile -t RESULT < "$RUNNER_TEMP/composed.txt"
           [[ "${RESULT[0]}" =~ ^[0-9a-f]{40}$ ]]
           echo "new=${RESULT[0]}" >> "$GITHUB_OUTPUT"

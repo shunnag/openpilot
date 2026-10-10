@@ -161,12 +161,13 @@ class TestNightlyWorkflow(unittest.TestCase):
       if "        run:" in step:
         self.assertNotIn("${{", step.split("        run:", 1)[1])
 
-  def test_branch_names_only_in_matrix(self):
+  def test_branch_names_only_in_matrix_and_modem_selection(self):
     workflow = (ROOT / ".github/workflows/nightly.yml").read_text()
     matrix = "branch: [nightly, nightly-chestnut, release-mici-staging, release-tizi-staging]"
     self.assertIn(matrix, workflow)
+    selector = 'case "$BRANCH" in' + workflow.split('case "$BRANCH" in', 1)[1].split("esac", 1)[0] + "esac"
     for branch in ("nightly-chestnut", "release-mici-staging", "release-tizi-staging"):
-      self.assertNotIn(branch, workflow.replace(matrix, ""))
+      self.assertNotIn(branch, workflow.replace(matrix, "").replace(selector, ""))
 
   def test_branch_environment_refs_and_job_concurrency(self):
     workflow = (ROOT / ".github/workflows/nightly.yml").read_text()

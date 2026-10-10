@@ -20,6 +20,8 @@ STOCK_MANIFEST = "openpilot/common/hardware/comma/agnos.stock.json"
 AGNOS_PY = "openpilot/common/hardware/comma/agnos.py"
 LAUNCHER_PATCHES = (ROOT / "patches/launcher-wpa3.patch", ROOT / "patches/launcher-wpa3-release.patch")
 UI_PATCH = ROOT / "patches/ui-wpa3.patch"
+MODEM_PATCH = ROOT / "patches/modem-apn.patch"
+MODEM_PY = "openpilot/common/hardware/comma/modem.py"
 UI_ALLOWED = {
   "openpilot/system/ui/lib/networkmanager.py",
   "openpilot/system/ui/lib/wifi_manager.py",
@@ -262,7 +264,7 @@ def load_pin(repo, upstream, pin_file):
   return resolved
 
 
-def inputs_hash(upstream, resolved, launcher_patch):
+def inputs_hash(upstream, resolved, launcher_patch, modem="skip"):
   # Hash the entire resolved pin as canonical JSON, independent of file formatting.
   inputs = {
     "upstream": upstream,
@@ -270,6 +272,9 @@ def inputs_hash(upstream, resolved, launcher_patch):
     "pin": resolved,
     "compose.py": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
   }
+  if modem == "apply":
+    inputs["modem"] = modem
+    inputs["patches"][MODEM_PATCH.name] = hashlib.sha256(MODEM_PATCH.read_bytes()).hexdigest()
   pin = resolved if resolved["mode"] == "native" else resolved["pin"]
   if "wpa_supplicant" in pin:
     # The binary digest is in the pin; the accompanying license also affects the tree.
@@ -317,6 +322,22 @@ def apply_ui(repo, env, check=False):
     return "applies cleanly" if check else "applied"
 
 
+def apply_modem(repo, env, check=False):
+  try:
+    git(repo, "apply", "--cached", "--reverse", "--check", str(MODEM_PATCH), env=env)
+    return "already upstream"
+  except subprocess.CalledProcessError:
+    args = ["apply", "--cached", "--whitespace=error"]
+    if check:
+      args.append("--check")
+    try:
+      git(repo, *args, str(MODEM_PATCH), env=env)
+    except subprocess.CalledProcessError as error:
+      print(f"modem patch: skipped (does not apply): {error_text(error)}", file=sys.stderr)
+      return "skipped (does not apply)"
+    return "applies cleanly" if check else "applied"
+
+
 def put_blob(repo, env, path, data, mode=None):
   if mode is None:
     mode = git(repo, "ls-files", "--stage", "--", path, env=env).split()[0].decode()
@@ -343,10 +364,12 @@ def release_notice(resolved):
   return (text + "\n").encode()
 
 
-def post_checks(repo, upstream, tree, resolved, scratch):
+def post_checks(repo, upstream, tree, resolved, scratch, modem_result="off"):
   native = resolved["mode"] == "native"
   pin = resolved if native else resolved["pin"]
   allowed = NATIVE_ALLOWED if native else ALLOWED
+  if modem_result == "applied":
+    allowed = allowed | {MODEM_PY}
   notice = release_notice(resolved)
   if notice:
     allowed = allowed | {"RELEASES.md"}
@@ -405,12 +428,12 @@ def post_checks(repo, upstream, tree, resolved, scratch):
     raise ValueError("non-boot manifest bytes changed")
 
 
-def compose(repo, upstream, resolved):
+def compose(repo, upstream, resolved, modem="skip"):
   native = resolved["mode"] == "native"
   pin = resolved if native else resolved["pin"]
   files = supplicant_files(pin)
   launcher_patch = select_launcher_patch(repo, upstream)
-  inputs = inputs_hash(upstream, resolved, launcher_patch)
+  inputs = inputs_hash(upstream, resolved, launcher_patch, modem)
   with temporary_index(repo, upstream) as (env, scratch):
     notice = release_notice(resolved)
     if notice:
@@ -446,8 +469,9 @@ def compose(repo, upstream, resolved):
       removals = b"".join(b"0 " + b"0" * len(upstream) + b"\t" + path + b"\0" for path in workflows.split(b"\0") if path)
       git(repo, "update-index", "-z", "--index-info", data=removals, env=env)
     apply_ui(repo, env)
+    modem_result = apply_modem(repo, env) if modem == "apply" else "off"
     tree = git(repo, "write-tree", env=env).decode().strip()
-    post_checks(repo, upstream, tree, resolved, scratch)
+    post_checks(repo, upstream, tree, resolved, scratch, modem_result)
 
   date = git(repo, "show", "-s", "--format=%cI", upstream).decode().strip()
   subject = git(repo, "show", "-s", "--format=%s", upstream).decode().strip()
@@ -456,6 +480,7 @@ def compose(repo, upstream, resolved):
   message = (f"{subject} + WPA3\n\nUpstream-Commit: {upstream}\n"
              f"WPA3-Inputs: {inputs}\nWPA3-AGNOS: {'none' if native else resolved['pin']['release_tag']}\n"
              f"WPA3-Pin: {pin_description(resolved)}\nWPA3-Launcher-Patch: {launcher_patch.name}\n"
+             f"WPA3-Modem-Patch: {modem_result}\n"
              f"WPA3-Boot-Build: {'auto' if 'auto' in pin else 'manual'}\n")
   commit = git(repo, "-c", "commit.gpgsign=false", "commit-tree", tree, "-p", upstream,
                data=message.encode(), env=identity).decode().strip()
@@ -468,15 +493,16 @@ def main():
   parser.add_argument("--upstream", required=True, help="already fetched upstream commit")
   parser.add_argument("--pin-file", required=True, type=Path, help="resolved JSON from pins.py")
   parser.add_argument("--inputs-only", action="store_true", help="print only WPA3-Inputs, without composing")
+  parser.add_argument("--modem", choices=("apply", "skip"), default="skip", help="optional modem APN patch")
   args = parser.parse_args()
   try:
     repo = args.repo.resolve()
     upstream = resolve_commit(repo, args.upstream)
     resolved = load_pin(repo, upstream, args.pin_file)
     if args.inputs_only:
-      print(inputs_hash(upstream, resolved, select_launcher_patch(repo, upstream)))
+      print(inputs_hash(upstream, resolved, select_launcher_patch(repo, upstream), args.modem))
     else:
-      commit, inputs = compose(repo, upstream, resolved)
+      commit, inputs = compose(repo, upstream, resolved, args.modem)
       print(f"{commit}\n{inputs}")
   except (OSError, ValueError, AssertionError, KeyError, subprocess.CalledProcessError, py_compile.PyCompileError) as error:
     print(f"compose: FAIL: {error_text(error)}", file=sys.stderr)

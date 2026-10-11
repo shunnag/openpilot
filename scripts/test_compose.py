@@ -27,6 +27,11 @@ REF = ROOT / "ref/nightly-chestnut"
 RELEASE_REF = ROOT / "ref/release-staging"
 UPDATED = "openpilot/system/updated/updated.py"
 MANIFEST_LINK = "openpilot/system/hardware/comma/agnos.json"
+# Upstream #39063; synthesize the new contexts from the existing reference files.
+AGNOS_FALLBACK = (b'  if not os.path.isfile(manifest_path):  # releases before the openpilot/ move\n'
+                  b'    manifest_path = os.path.join(OVERLAY_MERGED, "system/hardware/tici/agnos.json")\n')
+OVERLAY_AGNOS_VERIFY = (b"          # releases before the openpilot/ move can't swap AGNOS on newer AGNOS, use ours\n"
+                        b'          [ ! -L system/hardware/tici/agnos.json ] && /data/safe_staging/old_openpilot/openpilot/common/hardware/comma/agnos.py --verify system/hardware/tici/agnos.json && sudo reboot\n')
 # Minimal pre-patch modem context; the existing reference tree has no modem.py.
 MODEM_FIXTURE = b'''class Modem:
   def __init__(self):
@@ -151,6 +156,21 @@ class TestCompose(unittest.TestCase):
       tree = compose.git(self.repo, "write-tree", env=env).decode().strip()
       return compose.git(self.repo, "commit-tree", tree, data=b"Upstream drift\n", env=self.identity).decode().strip()
 
+  def v0112_variant(self, upstream=None):
+    upstream = upstream or self.upstream
+    launcher = compose.blob(self.repo, upstream, "launch_chffrplus.sh")
+    cd = b'          cd "$DIR"\n' if b'          cd "$DIR"\n' in launcher else b'          cd $DIR\n'
+    changes = {}
+    for path, anchor, addition in (
+      ("launch_chffrplus.sh", cd, OVERLAY_AGNOS_VERIFY),
+      (UPDATED, f'  manifest_path = os.path.join(OVERLAY_MERGED, "{MANIFEST_LINK}")\n'.encode(), AGNOS_FALLBACK),
+    ):
+      data = compose.blob(self.repo, upstream, path)
+      self.assertEqual(data.count(anchor), 1)
+      self.assertNotIn(addition, data)
+      changes[path] = data.replace(anchor, anchor + addition)
+    return self.variant_many(changes, upstream)
+
   def test_offline_gates(self):
     result = self.cli("gates.py", self.upstream, "--skip-download")
     for gate in ("G1", "G2", "G3", "G5", "G7"):
@@ -200,16 +220,74 @@ class TestCompose(unittest.TestCase):
 
   def test_launcher_patches_are_exclusive(self):
     release = self.variant("launch_chffrplus.sh", (RELEASE_REF / "launch_chffrplus.sh").read_bytes())
-    nightly_patch, release_patch = compose.LAUNCHER_PATCHES
-    for upstream, matching, other in ((self.upstream, nightly_patch, release_patch), (release, release_patch, nightly_patch)):
+    upstreams = (self.upstream, release, self.v0112_variant(), self.v0112_variant(release))
+    self.assertEqual(len(compose.LAUNCHER_PATCHES), len(upstreams))
+    for upstream, matching in zip(upstreams, compose.LAUNCHER_PATCHES):
       with self.subTest(patch=matching.name), compose.temporary_index(self.repo, upstream) as (env, _):
         before = compose.git(self.repo, "write-tree", env=env)
         self.assertEqual(compose.select_launcher_patch(self.repo, upstream), matching)
-        compose.git(self.repo, "apply", "--cached", "--check", str(matching), env=env)
-        with self.assertRaises(subprocess.CalledProcessError):
-          compose.git(self.repo, "apply", "--cached", "--check", str(other), env=env)
+        for candidate in compose.LAUNCHER_PATCHES:
+          if candidate == matching:
+            compose.git(self.repo, "apply", "--cached", "--check", "--whitespace=error", str(candidate), env=env)
+          else:
+            with self.assertRaises(subprocess.CalledProcessError):
+              compose.git(self.repo, "apply", "--cached", "--check", str(candidate), env=env)
         self.assertEqual(compose.git(self.repo, "write-tree", env=env), before)
     self.assertFalse((self.repo / "index").exists())
+
+  def test_v0112_launcher_selection_and_compose(self):
+    release = self.variant("launch_chffrplus.sh", (RELEASE_REF / "launch_chffrplus.sh").read_bytes())
+    for old, matching in zip((self.upstream, release), compose.LAUNCHER_PATCHES[2:]):
+      with self.subTest(patch=matching.name):
+        upstream = self.v0112_variant(old)
+        self.assertEqual(compose.select_launcher_patch(self.repo, upstream), matching)
+        result = self.cli("gates.py", upstream, "--skip-download")
+        self.assertIn(f"G3: OK: agnos.py blob matches and launcher patch {matching.name} applies", result.stdout)
+        commit, inputs = self.cli("compose.py", upstream).stdout.splitlines()
+        self.assertEqual(self.cli("compose.py", upstream, "--inputs-only").stdout.strip(), inputs)
+        message = compose.git(self.repo, "show", "-s", "--format=%B", commit).decode()
+        self.assertIn(f"WPA3-Pin: pinned 19.8\nWPA3-Launcher-Patch: {matching.name}\n", message)
+        previous = self.commit if old == self.upstream else self.cli("compose.py", old).stdout.splitlines()[0]
+        manifest = f'  manifest_path = os.path.join(OVERLAY_MERGED, "{MANIFEST_LINK}")\n'.encode()
+        updated = compose.blob(self.repo, commit, UPDATED)
+        self.assertEqual(updated, compose.blob(self.repo, previous, UPDATED).replace(manifest, manifest + AGNOS_FALLBACK))
+        self.assertIn(AGNOS_FALLBACK + b'  if cur_version != updated_version and wpa3_blocked:\n', updated)
+        launcher = compose.blob(self.repo, previous, "launch_chffrplus.sh")
+        cd = b'          cd "$DIR"\n' if b'          cd "$DIR"\n' in launcher else b'          cd $DIR\n'
+        self.assertEqual(compose.blob(self.repo, commit, "launch_chffrplus.sh"), launcher.replace(cd, cd + OVERLAY_AGNOS_VERIFY))
+        self.assertEqual(compose.blob(self.repo, commit, "launch_env.sh"), compose.blob(self.repo, previous, "launch_env.sh"))
+
+  def test_v0112_upstream_fallback_precedes_stock_override(self):
+    release = self.variant("launch_chffrplus.sh", (RELEASE_REF / "launch_chffrplus.sh").read_bytes())
+    for old in (self.upstream, release):
+      commit = self.cli("compose.py", self.v0112_variant(old)).stdout.splitlines()[0]
+      module = ast.parse(compose.blob(self.repo, commit, UPDATED))
+      function = next(node for node in module.body if isinstance(node, ast.FunctionDef) and node.name == "handle_agnos_update")
+      agnos = types.ModuleType("openpilot.common.hardware.comma.agnos")
+      agnos.get_target_slot_number = Mock(return_value=1)
+      for modern_exists, blocked, stock_exists, expected in (
+        (True, False, False, MANIFEST_LINK),
+        (False, False, False, "system/hardware/tici/agnos.json"),
+        (True, True, True, compose.STOCK_MANIFEST),
+        (False, True, True, compose.STOCK_MANIFEST),
+        (True, True, False, MANIFEST_LINK),
+        (False, True, False, "system/hardware/tici/agnos.json"),
+      ):
+        with self.subTest(upstream=old, modern_exists=modern_exists, blocked=blocked, stock_exists=stock_exists):
+          path = Mock()
+          path.return_value.read_text.return_value = "quiet"
+          path.return_value.read_bytes.return_value = b"hash-a 3" if blocked else b"hash-a 2"
+          path.return_value.is_file.return_value = stock_exists
+          namespace = {"Path": path, "os": os, "OVERLAY_MERGED": "/staged", "HARDWARE": Mock(get_os_version=Mock(return_value="19.7")),
+                       "run": Mock(side_effect=["19.8", "wpa3.sae=1", "hash-a"]), "cloudlog": Mock(), "set_consistent_flag": Mock()}
+          agnos.flash_agnos_update = Mock()
+          with patch.dict(sys.modules, {agnos.__name__: agnos}), patch("os.path.isfile", return_value=modern_exists) as isfile:
+            exec(compile(ast.Module(body=[function], type_ignores=[]), UPDATED, "exec"), namespace)
+            namespace["handle_agnos_update"]()
+          isfile.assert_called_once_with("/staged/" + MANIFEST_LINK)
+          manifest = "/staged/" + expected
+          agnos.flash_agnos_update.assert_called_once_with(manifest, 1, namespace["cloudlog"])
+          namespace["cloudlog"].info.assert_any_call(f"AGNOS update manifest: {manifest}")
 
   def test_unknown_launcher_fails_gates_compose_and_inputs(self):
     upstream = self.variant("launch_chffrplus.sh", b"#!/bin/bash\n# incompatible launcher\n")
@@ -226,7 +304,7 @@ class TestCompose(unittest.TestCase):
         self.assertIn(f"{prefix}: FAIL: no launcher patch applies:", result.stderr)
         for launcher_patch in compose.LAUNCHER_PATCHES:
           self.assertIn(f"{launcher_patch.name}: git ", result.stderr)
-        self.assertEqual(result.stderr.count("error: launch_chffrplus.sh: patch does not apply"), 2)
+        self.assertEqual(result.stderr.count("error: launch_chffrplus.sh: patch does not apply"), len(compose.LAUNCHER_PATCHES))
 
   def test_ambiguous_launcher_patches_fail(self):
     duplicate = self.work / "duplicate-launcher.patch"
@@ -243,7 +321,7 @@ class TestCompose(unittest.TestCase):
         self.assertIn("G3: FAIL: more than one launcher patch applies:", stderr.getvalue())
 
   def test_inputs_hash_uses_chosen_launcher_patch(self):
-    nightly_patch, release_patch = compose.LAUNCHER_PATCHES
+    nightly_patch, release_patch = compose.LAUNCHER_PATCHES[:2]
     self.assertEqual(compose.inputs_hash(self.upstream, self.resolved, nightly_patch), self.inputs)
     self.assertNotEqual(compose.inputs_hash(self.upstream, self.resolved, release_patch), self.inputs)
     unused = self.work / release_patch.name

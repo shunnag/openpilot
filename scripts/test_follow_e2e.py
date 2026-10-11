@@ -54,6 +54,8 @@ class FollowEndToEnd(unittest.TestCase):
       # Include this uncommitted implementation in the isolated fixture checkout.
       for source in (ROOT / 'scripts').glob('*.py'):
         shutil.copyfile(source, work / 'scripts' / source.name)
+      for source in compose.LAUNCHER_PATCHES:
+        shutil.copyfile(source, work / 'patches' / source.name)
       shutil.copytree(ROOT / 'follow/templates', work / 'follow/templates', dirs_exist_ok=True)
       shutil.copyfile(ROOT / 'README.md', work / 'README.md')
       state = deepcopy(fixture.remote.state)
@@ -62,7 +64,7 @@ class FollowEndToEnd(unittest.TestCase):
         (work / name).write_bytes(value)
       (work / 'agnos/pins.json').write_text(fs.dumps(state['manual']))
       (work / 'follow/policy.json').write_text(fs.dumps(state['policy']))
-      command('git', '-C', work, 'add', '--', 'scripts', 'follow', 'agnos', 'README.md')
+      command('git', '-C', work, 'add', '--', 'scripts', 'patches', 'follow', 'agnos', 'README.md')
       command('git', '-C', work, '-c', 'user.name=fixture', '-c', 'user.email=fixture@example.invalid',
               '-c', 'commit.gpgsign=false', '-c', 'core.hooksPath=/dev/null', 'commit', '-m', 'Local simulation inputs')
       command('git', '-C', work, 'push', 'origin', 'HEAD:refs/heads/wpa3-ci')

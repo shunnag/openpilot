@@ -18,7 +18,10 @@ ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = "openpilot/common/hardware/comma/agnos.json"
 STOCK_MANIFEST = "openpilot/common/hardware/comma/agnos.stock.json"
 AGNOS_PY = "openpilot/common/hardware/comma/agnos.py"
-LAUNCHER_PATCHES = (ROOT / "patches/launcher-wpa3.patch", ROOT / "patches/launcher-wpa3-release.patch")
+LAUNCHER_PATCHES = (
+  ROOT / "patches/launcher-wpa3.patch", ROOT / "patches/launcher-wpa3-release.patch",
+  ROOT / "patches/launcher-wpa3-v0112.patch", ROOT / "patches/launcher-wpa3-release-v0112.patch",
+)
 UI_PATCH = ROOT / "patches/ui-wpa3.patch"
 MODEM_PATCH = ROOT / "patches/modem-apn.patch"
 MODEM_PY = "openpilot/common/hardware/comma/modem.py"

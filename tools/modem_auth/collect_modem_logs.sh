@@ -57,13 +57,12 @@ modemmanager_tail() {
 }
 
 modem_lines() {
-  # The full capture is already redacted; filter it once more on output.
-  awk 'index($0, " modem: ")' "$bundle/tmux_full.txt"
+  # Filter the capture before any pane output reaches disk.
+  env TERM=xterm tmux capture-pane -p -J -S - -t comma 2>&1 | awk 'index($0, " modem: ")'
 }
 
 collect version.txt cat /VERSION
 collect openpilot_git.txt branch_commit
-collect tmux_full.txt tmux capture-pane -p -J -S - -t comma
 collect tmux_modem.txt modem_lines
 collect modem.json cat /dev/shm/modem
 collect pppd_chat.txt sudo journalctl -b -t pppd -t chat --no-pager

@@ -93,13 +93,8 @@ def run():
                 output.append("APN auth params removed.")
             elif action == "show":
                 values = {key: text(params.get(key)) for key in (*KEYS, "GsmApn")}
-                # Avoid accidentally showing credentials copied into a public param.
                 for key in ("GsmApn", "GsmAuth"):
-                    value = values[key]
-                    secrets = sorted({values[k] for k in KEYS[:2] if values[k]}, key=len, reverse=True)
-                    for secret in secrets:
-                        value = value.replace(secret, "<redacted>")
-                    output.append(f"{key}: {ascii(value)}")
+                    output.append(f"{key}: {ascii(values[key])}")
                 for key in KEYS[:2]:
                     value = values[key]
                     output.append(f"{key}: set ({len(value)} chars)" if value else f"{key}: not set")

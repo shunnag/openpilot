@@ -14,8 +14,8 @@ before writing and refuses root execution.
 Credentials may be empty. Otherwise each must contain at most 64 ASCII bytes,
 from `!` through `~`, excluding double quote, backslash and comma. Input stays
 on stdin; credentials do not enter command arguments or exported environment
-variables. `show` displays credential lengths; public APN/auth values also mask
-any overlapping credential text.
+variables. `show` displays credential lengths and the stored public APN/auth
+values, including any text that overlaps with credentials.
 
 Only `GsmAuth=chap` or `pap` opts in to credentials. With empty `GsmAuth`, modem.py
 ignores any stored credentials, and `show` prints a note. The setter writes
@@ -40,6 +40,11 @@ Auth fields are redacted even when the credentials are absent from params.
 With `--secrets-from-params`, literal username/password occurrences of at least
 three characters are also masked. Identity numbers, IPv4 addresses, registration
 locations, modem identity log values and modem JSON identity fields are masked.
+Device hostnames and serving-cell identities are also masked. LTE cellID, PCID
+and TAC are removed while radio metrics stay; other RATs or unexpected layouts
+are redacted after the RAT.
+Other hex/decimal runs of at least 16 characters keep only their first four
+characters plus `<id>`. Existing IMEI/ICCID masks and redaction placeholders stay.
 Modem `ERROR` replies, query failures and timeouts produce a nonzero exit status;
 the remaining queries still run. JSON output is an array of `command`/`lines`
 objects with the same redaction.
@@ -54,7 +59,10 @@ never uses it.
 
 The collector creates a private `~/modem_logs_<UTC timestamp>/` directory and
 matching `.tar.gz`. Every captured stream, including stderr, passes through the
-redactor before being saved. It collects pppd/chat and ModemManager journals;
+redactor before being saved. The tmux pane is captured with `TERM=xterm` and
+streamed through a filter keeping only lines containing ` modem: `, then through
+redaction into `tmux_modem.txt`. The full pane is never written to disk, and the
+bundle contains no `tmux_full.txt`. It collects pppd/chat and ModemManager journals;
 it never requests the sudo journal. Check every file before sharing the bundle.
 Missing diagnostics are recorded; a redaction failure stops collection.
 

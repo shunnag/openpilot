@@ -154,8 +154,46 @@ def redact_location(line: str) -> str:
     return _redact_records(line, re.compile(r"\+(?:CREG|CGREG|CEREG):[ \t]*", re.IGNORECASE), replace)
 
 
+def redact_servingcell(line: str) -> str:
+    def redact_value(value):
+        header = re.match(
+            r'^\s*(?:"servingcell"|servingcell)\s*,\s*(?:"[^"\r\n]*"|[^,"\r\n]*)\s*,\s*(?:"[^"\r\n]*"|[^,"\r\n]*)(?=,|$)',
+            value, flags=re.IGNORECASE,
+        )
+        fallback = header.group(0) + ",<redacted>" if header else "<redacted>"
+        try:
+            fields = _fields(value)
+        except ValueError:
+            return fallback
+        if len(fields) != 18 or fields[2][2].upper() != "LTE":
+            return fallback
+        return _replace_fields(value, fields, {6: "<cell>", 7: "<pci>", 12: "<tac>"})
+
+    def extra(match):
+        try:
+            value = json.loads(match.group(2))
+        except json.JSONDecodeError:
+            return match.group(1) + '"<redacted>"'
+        if not re.match(r'^\s*"?servingcell\b', value, flags=re.IGNORECASE):
+            return match.group(0)
+        return match.group(1) + json.dumps(redact_value(value))
+
+    def qeng(match, payload):
+        terminal = re.search(r"\s+\|\s+(?:OK|ERROR)\s*$", payload)
+        if terminal:
+            return redact_value(payload[:terminal.start()]) + terminal.group(0)
+        return redact_value(payload)
+
+    line = re.sub(r'("extra"\s*:\s*)("(?:\\.|[^"\\])*")', extra, line)
+    return _redact_records(
+        line, re.compile(r'\+QENG:[ \t]*(?="?servingcell\b)', re.IGNORECASE), qeng,
+    )
+
+
 def redact_line(line: str, secrets: dict[str, str] | None = None, *, show_auth_values: bool = False) -> str:
     line = redact_location(line if show_auth_values else redact_auth(line))
+    line = redact_servingcell(line)
+    line = re.sub(r"\bcomma-[0-9a-fA-F]{6,}\b", "comma-<host>", line)
     line = re.sub(
         r"\b(imei|iccid|mcc_mnc)=(?:\"[^\"]*\"|'[^']*'|[^\s,;|]+)",
         r"\1=<redacted>", line, flags=re.IGNORECASE,
@@ -172,6 +210,18 @@ def redact_line(line: str, secrets: dict[str, str] | None = None, *, show_auth_v
     if replacements:
         pattern = "|".join(re.escape(value) for value in sorted(replacements, key=len, reverse=True))
         line = re.sub(pattern, lambda match: replacements[match.group(0)], line)
+
+    def long_id(match):
+        value = match.group(0)
+        # Keep the established IMEI/ICCID masks below.
+        if value.startswith("<") or re.fullmatch(r"[0-9]{16,17}|89[0-9]{17,18}|89[0-9]{16,17}[Ff]", value):
+            return value
+        return value[:4] + "<id>"
+
+    line = re.sub(
+        r"<(?:redacted|id|host|username|password|loc|cell|pci|tac|(?:user|password):[0-9]+)>|[0-9a-fA-F]{16,}",
+        long_id, line,
+    )
     line = re.sub(
         r"(?<![0-9])(?:89[0-9]{17,18}|89[0-9]{16,17}[Ff])(?![0-9Ff])",
         lambda match: match.group(0)[:7] + "<redacted>", line,

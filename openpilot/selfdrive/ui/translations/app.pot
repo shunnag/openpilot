@@ -851,3 +851,12 @@ msgstr ""
 
 msgid "Use 1-64 ASCII letters, digits or symbols, without spaces, double quotes, backslashes or commas."
 msgstr ""
+
+msgid "Delete APN Credentials"
+msgstr ""
+
+msgid "DELETE"
+msgstr ""
+
+msgid "Delete the saved APN user name and password?"
+msgstr ""

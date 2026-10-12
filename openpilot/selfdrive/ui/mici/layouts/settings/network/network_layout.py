@@ -20,14 +20,14 @@ def _valid_auth_field(text: str) -> bool:
 
 
 class ApnCredentialsConfirmDialog(NavScroller):
-  def __init__(self, confirm_callback: Callable[[], None]):
+  def __init__(self, confirm_callback: Callable[[], None], message: str = "also delete the saved apn user name and password?"):
     super().__init__()
     no_btn = BigButton("no", "keep saved credentials")
     no_btn.set_click_callback(self.dismiss)
     yes_btn = BigButton("yes", "delete saved credentials")
     yes_btn.set_click_callback(lambda: self.dismiss(confirm_callback))
     self._scroller.add_widgets([
-      GreyBigButton("", "also delete the saved apn user name and password?"),
+      GreyBigButton("", message),
       no_btn,
       yes_btn,
     ])
@@ -114,6 +114,8 @@ class NetworkLayoutMici(NavScroller):
     self._apn_password_btn = BigButton("apn password", "not set", description=AUTH_FIELD_RULE)
     self._apn_password_btn.set_click_callback(self._edit_apn_password)
     self._apn_auth_btn = BigMultiToggle("apn auth", ["off", "chap", "pap"], select_callback=self._set_apn_auth)
+    self._apn_delete_btn = BigButton("delete apn credentials", "delete")
+    self._apn_delete_btn.set_click_callback(self._delete_apn_credentials)
     self._refresh_apn_auth()
 
     # ******** Cellular metered toggle ********
@@ -132,6 +134,7 @@ class NetworkLayoutMici(NavScroller):
       self._apn_user_btn,
       self._apn_password_btn,
       self._apn_auth_btn,
+      self._apn_delete_btn,
       self._cellular_metered_btn,
       # */
     ])
@@ -146,6 +149,7 @@ class NetworkLayoutMici(NavScroller):
     self._apn_user_btn.set_visible(show_cell_settings)
     self._apn_password_btn.set_visible(show_cell_settings)
     self._apn_auth_btn.set_visible(show_cell_settings)
+    self._apn_delete_btn.set_visible(show_cell_settings and bool(self._apn_user or self._apn_has_password))
     self._cellular_metered_btn.set_visible(show_cell_settings)
 
   def show_event(self):
@@ -181,9 +185,19 @@ class NetworkLayoutMici(NavScroller):
     auth = ui_state.params.get("GsmAuth")
     self._apn_auth = auth if auth in ("chap", "pap") else "off"
     self._apn_user = ui_state.params.get("GsmUsername") or ""
+    self._apn_has_password = bool(ui_state.params.get("GsmPassword"))
     self._apn_auth_btn.set_value(self._apn_auth)
     self._apn_user_btn.set_value("set" if self._apn_user else "not set")
-    self._apn_password_btn.set_value("set" if ui_state.params.get("GsmPassword") else "not set")
+    self._apn_password_btn.set_value("set" if self._apn_has_password else "not set")
+
+  def _delete_apn_credentials(self):
+    def clear_credentials():
+      ui_state.params.put("GsmAuth", "none", block=True)
+      ui_state.params.remove("GsmUsername")
+      ui_state.params.remove("GsmPassword")
+      self._refresh_apn_auth()
+
+    gui_app.push_widget(ApnCredentialsConfirmDialog(clear_credentials, message="delete the saved apn user name and password?"))
 
   def _set_apn_auth(self, value: str):
     # BigMultiToggle changes its value before calling us; compare with the cached param.

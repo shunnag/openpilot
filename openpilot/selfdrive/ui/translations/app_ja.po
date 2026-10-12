@@ -849,3 +849,12 @@ msgstr "いいえ"
 
 msgid "Use 1-64 ASCII letters, digits or symbols, without spaces, double quotes, backslashes or commas."
 msgstr "半角英数字または記号を1〜64文字で入力してください。スペース、ダブルクォート、バックスラッシュ、カンマは使用できません。"
+
+msgid "Delete APN Credentials"
+msgstr "APN認証情報を削除"
+
+msgid "DELETE"
+msgstr "削除"
+
+msgid "Delete the saved APN user name and password?"
+msgstr "保存済みのAPNユーザー名とパスワードを削除しますか？"

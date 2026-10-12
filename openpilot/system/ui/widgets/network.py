@@ -146,6 +146,7 @@ class AdvancedNetworkSettings(Widget):
     self._apn_auth_action = MultipleButtonAction([lambda: tr("Off"), lambda: tr("PAP"), lambda: tr("CHAP")], 180,
                                                callback=self._set_apn_auth)
     self._apn_auth_btn = ListItem(lambda: tr("APN Authentication"), action_item=self._apn_auth_action)
+    self._apn_delete_btn = button_item(lambda: tr("Delete APN Credentials"), lambda: tr("DELETE"), callback=self._delete_apn_credentials)
     self._refresh_apn_auth()
 
     # Wi-Fi metered toggle
@@ -163,6 +164,7 @@ class AdvancedNetworkSettings(Widget):
       self._apn_user_btn,
       self._apn_password_btn,
       self._apn_auth_btn,
+      self._apn_delete_btn,
       self._cellular_metered_btn,
       wifi_metered_btn,
       button_item(lambda: tr("Hidden Network"), lambda: tr("CONNECT"), callback=self._connect_to_hidden_network),
@@ -180,6 +182,16 @@ class AdvancedNetworkSettings(Widget):
     self._apn_user = self._params.get("GsmUsername") or ""
     self._apn_has_password = bool(self._params.get("GsmPassword"))
     self._apn_auth_action.set_selected_button(("none", "pap", "chap").index(self._apn_auth))
+
+  def _delete_apn_credentials(self):
+    def clear_credentials(result: DialogResult):
+      if result == DialogResult.CONFIRM:
+        self._params.put("GsmAuth", "none", block=True)
+        self._params.remove("GsmUsername")
+        self._params.remove("GsmPassword")
+        self._refresh_apn_auth()
+
+    gui_app.push_widget(ConfirmDialog(tr("Delete the saved APN user name and password?"), tr("Yes"), tr("No"), callback=clear_credentials))
 
   def _set_apn_auth(self, index: int):
     auth = ("none", "pap", "chap")[index]
@@ -332,6 +344,7 @@ class AdvancedNetworkSettings(Widget):
     self._apn_user_btn.set_visible(show_cell_settings)
     self._apn_password_btn.set_visible(show_cell_settings)
     self._apn_auth_btn.set_visible(show_cell_settings)
+    self._apn_delete_btn.set_visible(show_cell_settings and bool(self._apn_user or self._apn_has_password))
     self._cellular_metered_btn.set_visible(show_cell_settings)
 
   def _render(self, _):

@@ -112,6 +112,12 @@ def main(output: Path):
     else:
       for row in ("apn", "apn_user", "apn_password", "apn_auth"):
         add(lambda row=row: scroll_to(getattr(panel, f"_{row}_btn")), f"{state}_{row}_row")
+    if populated:
+      add(lambda: scroll_to(panel._apn_delete_btn), "set_delete_credentials_row")
+      add(panel._delete_apn_credentials, "set_delete_credentials_confirm")
+      if not BIG:
+        for index, choice in ((1, "no"), (2, "yes")):
+          add(lambda index=index: scroll_confirm_choice(index), f"set_delete_credentials_{choice}", close=False)
     add(panel._edit_apn, f"{state}_apn_keyboard")
     add(panel._edit_apn_user, f"{state}_user_keyboard")
     add(panel._edit_apn_password, f"{state}_password_keyboard")

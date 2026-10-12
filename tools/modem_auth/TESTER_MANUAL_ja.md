@@ -91,6 +91,8 @@ cd /data/openpilot/tools/modem_auth
 ```
 
 ### 段階 A：今までどおり（認証なし）でどうなるか ― 基準を取る
+**段階 A は飛ばさないでください。** 認証情報（ユーザー名・パスワード・方式）を入れる前の記録が、「認証なしでは失敗し、認証を入れると直る」ことの唯一の証拠になります。設定画面や `set_apn_auth.sh` で認証情報を入れるのは、段階 A のログを取ったあと（段階 B）です。
+
 1. APN だけを設定画面（設定 → ネットワーク → 詳細 → APN 設定）で入れる。画面がない場合は：
    ```bash
    python3 -c 'from openpilot.common.params import Params; Params().put("GsmApn", "<APN>")'

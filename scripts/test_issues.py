@@ -157,17 +157,29 @@ class TestNightlyWorkflow(unittest.TestCase):
     self.assertEqual(len(consumers), 3)
     for line in consumers:
       self.assertIn('--pin-file "$RUNNER_TEMP/pin.json"', line)
+      self.assertIn('--tether "$TETHER" --apn "$APN"', line)
+    self.assertNotIn('--modem', workflow)
+    self.assertNotIn('MODEM=', workflow)
     for step in steps:
       if "        run:" in step:
         self.assertNotIn("${{", step.split("        run:", 1)[1])
 
-  def test_branch_names_only_in_matrix_and_modem_selection(self):
+  def test_branch_names_only_in_matrix_patch_selection_and_smoke(self):
     workflow = (ROOT / ".github/workflows/nightly.yml").read_text()
     matrix = "branch: [nightly, nightly-chestnut, release-mici-staging, release-tizi-staging]"
     self.assertIn(matrix, workflow)
     selector = 'case "$BRANCH" in' + workflow.split('case "$BRANCH" in', 1)[1].split("esac", 1)[0] + "esac"
+    smoke_selector = 'if [ "$BRANCH" = release-tizi-staging ]; then DEVICE_TYPE=tizi; fi'
+    for branch in ("nightly", "nightly-chestnut", "release-mici-staging", "release-tizi-staging", "unknown"):
+      result = subprocess.run(["bash", "-eu", "-c", selector + '\nprintf "%s %s" "$TETHER" "$APN"'],
+                              env={**os.environ, "BRANCH": branch}, text=True, capture_output=True, check=True)
+      self.assertEqual(result.stdout, "off off" if branch == "unknown" else "apply auto")
+      smoke = subprocess.run(["bash", "-eu", "-c", 'DEVICE_TYPE=mici\n' + smoke_selector + '\nprintf "%s" "$DEVICE_TYPE"'],
+                             env={**os.environ, "BRANCH": branch}, text=True, capture_output=True, check=True)
+      self.assertEqual(smoke.stdout, "tizi" if branch == "release-tizi-staging" else "mici")
+    self.assertIn('-H "X-openpilot-device-type: $DEVICE_TYPE"', workflow)
     for branch in ("nightly-chestnut", "release-mici-staging", "release-tizi-staging"):
-      self.assertNotIn(branch, workflow.replace(matrix, "").replace(selector, ""))
+      self.assertNotIn(branch, workflow.replace(matrix, "").replace(selector, "").replace(smoke_selector, ""))
 
   def test_branch_environment_refs_and_job_concurrency(self):
     workflow = (ROOT / ".github/workflows/nightly.yml").read_text()

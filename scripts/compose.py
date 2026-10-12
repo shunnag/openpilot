@@ -23,8 +23,21 @@ LAUNCHER_PATCHES = (
   ROOT / "patches/launcher-wpa3-v0112.patch", ROOT / "patches/launcher-wpa3-release-v0112.patch",
 )
 UI_PATCH = ROOT / "patches/ui-wpa3.patch"
-MODEM_PATCH = ROOT / "patches/modem-apn.patch"
-MODEM_PY = "openpilot/common/hardware/comma/modem.py"
+TETHER_PATCH = ROOT / "patches/tethering-nat.patch"
+APN_PATCHES = (ROOT / "patches/apn-auth-release.patch", ROOT / "patches/apn-auth-nightly.patch")
+TETHER_ALLOWED = {"openpilot/system/ui/lib/tests/test_tethering_nat.py"}
+APN_ALLOWED = {
+  "openpilot/common/hardware/comma/apn_auth_store.py",
+  "openpilot/common/hardware/comma/modem.py",
+  "openpilot/selfdrive/ui/lib/modem_status.py",
+  "openpilot/selfdrive/ui/mici/layouts/settings/network/modem_status.py",
+  "openpilot/selfdrive/ui/mici/layouts/settings/network/network_layout.py",
+  "openpilot/selfdrive/ui/translations/app.pot",
+  "openpilot/selfdrive/ui/translations/app_ja.po",
+  "openpilot/system/ui/widgets/keyboard.py",
+  "openpilot/system/ui/widgets/modem_status_dialog.py",
+  "openpilot/system/ui/widgets/network.py",
+}
 UI_ALLOWED = {
   "openpilot/system/ui/lib/networkmanager.py",
   "openpilot/system/ui/lib/wifi_manager.py",
@@ -267,7 +280,7 @@ def load_pin(repo, upstream, pin_file):
   return resolved
 
 
-def inputs_hash(upstream, resolved, launcher_patch, modem="skip"):
+def inputs_hash(upstream, resolved, launcher_patch, tether="off", apn="off", apn_patch=None):
   # Hash the entire resolved pin as canonical JSON, independent of file formatting.
   inputs = {
     "upstream": upstream,
@@ -275,9 +288,12 @@ def inputs_hash(upstream, resolved, launcher_patch, modem="skip"):
     "pin": resolved,
     "compose.py": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
   }
-  if modem == "apply":
-    inputs["modem"] = modem
-    inputs["patches"][MODEM_PATCH.name] = hashlib.sha256(MODEM_PATCH.read_bytes()).hexdigest()
+  if tether == "apply":
+    inputs.update(tether=tether, tether_patch=hashlib.sha256(TETHER_PATCH.read_bytes()).hexdigest())
+  if apn == "auto":
+    if apn_patch is None:
+      raise ValueError("APN auto requires a selected patch")
+    inputs.update(apn=apn, apn_patch=apn_patch.name, apn_patch_sha256=hashlib.sha256(apn_patch.read_bytes()).hexdigest())
   pin = resolved if resolved["mode"] == "native" else resolved["pin"]
   if "wpa_supplicant" in pin:
     # The binary digest is in the pin; the accompanying license also affects the tree.
@@ -325,20 +341,57 @@ def apply_ui(repo, env, check=False):
     return "applies cleanly" if check else "applied"
 
 
-def apply_modem(repo, env, check=False):
+def apply_tether(repo, env, check=False):
   try:
-    git(repo, "apply", "--cached", "--reverse", "--check", str(MODEM_PATCH), env=env)
-    return "already upstream"
+    git(repo, "apply", "--cached", "--reverse", "--check", str(TETHER_PATCH), env=env)
   except subprocess.CalledProcessError:
     args = ["apply", "--cached", "--whitespace=error"]
     if check:
       args.append("--check")
-    try:
-      git(repo, *args, str(MODEM_PATCH), env=env)
-    except subprocess.CalledProcessError as error:
-      print(f"modem patch: skipped (does not apply): {error_text(error)}", file=sys.stderr)
-      return "skipped (does not apply)"
+    git(repo, *args, str(TETHER_PATCH), env=env)
     return "applies cleanly" if check else "applied"
+  raise ValueError("tethering patch already upstream; human review required")
+
+
+def select_apn_patch(repo, upstream):
+  # upstream is the stacked tree from the caller's UI/tether scratch index.
+  matches, already_upstream, diagnostics = [], [], []
+  with temporary_index(repo, upstream) as (env, _):
+    for patch in APN_PATCHES:
+      try:
+        git(repo, "apply", "--cached", "--reverse", "--check", str(patch), env=env)
+      except subprocess.CalledProcessError:
+        pass
+      else:
+        already_upstream.append(patch)
+        diagnostics.append(f"{patch.name}: already upstream")
+        continue
+      try:
+        git(repo, "apply", "--cached", "--check", "--whitespace=error", str(patch), env=env)
+      except subprocess.CalledProcessError as error:
+        diagnostics.append(f"{patch.name}: {error_text(error)}")
+      else:
+        matches.append(patch)
+        diagnostics.append(f"{patch.name}: applies cleanly")
+  if already_upstream:
+    raise ValueError(f"APN patch already upstream; human review required: {'; '.join(diagnostics)}")
+  if len(matches) != 1:
+    reason = "no APN patch applies" if not matches else "more than one APN patch applies"
+    raise ValueError(f"{reason}: {'; '.join(diagnostics)}")
+  return matches[0]
+
+
+def compose_inputs(repo, upstream, resolved, tether="off", apn="off"):
+  launcher_patch = select_launcher_patch(repo, upstream)
+  apn_patch = None
+  if tether == "apply" or apn == "auto":
+    with temporary_index(repo, upstream) as (env, _):
+      apply_ui(repo, env)
+      if tether == "apply":
+        apply_tether(repo, env)
+      if apn == "auto":
+        apn_patch = select_apn_patch(repo, git(repo, "write-tree", env=env).decode().strip())
+  return inputs_hash(upstream, resolved, launcher_patch, tether, apn, apn_patch)
 
 
 def put_blob(repo, env, path, data, mode=None):
@@ -367,12 +420,14 @@ def release_notice(resolved):
   return (text + "\n").encode()
 
 
-def post_checks(repo, upstream, tree, resolved, scratch, modem_result="off"):
+def post_checks(repo, upstream, tree, resolved, scratch, tether_result="off", apn_result="off"):
   native = resolved["mode"] == "native"
   pin = resolved if native else resolved["pin"]
   allowed = NATIVE_ALLOWED if native else ALLOWED
-  if modem_result == "applied":
-    allowed = allowed | {MODEM_PY}
+  if tether_result == "applied":
+    allowed = allowed | TETHER_ALLOWED
+  if apn_result == "applied":
+    allowed = allowed | APN_ALLOWED
   notice = release_notice(resolved)
   if notice:
     allowed = allowed | {"RELEASES.md"}
@@ -431,12 +486,11 @@ def post_checks(repo, upstream, tree, resolved, scratch, modem_result="off"):
     raise ValueError("non-boot manifest bytes changed")
 
 
-def compose(repo, upstream, resolved, modem="skip"):
+def compose(repo, upstream, resolved, tether="off", apn="off"):
   native = resolved["mode"] == "native"
   pin = resolved if native else resolved["pin"]
   files = supplicant_files(pin)
   launcher_patch = select_launcher_patch(repo, upstream)
-  inputs = inputs_hash(upstream, resolved, launcher_patch, modem)
   with temporary_index(repo, upstream) as (env, scratch):
     notice = release_notice(resolved)
     if notice:
@@ -472,9 +526,14 @@ def compose(repo, upstream, resolved, modem="skip"):
       removals = b"".join(b"0 " + b"0" * len(upstream) + b"\t" + path + b"\0" for path in workflows.split(b"\0") if path)
       git(repo, "update-index", "-z", "--index-info", data=removals, env=env)
     apply_ui(repo, env)
-    modem_result = apply_modem(repo, env) if modem == "apply" else "off"
+    tether_result = apply_tether(repo, env) if tether == "apply" else "off"
+    apn_patch = None
+    if apn == "auto":
+      apn_patch = select_apn_patch(repo, git(repo, "write-tree", env=env).decode().strip())
+      git(repo, "apply", "--cached", "--whitespace=error", str(apn_patch), env=env)
+    inputs = inputs_hash(upstream, resolved, launcher_patch, tether, apn, apn_patch)
     tree = git(repo, "write-tree", env=env).decode().strip()
-    post_checks(repo, upstream, tree, resolved, scratch, modem_result)
+    post_checks(repo, upstream, tree, resolved, scratch, tether_result, "applied" if apn_patch else "off")
 
   date = git(repo, "show", "-s", "--format=%cI", upstream).decode().strip()
   subject = git(repo, "show", "-s", "--format=%s", upstream).decode().strip()
@@ -483,7 +542,8 @@ def compose(repo, upstream, resolved, modem="skip"):
   message = (f"{subject} + WPA3\n\nUpstream-Commit: {upstream}\n"
              f"WPA3-Inputs: {inputs}\nWPA3-AGNOS: {'none' if native else resolved['pin']['release_tag']}\n"
              f"WPA3-Pin: {pin_description(resolved)}\nWPA3-Launcher-Patch: {launcher_patch.name}\n"
-             f"WPA3-Modem-Patch: {modem_result}\n"
+             f"WPA3-Tethering-Patch: {tether_result}\n"
+             f"WPA3-APN-Patch: {apn_patch.name + ' applied' if apn_patch else 'off'}\n"
              f"WPA3-Boot-Build: {'auto' if 'auto' in pin else 'manual'}\n")
   commit = git(repo, "-c", "commit.gpgsign=false", "commit-tree", tree, "-p", upstream,
                data=message.encode(), env=identity).decode().strip()
@@ -496,16 +556,17 @@ def main():
   parser.add_argument("--upstream", required=True, help="already fetched upstream commit")
   parser.add_argument("--pin-file", required=True, type=Path, help="resolved JSON from pins.py")
   parser.add_argument("--inputs-only", action="store_true", help="print only WPA3-Inputs, without composing")
-  parser.add_argument("--modem", choices=("apply", "skip"), default="skip", help="optional modem APN patch")
+  parser.add_argument("--tether", choices=("apply", "off"), default="off", help="fork tethering NAT patch")
+  parser.add_argument("--apn", choices=("auto", "off"), default="off", help="select the matching APN authentication patch")
   args = parser.parse_args()
   try:
     repo = args.repo.resolve()
     upstream = resolve_commit(repo, args.upstream)
     resolved = load_pin(repo, upstream, args.pin_file)
     if args.inputs_only:
-      print(inputs_hash(upstream, resolved, select_launcher_patch(repo, upstream), args.modem))
+      print(compose_inputs(repo, upstream, resolved, args.tether, args.apn))
     else:
-      commit, inputs = compose(repo, upstream, resolved, args.modem)
+      commit, inputs = compose(repo, upstream, resolved, args.tether, args.apn)
       print(f"{commit}\n{inputs}")
   except (OSError, ValueError, AssertionError, KeyError, subprocess.CalledProcessError, py_compile.PyCompileError) as error:
     print(f"compose: FAIL: {error_text(error)}", file=sys.stderr)

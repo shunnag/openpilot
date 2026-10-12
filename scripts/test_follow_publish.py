@@ -226,7 +226,8 @@ class TransactionTests(unittest.TestCase):
 
   def test_allowlist_checks_final_commit_before_every_push(self):
     for path in ('.github/workflows/follow.yml', 'follow/policy.json', 'follow/reference/test.txt', 'scripts/pins.py',
-                 'agnos/pins.json', *(f'patches/{p.name}' for p in LAUNCHER_PATCHES), 'userspace/wpa_supplicant', 'other.txt'):
+                 'agnos/pins.json', *(f'patches/{p.name}' for p in LAUNCHER_PATCHES), 'patches/tethering-nat.patch',
+                 'patches/apn-auth-release.patch', 'patches/apn-auth-nightly.patch', 'userspace/wpa_supplicant', 'other.txt'):
       with self.subTest(path=path):
         self.remote.events.clear()
         self.remote.disallowed = path

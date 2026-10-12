@@ -32,76 +32,6 @@ AGNOS_FALLBACK = (b'  if not os.path.isfile(manifest_path):  # releases before t
                   b'    manifest_path = os.path.join(OVERLAY_MERGED, "system/hardware/tici/agnos.json")\n')
 OVERLAY_AGNOS_VERIFY = (b"          # releases before the openpilot/ move can't swap AGNOS on newer AGNOS, use ours\n"
                         b'          [ ! -L system/hardware/tici/agnos.json ] && /data/safe_staging/old_openpilot/openpilot/common/hardware/comma/agnos.py --verify system/hardware/tici/agnos.json && sudo reboot\n')
-# Minimal pre-patch modem context; the existing reference tree has no modem.py.
-MODEM_FIXTURE = b'''class Modem:
-  def __init__(self):
-    self._sim_change = False
-    self._apn = ""  # blank = network-provided via PCO
-    self._roaming_allowed = True
-    self.running = True
-    self.S = INITIAL_STATE.copy()
-
-  def _do_initializing(self):
-    if self._at("ATE0") != "OK":
-      logging.warning("AT echo still on, retrying")
-      return State.INITIALIZING
-
-    identity = self._read_identity()
-    if not identity["iccid"] or not identity["imei"]:
-      logging.warning(f"identity read incomplete: {identity}, retrying")
-      return State.INITIALIZING
-
-    self.S.update(identity)
-    self._apn = self._read_param("GsmApn")
-    self._roaming_allowed = self._is_roaming_allowed()
-    # blank APN lets the carrier supply one via PCO
-    self._at(f'AT+CGDCONT={DIAL_CID},"IP","{self._apn}"')
-    logging.info(f"APN '{self._apn or '(network-provided)'}' written to CID {DIAL_CID}, roaming={'on' if self._roaming_allowed else 'off'}")
-    return State.SEARCHING
-
-  def _read_identity(self):
-    imei, iccid, mcc_mnc, modem_version = "", "", "", ""
-    logging.info(f"imei={imei} iccid={iccid} mcc_mnc={mcc_mnc} ver={modem_version}")
-    return {"imei": imei, "iccid": iccid, "mcc_mnc": mcc_mnc, "modem_version": modem_version}
-
-  def _do_searching(self):
-    new_roaming = self._is_roaming_allowed()
-    if new_roaming != self._roaming_allowed:
-      logging.info(f"roaming changed: {self._roaming_allowed} -> {new_roaming}")
-      self._roaming_allowed = new_roaming
-
-    v = self._atv("AT+CREG?", "+CREG:")
-    if not v:
-      return self._searching_idle()
-
-    reg = self._parse_reg(v)
-    greg = self._parse_reg(self._atv("AT+CGREG?", "+CGREG:") or "")
-    logging.debug(f"creg={reg} cgreg={greg} roaming_allowed={self._roaming_allowed}")
-
-    if reg == "roaming" and not self._roaming_allowed:
-      self._publish_state(registration=reg)
-      return State.SEARCHING
-
-    if reg:
-      self._publish_state(registration=reg)
-    return self._searching_idle()
-
-  def _searching_idle(self):
-    if self._sim_change or not os.path.exists(AT_PORT):
-      logging.info(f"-> reconnecting (sim_change={self._sim_change} port={os.path.exists(AT_PORT)})")
-      return State.DISCONNECTING
-    return State.SEARCHING
-
-  def _do_connecting(self):
-    logging.info("starting pppd")
-    self._ppp.reset_fail_counter()
-    self._sim_change = False
-    self._ppp.start()
-    return State.CONNECTED
-
-'''
-
-
 class TestCompose(unittest.TestCase):
   @classmethod
   def setUpClass(cls):
@@ -189,7 +119,7 @@ class TestCompose(unittest.TestCase):
     self.assertNotEqual(inputs, self.inputs)
     message = compose.git(self.repo, "show", "-s", "--format=%B", commit).decode().strip()
     self.assertTrue(message.endswith("WPA3-Pin: pinned 19.8\nWPA3-Launcher-Patch: launcher-wpa3-release.patch\n"
-                                     "WPA3-Modem-Patch: off\nWPA3-Boot-Build: manual"))
+                                     "WPA3-Tethering-Patch: off\nWPA3-APN-Patch: off\nWPA3-Boot-Build: manual"))
     launcher = compose.blob(self.repo, commit, "launch_chffrplus.sh")
     nightly_launcher = compose.blob(self.repo, self.commit, "launch_chffrplus.sh")
 
@@ -358,7 +288,7 @@ class TestCompose(unittest.TestCase):
     message = compose.git(self.repo, "show", "-s", "--format=%B", self.commit).decode()
     self.assertEqual(message.strip(), f"Synthetic upstream + WPA3\n\nUpstream-Commit: {self.upstream}\n"
                      f"WPA3-Inputs: {self.inputs}\nWPA3-AGNOS: {self.pin['release_tag']}\nWPA3-Pin: pinned 19.8\n"
-                     "WPA3-Launcher-Patch: launcher-wpa3.patch\nWPA3-Modem-Patch: off\nWPA3-Boot-Build: manual")
+                     "WPA3-Launcher-Patch: launcher-wpa3.patch\nWPA3-Tethering-Patch: off\nWPA3-APN-Patch: off\nWPA3-Boot-Build: manual")
     self.assertEqual(compose.git(self.repo, "show", "-s", "--format=%an <%ae>|%cn <%ce>", self.commit).decode().strip(),
                      "openpilot-wpa3-bot <shunnag@users.noreply.github.com>|openpilot-wpa3-bot <shunnag@users.noreply.github.com>")
     print(f"\nDeterministic compose SHA (two runs): {self.commit}\nWPA3-Inputs: {self.inputs}")
@@ -544,173 +474,287 @@ class TestCompose(unittest.TestCase):
     self.assertFalse((self.repo / "index").exists())
     self.assertFalse((self.repo / "launch_env.sh").exists())
 
-  def modem_upstream(self, data=MODEM_FIXTURE):
+  def apn_upstream(self, variant="release"):
+    # Local reference files from op-prebuilt 0ea343233 and op-ui 6f4c0faf1;
+    # retain only the six existing runtime files needed by the two patches.
+    fixture = ROOT / "ref/apn-auth" / variant
     with compose.temporary_index(self.repo, self.upstream) as (env, _):
-      compose.put_blob(self.repo, env, compose.MODEM_PY, data, mode="100755")
+      for path in sorted(compose.APN_ALLOWED):
+        source = fixture / path
+        if source.is_file():
+          compose.put_blob(self.repo, env, path, source.read_bytes(),
+                           mode="100755" if path.endswith("/modem.py") else "100644")
       tree = compose.git(self.repo, "write-tree", env=env).decode().strip()
-      return compose.git(self.repo, "commit-tree", tree, data=b"Upstream modem\n", env=self.identity).decode().strip()
+      return compose.git(self.repo, "commit-tree", tree, data=b"Upstream APN runtime\n", env=self.identity).decode().strip()
 
-  def patched_modem(self, upstream):
+  def stacked_tree(self, upstream, tether=False, apn=False):
     with compose.temporary_index(self.repo, upstream) as (env, _):
-      compose.git(self.repo, "apply", "--cached", "--whitespace=error", str(compose.MODEM_PATCH), env=env)
-      return compose.git(self.repo, "show", f":{compose.MODEM_PY}", env=env)
+      compose.apply_ui(self.repo, env)
+      if tether:
+        compose.apply_tether(self.repo, env)
+      if apn:
+        selected = compose.select_apn_patch(self.repo, compose.git(self.repo, "write-tree", env=env).decode().strip())
+        compose.git(self.repo, "apply", "--cached", "--whitespace=error", str(selected), env=env)
+      return compose.git(self.repo, "write-tree", env=env).decode().strip()
 
-  def assert_modem_trailer(self, commit, result):
-    message = compose.git(self.repo, "show", "-s", "--format=%B", commit).decode()
-    self.assertIn(f"WPA3-Launcher-Patch: launcher-wpa3.patch\nWPA3-Modem-Patch: {result}\n", message)
-    self.assertEqual(message.count("WPA3-Modem-Patch:"), 1)
+  def assert_patch_hold(self, upstream, flags, reason):
+    for script, extra, prefix in (("compose.py", (), "compose"), ("compose.py", ("--inputs-only",), "compose"),
+                                  ("gates.py", ("--skip-download",), "G5")):
+      with self.subTest(script=script, extra=extra):
+        result = self.cli(script, upstream, *flags, *extra, check=False)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn(f"{prefix}: FAIL:", result.stderr)
+        self.assertIn(reason, result.stderr)
+        if script == "compose.py":
+          self.assertEqual(result.stdout, "")
 
-  def test_modem_applied(self):
-    upstream = self.modem_upstream()
-    expected = self.patched_modem(upstream)
-    self.assertEqual(len(expected.splitlines()) - len(MODEM_FIXTURE.splitlines()), 39)
-    result = self.cli("compose.py", upstream, "--modem", "apply")
+  def test_tether_applies_after_ui(self):
+    flags = ("--tether", "apply")
+    result = self.cli("compose.py", self.upstream, *flags)
     commit, inputs = result.stdout.splitlines()
-    self.assertEqual(self.cli("compose.py", upstream, "--modem", "apply").stdout, result.stdout)
-    self.assertEqual(self.cli("compose.py", upstream, "--modem", "apply", "--inputs-only").stdout.strip(), inputs)
-    self.assertEqual(compose.blob(self.repo, commit, compose.MODEM_PY), expected)
-    self.assertTrue(compose.git(self.repo, "ls-tree", commit, "--", compose.MODEM_PY).startswith(b"100755 blob "))
-    self.assert_modem_trailer(commit, "applied")
-    skipped = self.cli("compose.py", upstream, "--modem", "skip").stdout.splitlines()[0]
-    self.assertEqual(compose.git(self.repo, "diff-tree", "--no-commit-id", "-r", "--name-only", skipped, commit).decode().splitlines(),
-                     [compose.MODEM_PY])
-    result = self.cli("gates.py", upstream, "--skip-download", "--modem", "apply")
-    self.assertIn("G5: OK: modem patch applies cleanly\n", result.stdout)
-    with compose.temporary_index(self.repo, upstream) as (env, _):
+    self.assertEqual(self.cli("compose.py", self.upstream, *flags).stdout, result.stdout)
+    self.assertEqual(self.cli("compose.py", self.upstream, *flags, "--inputs-only").stdout.strip(), inputs)
+    wifi = "openpilot/system/ui/lib/wifi_manager.py"
+    expected = self.stacked_tree(self.upstream, tether=True)
+    self.assertEqual(compose.blob(self.repo, commit, wifi), compose.blob(self.repo, expected, wifi))
+    self.assertEqual(len(compose.blob(self.repo, commit, wifi).splitlines()) -
+                     len(compose.blob(self.repo, self.commit, wifi).splitlines()), 18)
+    self.assertEqual(set(compose.git(self.repo, "diff-tree", "--no-commit-id", "-r", "--name-only", self.commit, commit).decode().splitlines()),
+                     compose.TETHER_ALLOWED | {wifi})
+    result = self.cli("gates.py", self.upstream, "--skip-download", *flags)
+    self.assertIn("G5: OK: tethering patch applies cleanly\n", result.stdout)
+    with compose.temporary_index(self.repo, self.upstream) as (env, _):
+      compose.apply_ui(self.repo, env)
       before = compose.git(self.repo, "write-tree", env=env)
-      self.assertEqual(compose.apply_modem(self.repo, env, check=True), "applies cleanly")
+      self.assertEqual(compose.apply_tether(self.repo, env, check=True), "applies cleanly")
       self.assertEqual(compose.git(self.repo, "write-tree", env=env), before)
 
-  def test_modem_already_upstream(self):
-    expected = self.patched_modem(self.modem_upstream())
-    upstream = self.modem_upstream(expected)
-    commit = self.cli("compose.py", upstream, "--modem", "apply").stdout.splitlines()[0]
-    self.assertEqual(compose.blob(self.repo, commit, compose.MODEM_PY), expected)
-    self.assert_modem_trailer(commit, "already upstream")
-    result = self.cli("gates.py", upstream, "--skip-download", "--modem", "apply")
-    self.assertIn("G5: OK: modem patch already upstream\n", result.stdout)
+  def test_tether_without_ui_context_fails_atomically(self):
+    for check in (False, True):
+      with self.subTest(check=check), compose.temporary_index(self.repo, self.upstream) as (env, _):
+        before = compose.git(self.repo, "write-tree", env=env)
+        with self.assertRaises(subprocess.CalledProcessError):
+          compose.apply_tether(self.repo, env, check=check)
+        self.assertEqual(compose.git(self.repo, "write-tree", env=env), before)
+    with patch.object(compose, "apply_ui"), self.assertRaises(subprocess.CalledProcessError):
+      compose.compose(self.repo, self.upstream, self.resolved, tether="apply")
+    with patch.object(compose, "apply_ui"), self.assertRaises(subprocess.CalledProcessError):
+      compose.compose_inputs(self.repo, self.upstream, self.resolved, tether="apply")
+    with patch.object(gates, "apply_ui"), patch("sys.stdout", new_callable=io.StringIO), patch("sys.stderr", new_callable=io.StringIO) as stderr:
+      self.assertEqual(gates.run_gates(self.repo, self.upstream, self.pin_file, skip_download=True, tether="apply"), 1)
+      self.assertIn("G5: FAIL:", stderr.getvalue())
 
-  def test_modem_does_not_apply(self):
-    # Only the last hunk conflicts, so this also proves no earlier hunk leaks in.
-    drift = MODEM_FIXTURE.replace(b'logging.info("starting pppd")', b'logging.info("starting new pppd")')
-    for upstream in (self.modem_upstream(drift), self.upstream):
-      with self.subTest(upstream=upstream):
-        result = self.cli("compose.py", upstream, "--modem", "apply")
-        commit, _ = result.stdout.splitlines()
-        self.assertIn("modem patch: skipped (does not apply)", result.stderr)
-        self.assert_modem_trailer(commit, "skipped (does not apply)")
-        self.assertEqual(compose.git(self.repo, "ls-tree", commit, "--", compose.MODEM_PY),
-                         compose.git(self.repo, "ls-tree", upstream, "--", compose.MODEM_PY))
-        skipped = self.cli("compose.py", upstream, "--modem", "skip").stdout.splitlines()[0]
-        self.assertEqual(compose.git(self.repo, "rev-parse", commit + "^{tree}"),
-                         compose.git(self.repo, "rev-parse", skipped + "^{tree}"))
-        result = self.cli("gates.py", upstream, "--skip-download", "--modem", "apply")
-        self.assertIn("G5: SKIP: modem patch skipped (does not apply)\n", result.stdout)
+  def test_tether_already_upstream_holds(self):
+    upstream = self.stacked_tree(self.upstream, tether=True)
+    with compose.temporary_index(self.repo, upstream) as (env, _):
+      before = compose.git(self.repo, "write-tree", env=env)
+      for check in (False, True):
+        with self.assertRaisesRegex(ValueError, "tethering patch already upstream"):
+          compose.apply_tether(self.repo, env, check=check)
+      self.assertEqual(compose.git(self.repo, "write-tree", env=env), before)
+    upstream = compose.git(self.repo, "commit-tree", upstream, data=b"Upstream tether\n", env=self.identity).decode().strip()
+    # ui-wpa3's reverse context overlaps the new helper, so composition can
+    # hold at the UI check before reaching the tether reverse check above.
+    self.assert_patch_hold(upstream, ("--tether", "apply"), "patch does not apply")
 
-  def test_modem_skip_preserves_legacy_tree_and_inputs(self):
-    # Tree recorded with these reference fixtures before modem support was added.
+  def test_apn_selection_is_exclusive_and_stacked(self):
+    for variant, matching in zip(("release", "nightly"), compose.APN_PATCHES):
+      upstream = self.apn_upstream(variant)
+      for tether in (False, True):
+        with self.subTest(variant=variant, tether=tether):
+          stacked = self.stacked_tree(upstream, tether=tether)
+          self.assertEqual(compose.select_apn_patch(self.repo, stacked), matching)
+          with compose.temporary_index(self.repo, stacked) as (env, _):
+            before = compose.git(self.repo, "write-tree", env=env)
+            for candidate in compose.APN_PATCHES:
+              if candidate == matching:
+                compose.git(self.repo, "apply", "--cached", "--check", "--whitespace=error", str(candidate), env=env)
+              else:
+                with self.assertRaises(subprocess.CalledProcessError):
+                  compose.git(self.repo, "apply", "--cached", "--check", str(candidate), env=env)
+            self.assertEqual(compose.git(self.repo, "write-tree", env=env), before)
+          flags = ("--tether", "apply" if tether else "off", "--apn", "auto")
+          commit, inputs = self.cli("compose.py", upstream, *flags).stdout.splitlines()
+          self.assertEqual(self.cli("compose.py", upstream, *flags, "--inputs-only").stdout.strip(), inputs)
+          baseline = self.cli("compose.py", upstream).stdout.splitlines()[0]
+          expected_paths = compose.APN_ALLOWED | (compose.TETHER_ALLOWED | {"openpilot/system/ui/lib/wifi_manager.py"} if tether else set())
+          self.assertEqual(set(compose.git(self.repo, "diff-tree", "--no-commit-id", "-r", "--name-only", baseline, commit).decode().splitlines()), expected_paths)
+          expected = self.stacked_tree(upstream, tether=tether, apn=True)
+          for path in expected_paths:
+            self.assertEqual(compose.blob(self.repo, commit, path), compose.blob(self.repo, expected, path))
+          message = compose.git(self.repo, "show", "-s", "--format=%B", commit).decode()
+          self.assertIn("WPA3-Launcher-Patch: launcher-wpa3.patch\n"
+                        f"WPA3-Tethering-Patch: {'applied' if tether else 'off'}\n"
+                        f"WPA3-APN-Patch: {matching.name} applied\nWPA3-Boot-Build: manual\n", message)
+          self.assertNotIn("WPA3-Modem-Patch", message)
+          result = self.cli("gates.py", upstream, "--skip-download", *flags)
+          self.assertIn(f"G5: OK: APN patch {matching.name} applies cleanly\n", result.stdout)
+          if tether:
+            self.assertIn("G5: OK: tethering patch applies cleanly\n", result.stdout)
+
+  def test_apn_no_match_holds_compose_gates_and_inputs(self):
+    upstream = self.apn_upstream()
+    drifted = self.variant_many({"openpilot/selfdrive/ui/mici/layouts/settings/network/network_layout.py": b"# incompatible layout\n"}, upstream)
+    for base in (self.upstream, drifted):
+      with self.subTest(base=base), self.assertRaisesRegex(ValueError, "no APN patch applies"):
+        compose.select_apn_patch(self.repo, self.stacked_tree(base, tether=True))
+      self.assert_patch_hold(base, ("--tether", "apply", "--apn", "auto"), "no APN patch applies")
+
+  def test_ambiguous_apn_holds_compose_gates_and_inputs(self):
+    upstream = self.apn_upstream()
+    duplicate = self.work / "duplicate-apn.patch"
+    duplicate.write_bytes(compose.APN_PATCHES[0].read_bytes())
+    with patch.object(compose, "APN_PATCHES", (compose.APN_PATCHES[0], duplicate)):
+      with self.assertRaisesRegex(ValueError, "more than one APN patch applies"):
+        compose.select_apn_patch(self.repo, self.stacked_tree(upstream))
+      with self.assertRaisesRegex(ValueError, "more than one APN patch applies"):
+        compose.compose(self.repo, upstream, self.resolved, tether="apply", apn="auto")
+      for module, extra, prefix in ((compose, (), "compose"), (compose, ("--inputs-only",), "compose"),
+                                    (gates, ("--skip-download",), "G5")):
+        argv = [str(module.__file__), "--repo", str(self.repo), "--upstream", upstream, "--pin-file", str(self.pin_file),
+                "--tether", "apply", "--apn", "auto", *extra]
+        with self.subTest(module=module.__name__, extra=extra), patch("sys.argv", argv), \
+             patch("sys.stdout", new_callable=io.StringIO), patch("sys.stderr", new_callable=io.StringIO) as stderr:
+          self.assertEqual(module.main(), 1)
+          self.assertIn(f"{prefix}: FAIL: more than one APN patch applies:", stderr.getvalue())
+
+  def test_apn_already_upstream_holds_even_with_forward_candidate(self):
+    upstream = self.apn_upstream()
+    stacked = self.stacked_tree(upstream, apn=True)
+    with self.assertRaisesRegex(ValueError, "APN patch already upstream"):
+      compose.select_apn_patch(self.repo, stacked)
+    # A separate forward candidate cannot hide a reverse-matching APN patch.
+    forward = self.work / "forward-apn.patch"
+    forward.write_text('diff --git a/new.py b/new.py\nnew file mode 100644\n--- /dev/null\n+++ b/new.py\n@@ -0,0 +1 @@\n+pass\n')
+    with patch.object(compose, "APN_PATCHES", (compose.APN_PATCHES[0], forward)), self.assertRaisesRegex(ValueError, "APN patch already upstream"):
+      compose.select_apn_patch(self.repo, stacked)
+    upstream = compose.git(self.repo, "commit-tree", stacked, data=b"Upstream APN\n", env=self.identity).decode().strip()
+    self.assert_patch_hold(upstream, ("--apn", "auto"), "APN patch already upstream")
+
+  def test_off_preserves_legacy_tree_and_inputs(self):
     self.assertEqual(compose.git(self.repo, "rev-parse", self.commit + "^{tree}").decode().strip(),
                      "21947e1d726a6a0087f9281cf163158cf9231059")
-    upstream = self.modem_upstream()
-    result = self.cli("compose.py", upstream, "--modem", "skip")
-    self.assertEqual(self.cli("compose.py", upstream).stdout, result.stdout)
+    result = self.cli("compose.py", self.upstream, "--tether", "off", "--apn", "off")
+    self.assertEqual(result.stdout.splitlines(), [self.commit, self.inputs])
     self.assertEqual(result.stderr, "")
-    commit, inputs = result.stdout.splitlines()
-    self.assert_modem_trailer(commit, "off")
-    with compose.temporary_index(self.repo, self.commit) as (env, _):
-      compose.put_blob(self.repo, env, compose.MODEM_PY, MODEM_FIXTURE, mode="100755")
-      self.assertEqual(compose.git(self.repo, "write-tree", env=env), compose.git(self.repo, "rev-parse", commit + "^{tree}"))
-    # Pre-modem inputs formula, using identical compose.py bytes on both sides.
-    launcher = compose.select_launcher_patch(self.repo, upstream)
+    launcher = compose.select_launcher_patch(self.repo, self.upstream)
     legacy = {
-      "upstream": upstream,
+      "upstream": self.upstream,
       "patches": {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in (launcher, compose.UI_PATCH)},
       "pin": self.resolved,
       "compose.py": hashlib.sha256(Path(compose.__file__).read_bytes()).hexdigest(),
       "wpa_supplicant.copyright": hashlib.sha256(compose.repo_path(self.pin["wpa_supplicant"]["copyright"]).read_bytes()).hexdigest(),
     }
     expected = hashlib.sha256(json.dumps(legacy, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
-    self.assertEqual(inputs, expected)
-    self.assertEqual(self.cli("compose.py", upstream, "--modem", "skip", "--inputs-only").stdout.strip(), expected)
-    with patch.object(compose, "MODEM_PATCH", self.work / "missing-modem.patch"):
-      self.assertEqual(compose.inputs_hash(upstream, self.resolved, launcher), expected)
-      self.assertEqual(compose.compose(self.repo, upstream, self.resolved), (commit, expected))
-    result = self.cli("gates.py", upstream, "--skip-download", "--modem", "skip")
-    self.assertNotIn("modem patch", result.stdout + result.stderr)
-    self.assertEqual(result.stdout, self.cli("gates.py", upstream, "--skip-download").stdout)
+    self.assertEqual(self.inputs, expected)
+    with patch.object(compose, "TETHER_PATCH", self.work / "missing-tether.patch"), patch.object(compose, "APN_PATCHES", (self.work / "missing-apn.patch",)):
+      self.assertEqual(compose.inputs_hash(self.upstream, self.resolved, launcher), expected)
+      self.assertEqual(compose.compose_inputs(self.repo, self.upstream, self.resolved), expected)
+      self.assertEqual(compose.compose(self.repo, self.upstream, self.resolved), (self.commit, expected))
+    result = self.cli("gates.py", self.upstream, "--skip-download", "--tether", "off", "--apn", "off")
+    self.assertEqual(result.stdout, self.cli("gates.py", self.upstream, "--skip-download").stdout)
 
-  def test_modem_inputs_hash_covers_mode_and_patch(self):
-    launcher = compose.select_launcher_patch(self.repo, self.upstream)
-    copied = self.work / compose.MODEM_PATCH.name
-    copied.write_bytes(compose.MODEM_PATCH.read_bytes())
-    with patch.object(compose, "MODEM_PATCH", copied):
-      applied = compose.inputs_hash(self.upstream, self.resolved, launcher, modem="apply")
-      self.assertNotEqual(applied, self.inputs)
-      copied.write_bytes(copied.read_bytes() + b"\n")
-      self.assertNotEqual(compose.inputs_hash(self.upstream, self.resolved, launcher, modem="apply"), applied)
-      self.assertEqual(compose.inputs_hash(self.upstream, self.resolved, launcher, modem="skip"), self.inputs)
+  def test_network_inputs_cover_modes_bytes_and_selected_name(self):
+    upstream = self.apn_upstream()
+    launcher = compose.select_launcher_patch(self.repo, upstream)
+    selected = compose.select_apn_patch(self.repo, self.stacked_tree(upstream))
+    baseline = compose.inputs_hash(upstream, self.resolved, launcher)
+    tether = compose.inputs_hash(upstream, self.resolved, launcher, tether="apply")
+    apn = compose.inputs_hash(upstream, self.resolved, launcher, apn="auto", apn_patch=selected)
+    both = compose.inputs_hash(upstream, self.resolved, launcher, tether="apply", apn="auto", apn_patch=selected)
+    self.assertEqual(len({baseline, tether, apn, both}), 4)
+    with self.assertRaisesRegex(ValueError, "selected patch"):
+      compose.inputs_hash(upstream, self.resolved, launcher, apn="auto")
+    with patch.object(compose.json, "dumps", wraps=json.dumps) as dumps:
+      compose.inputs_hash(upstream, self.resolved, launcher, tether="apply", apn="auto", apn_patch=selected)
+      payload = dumps.call_args.args[0]
+    self.assertEqual(payload["tether"], "apply")
+    self.assertEqual(payload["tether_patch"], hashlib.sha256(compose.TETHER_PATCH.read_bytes()).hexdigest())
+    self.assertEqual(payload["apn"], "auto")
+    self.assertEqual(payload["apn_patch"], selected.name)
+    self.assertEqual(payload["apn_patch_sha256"], hashlib.sha256(selected.read_bytes()).hexdigest())
+    self.assertEqual(set(payload["patches"]), {launcher.name, compose.UI_PATCH.name})
+    for original, keyword in ((compose.TETHER_PATCH, "tether"), (selected, "apn")):
+      copied = self.work / original.name
+      copied.write_bytes(original.read_bytes())
+      with patch.object(compose, "TETHER_PATCH", copied if keyword == "tether" else compose.TETHER_PATCH):
+        chosen = copied if keyword == "apn" else selected
+        before = compose.inputs_hash(upstream, self.resolved, launcher, tether="apply", apn="auto", apn_patch=chosen)
+        self.assertEqual(before, both)
+        copied.write_bytes(copied.read_bytes() + b"\n")
+        self.assertNotEqual(compose.inputs_hash(upstream, self.resolved, launcher, tether="apply", apn="auto", apn_patch=chosen), before)
+        self.assertEqual(compose.inputs_hash(upstream, self.resolved, launcher), baseline)
+    renamed = self.work / "renamed-apn.patch"
+    renamed.write_bytes(selected.read_bytes())
+    with patch.object(compose, "APN_PATCHES", (renamed,)):
+      self.assertEqual(compose.select_apn_patch(self.repo, self.stacked_tree(upstream)), renamed)
+      self.assertNotEqual(compose.compose_inputs(self.repo, upstream, self.resolved, apn="auto"), apn)
 
-  def test_modem_post_checks_require_applied(self):
-    upstream = self.modem_upstream()
+  def test_network_allowlists_require_applied_in_pinned_and_native_modes(self):
+    upstream = self.apn_upstream()
     for resolved in (self.resolved, {"mode": "native", "version": self.version}):
-      with self.subTest(mode=resolved["mode"]):
-        commit, _ = compose.compose(self.repo, upstream, resolved, modem="apply")
-        with compose.temporary_index(self.repo, commit) as (_, scratch):
-          for outcome in ("off", "already upstream", "skipped (does not apply)"):
-            with self.subTest(outcome=outcome), self.assertRaisesRegex(ValueError, "unexpected composed change: " + compose.MODEM_PY):
-              compose.post_checks(self.repo, upstream, commit, resolved, scratch, modem_result=outcome)
-          compose.post_checks(self.repo, upstream, commit, resolved, scratch, modem_result="applied")
+      for tether, apn in (("apply", "off"), ("off", "auto"), ("apply", "auto")):
+        with self.subTest(mode=resolved["mode"], tether=tether, apn=apn):
+          commit, _ = compose.compose(self.repo, upstream, resolved, tether=tether, apn=apn)
+          with compose.temporary_index(self.repo, commit) as (_, scratch):
+            results = {"tether_result": "applied" if tether == "apply" else "off", "apn_result": "applied" if apn == "auto" else "off"}
+            compose.post_checks(self.repo, upstream, commit, resolved, scratch, **results)
+            for key in (key for key, value in results.items() if value == "applied"):
+              with self.subTest(result=key), self.assertRaisesRegex(ValueError, "unexpected composed change"):
+                compose.post_checks(self.repo, upstream, commit, resolved, scratch, **{**results, key: "off"})
 
-  def test_modem_post_checks_compile_python(self):
-    upstream = self.modem_upstream()
-    commit, _ = compose.compose(self.repo, upstream, self.resolved, modem="apply")
-    with compose.temporary_index(self.repo, commit) as (env, scratch):
-      compose.put_blob(self.repo, env, compose.MODEM_PY, b"def broken(:\n")
-      tree = compose.git(self.repo, "write-tree", env=env).decode().strip()
-      with self.assertRaises(compose.py_compile.PyCompileError):
-        compose.post_checks(self.repo, upstream, tree, self.resolved, scratch, modem_result="applied")
+  def test_network_post_checks_compile_every_changed_python_file(self):
+    upstream = self.apn_upstream()
+    commit, _ = compose.compose(self.repo, upstream, self.resolved, tether="apply", apn="auto")
+    changed = set(compose.git(self.repo, "diff-tree", "--no-commit-id", "-r", "--name-only", upstream, commit).decode().splitlines())
+    for path in sorted(p for p in changed if p.endswith(".py")):
+      with self.subTest(path=path), compose.temporary_index(self.repo, commit) as (env, scratch):
+        compose.put_blob(self.repo, env, path, b"def broken(:\n")
+        tree = compose.git(self.repo, "write-tree", env=env).decode().strip()
+        with self.assertRaises(compose.py_compile.PyCompileError):
+          compose.post_checks(self.repo, upstream, tree, self.resolved, scratch, tether_result="applied", apn_result="applied")
 
-  def test_modem_whitespace_error_is_skipped(self):
-    upstream = self.modem_upstream()
-    bad_patch = self.work / "modem-whitespace.patch"
-    original = compose.MODEM_PATCH.read_bytes()
-    bad_patch.write_bytes(original.replace(b'+      self._at("AT+COPS=0")\n', b'+      self._at("AT+COPS=0") \n'))
-    self.assertNotEqual(original, bad_patch.read_bytes())
-    with patch.object(compose, "MODEM_PATCH", bad_patch), patch("sys.stderr", new_callable=io.StringIO) as stderr:
+  def test_network_whitespace_errors_hold_atomically(self):
+    upstream = self.apn_upstream()
+    for original in (compose.TETHER_PATCH, compose.APN_PATCHES[0]):
+      is_tether = original == compose.TETHER_PATCH
+      bad = self.work / ("bad-" + original.name)
+      lines = original.read_bytes().splitlines(keepends=True)
+      added = next(i for i, line in enumerate(lines) if line.startswith(b"+") and not line.startswith(b"+++"))
+      lines[added] = lines[added].rstrip(b"\n") + b" \n"
+      bad.write_bytes(b"".join(lines))
       for check in (False, True):
-        with self.subTest(check=check), compose.temporary_index(self.repo, upstream) as (env, _):
+        with self.subTest(patch=original.name, check=check), compose.temporary_index(self.repo, upstream) as (env, _):
+          compose.apply_ui(self.repo, env)
           before = compose.git(self.repo, "write-tree", env=env)
-          self.assertEqual(compose.apply_modem(self.repo, env, check=check), "skipped (does not apply)")
+          with self.assertRaises(subprocess.CalledProcessError):
+            compose.git(self.repo, "apply", "--cached", "--whitespace=error", *(["--check"] if check else []), str(bad), env=env)
           self.assertEqual(compose.git(self.repo, "write-tree", env=env), before)
-      self.assertIn("whitespace", stderr.getvalue())
+      with patch.object(compose, "TETHER_PATCH", bad if is_tether else compose.TETHER_PATCH), \
+           patch.object(compose, "APN_PATCHES", compose.APN_PATCHES if is_tether else (bad,)):
+        for action in (compose.compose, compose.compose_inputs):
+          with self.assertRaises((ValueError, subprocess.CalledProcessError)):
+            action(self.repo, upstream, self.resolved, tether="apply", apn="auto")
+        with patch("sys.stdout", new_callable=io.StringIO), patch("sys.stderr", new_callable=io.StringIO) as stderr:
+          self.assertEqual(gates.run_gates(self.repo, upstream, self.pin_file, skip_download=True, tether="apply", apn="auto"), 1)
+          self.assertIn("G5: FAIL:", stderr.getvalue())
 
-  def test_modem_workflow_modes_and_skip_diagnostic(self):
+  def test_network_workflow_records_hold_diagnostic(self):
     workflow = (ROOT / ".github/workflows/nightly.yml").read_text()
-    selector = 'case "$BRANCH" in' + workflow.split('case "$BRANCH" in', 1)[1].split("esac", 1)[0] + "esac"
-    for branch in ("nightly", "nightly-chestnut", "release-mici-staging", "release-tizi-staging"):
-      result = subprocess.run(["bash", "-eu", "-c", selector + '\nprintf "%s" "$MODEM"'],
-                              env={**os.environ, "BRANCH": branch}, text=True, capture_output=True, check=True)
-      self.assertEqual(result.stdout, "skip" if branch == "release-tizi-staging" else "apply")
-    consumers = [line.strip() for line in workflow.splitlines() if "scripts/compose.py" in line or "scripts/gates.py" in line]
-    self.assertEqual(len(consumers), 3)
-    for line in consumers:
-      self.assertIn('--modem "$MODEM"', line)
-    # Exercise the actual workflow pipeline with a real, non-applicable modem patch.
     step = next(step for step in workflow.split("      - ") if "id: compose\n" in step)
     pipeline = textwrap.dedent(step.split("        run: |\n", 1)[1].split("          mapfile", 1)[0])
+    # Match the workflow's python3 command to this suite's interpreter.
+    pipeline = pipeline.replace("python3 scripts/", f"{sys.executable} scripts/")
     with tempfile.TemporaryDirectory(dir=self.work) as directory:
       log = Path(directory) / "nightly.log"
       (Path(directory) / "pin.json").write_bytes(self.pin_file.read_bytes())
       result = subprocess.run(["bash", "-eo", "pipefail", "-c", pipeline], cwd=ROOT, text=True, capture_output=True,
-                              env={**os.environ, "BARE_REPO": str(self.repo), "UPSTREAM": self.upstream, "MODEM": "apply",
+                              env={**os.environ, "BARE_REPO": str(self.repo), "UPSTREAM": self.upstream, "TETHER": "apply", "APN": "auto",
                                    "RUNNER_TEMP": directory, "NIGHTLY_LOG": str(log)})
-      self.assertEqual(result.returncode, 0, result.stderr)
-      commit, inputs = (Path(directory) / "composed.txt").read_text().splitlines()
-      self.assertRegex(commit, r"^[0-9a-f]{40}$")
-      self.assertRegex(inputs, r"^[0-9a-f]{64}$")
-      self.assertIn("modem patch: skipped (does not apply)", result.stdout)
-      self.assertIn("modem patch: skipped (does not apply)", log.read_text())
-      self.assert_modem_trailer(commit, "skipped (does not apply)")
+      self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+      self.assertEqual((Path(directory) / "composed.txt").read_text(), "")
+      self.assertIn("compose: FAIL: no APN patch applies", result.stdout)
+      self.assertIn("compose: FAIL: no APN patch applies", log.read_text())
 
   def test_ui_patch_already_applied(self):
     with compose.temporary_index(self.repo, self.upstream) as (env, _):

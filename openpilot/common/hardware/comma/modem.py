@@ -501,8 +501,11 @@ class Modem:
       try:
         fields = next(csv.reader([line.split(":", 1)[1].strip()], skipinitialspace=True, strict=True))
         if self._auth_command == "CGAUTH":
-          return int(fields[1]), fields[2] if len(fields) > 2 else "", (fields[3] or None) if len(fields) > 3 else None
-        return int(fields[4]), fields[2], fields[3] or None
+          protocol, user = int(fields[1]), fields[2] if len(fields) > 2 else ""
+          password = fields[3] if len(fields) > 3 else None
+        else:
+          protocol, user, password = int(fields[4]), fields[2], fields[3]
+        return protocol, user, password if protocol == 0 else password or None
       except (ValueError, IndexError, csv.Error):
         return None
     return None
@@ -518,7 +521,7 @@ class Modem:
       return
     protocol, user, password = self._auth
     if self._auth_command == "CGAUTH":
-      cmd = f"AT+CGAUTH={DIAL_CID},0" if protocol == 0 else f'AT+CGAUTH={DIAL_CID},{protocol},"{user}","{password}"'
+      cmd = f'AT+CGAUTH={DIAL_CID},0,"",""' if protocol == 0 else f'AT+CGAUTH={DIAL_CID},{protocol},"{user}","{password}"'
     else:
       cmd = f'AT+QICSGP={DIAL_CID},1,"{self._apn}","{user}","{password}",{protocol}'
     self._at(cmd, shown=f"AT+{self._auth_command}={DIAL_CID},<redacted>")

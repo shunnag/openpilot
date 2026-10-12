@@ -3,7 +3,7 @@
 対象：ユーザー名とパスワードが要る SIM を持っている comma four／comma 3X のテスター
 対象のソフト：試験版ブランチ `modem-auth-test`（openpilot の master ＋ modem.py の 2 つの修正）
 
-> **この試験版は、まだ誰の実機でも動かしていません。** 作った側も手元の comma four（認証が要らない SoftBank の SIM）で同時に確かめていて、分かったことはマニュアルに書き足します。うまく動かないことも、ログを取ることも、この試験の目的です。運転中には使わず、駐車中に試してください。
+> **認証が要る SIM では、まだ誰も試していません。** 作った側が comma four（認証が要らない SoftBank の SIM）で、設定する・つながる・消すの流れと、パスワードがログに出ないことを確かめました（10/12）。ただし、この SIM の網はユーザー名とパスワードを確かめないので、認証に失敗したときの動きはまだ分かっていません。分かったことはマニュアルに書き足します。うまく動かないことも、ログを取ることも、この試験の目的です。運転中には使わず、駐車中に試してください。
 
 ---
 
@@ -146,15 +146,16 @@ tmux capture-pane -p -J -S - -t comma | grep ' modem: ' | tail -40
 | ログ | 意味 |
 |---|---|
 | `APN auth settings changed` | 設定の変化に気づいた |
-| `APN auth requires re-attach` | モデムに入っていた値と違うので、つなぎ直す準備をした |
+| `APN auth requires re-attach` | モデムに入っていた値と違うので、つなぎ直す準備をした（2 行続けて出ることがある） |
 | `APN auth via CGAUTH: protocol=chap, readback protocol ok=True, user ok=True, password ok=True` | comma four：書き込みと読み返しが一致した |
 | `APN auth via QICSGP: ...` | comma 3X：同じく（3X は別のコマンドを使います） |
-| `... password not shown` | モデムがパスワードを読み返しで見せなかった（異常ではない） |
+| `... password not shown` | モデムがパスワードを読み返しで見せなかった（異常ではない。comma four のモデムは見せるので、`password ok=True` になるはず） |
 | `... user ok=False` | **重要。** ユーザー名の `@` などが、モデムの中で別の文字に変わった可能性。必ず報告してください |
 | `registration denied, re-attaching ...` / `registration stalled, re-attaching ...` | つなぎ直しをした（多くて 2 回） |
 | `last network cause (AT+CEER, may be stale): [...]` | 網から返された最後の理由。古い値のこともある |
 | `modem has no APN auth command` | このモデムでは認証を設定できなかった。**必ず報告してください** |
 | `GsmUsername rejected (unsupported character)` など | 使えない文字が入っている（`"`、`\`、`,`、空白、全角など）。値は出ません |
+| `PPP fail 1/3, retrying`（設定を変えた直後に 1 回） | 前の接続を止めたときの合図を、新しい接続が受け取ったため。2 回目でつながれば異常ではない |
 | `GsmUsername/GsmPassword set but GsmAuth is empty` | 認証タイプ（chap／pap）が入っていないので、ユーザー名とパスワードを使っていない。`set_apn_auth.sh` で入れ直す |
 
 ### AT+CEER の読み方（数字だけ見る）

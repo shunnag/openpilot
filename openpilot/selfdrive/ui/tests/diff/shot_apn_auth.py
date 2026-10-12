@@ -3,6 +3,7 @@
 
 SCALE=1 python3 openpilot/selfdrive/ui/tests/diff/shot_apn_auth.py /tmp/apn_auth_shots/mici
 BIG=1 SCALE=0.75 python3 openpilot/selfdrive/ui/tests/diff/shot_apn_auth.py /tmp/apn_auth_shots/tizi
+Add --lang ja to render translated strings in Japanese.
 """
 import argparse
 import os
@@ -22,9 +23,13 @@ from openpilot.selfdrive.ui.tests.diff.replay import setup_state
 FPS = 60
 
 
-def main(output: Path):
+def main(output: Path, lang: str | None = None):
   output.mkdir(parents=True, exist_ok=True)
   setup_state()
+  if lang is not None:
+    from openpilot.system.ui.lib.multilang import multilang
+    # Select the language before init_window() loads its fallback font.
+    multilang.change_language(lang)
   params = Params()
 
   def seed(populated: bool):
@@ -184,6 +189,7 @@ def main(output: Path):
 if __name__ == "__main__":
   parser = argparse.ArgumentParser(description=__doc__)
   parser.add_argument("output", type=Path)
+  parser.add_argument("--lang", help="Language code for translated strings (e.g. ja)")
   args = parser.parse_args()
   with OpenpilotPrefix():
-    main(args.output)
+    main(args.output, args.lang)

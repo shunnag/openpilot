@@ -1,5 +1,7 @@
 from collections.abc import Callable
 
+from openpilot.common.hardware.comma import apn_auth_store
+
 from openpilot.selfdrive.ui.mici.layouts.settings.network import EsimNetworkButton, WifiNetworkButton
 from openpilot.selfdrive.ui.mici.layouts.settings.network.esim_ui import EsimUI
 from openpilot.selfdrive.ui.mici.layouts.settings.network.wifi_ui import WifiUIMici
@@ -117,6 +119,9 @@ class NetworkLayoutMici(NavScroller):
     self._apn_delete_btn = BigButton("delete apn credentials", "delete")
     self._apn_delete_btn.set_click_callback(self._delete_apn_credentials)
     self._refresh_apn_auth()
+    self._modem_status = None
+    self._modem_status_btn = BigButton("modem status", "view")
+    self._modem_status_btn.set_click_callback(self._show_modem_status)
 
     # ******** Cellular metered toggle ********
     self._cellular_metered_btn = BigParamControl("cellular metered", "GsmMetered", description="Prevent large uploads over the cellular connection.")
@@ -135,6 +140,7 @@ class NetworkLayoutMici(NavScroller):
       self._apn_password_btn,
       self._apn_auth_btn,
       self._apn_delete_btn,
+      self._modem_status_btn,
       self._cellular_metered_btn,
       # */
     ])
@@ -181,49 +187,50 @@ class NetworkLayoutMici(NavScroller):
     dlg = BigInputDialog("enter APN...", current_apn, minimum_length=0, confirm_callback=update_apn)
     gui_app.push_widget(dlg)
 
+  def _show_modem_status(self):
+    from openpilot.selfdrive.ui.mici.layouts.settings.network.modem_status import ModemStatusMici
+    if self._modem_status is None:
+      self._modem_status = ModemStatusMici()
+    gui_app.push_widget(self._modem_status)
+
   def _refresh_apn_auth(self):
-    auth = ui_state.params.get("GsmAuth")
+    auth, self._apn_user, password = apn_auth_store.read()
     self._apn_auth = auth if auth in ("chap", "pap") else "off"
-    self._apn_user = ui_state.params.get("GsmUsername") or ""
-    self._apn_has_password = bool(ui_state.params.get("GsmPassword"))
+    self._apn_has_password = bool(password)
     self._apn_auth_btn.set_value(self._apn_auth)
     self._apn_user_btn.set_value("set" if self._apn_user else "not set")
     self._apn_password_btn.set_value("set" if self._apn_has_password else "not set")
 
   def _delete_apn_credentials(self):
     def clear_credentials():
-      ui_state.params.put("GsmAuth", "none", block=True)
-      ui_state.params.remove("GsmUsername")
-      ui_state.params.remove("GsmPassword")
+      apn_auth_store.write("none", "", "")
       self._refresh_apn_auth()
 
     gui_app.push_widget(ApnCredentialsConfirmDialog(clear_credentials, message="delete the saved apn user name and password?"))
 
   def _set_apn_auth(self, value: str):
-    # BigMultiToggle changes its value before calling us; compare with the cached param.
+    # BigMultiToggle changes its value before calling us; compare with the cached setting.
     if value == self._apn_auth:
       return
-    ui_state.params.put("GsmAuth", "none" if value == "off" else value, block=True)
+    apn_auth_store.write(auth="none" if value == "off" else value)
     self._refresh_apn_auth()
     if value == "off":
       def clear_credentials():
-        ui_state.params.remove("GsmUsername")
-        self._refresh_apn_auth()
-        ui_state.params.remove("GsmPassword")
+        apn_auth_store.write("none", "", "")
         self._refresh_apn_auth()
 
       gui_app.push_widget(ApnCredentialsConfirmDialog(clear_credentials))
 
   def _edit_apn_user(self):
-    self._edit_apn_field("GsmUsername", "enter user name...", self._apn_user)
+    self._edit_apn_field("user", "enter user name...", self._apn_user)
 
   def _edit_apn_password(self):
-    self._edit_apn_field("GsmPassword", "enter password...", "")
+    self._edit_apn_field("password", "enter password...", "")
 
   def _edit_apn_field(self, key: str, hint: str, default_text: str):
     def update(value: str):
       if _valid_auth_field(value):
-        ui_state.params.put(key, value, block=True)
+        apn_auth_store.write(**{key: value})
         self._refresh_apn_auth()
 
     gui_app.push_widget(BigInputDialog(hint, default_text, minimum_length=1, confirm_callback=update,

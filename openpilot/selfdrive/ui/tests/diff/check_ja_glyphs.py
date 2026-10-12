@@ -8,6 +8,8 @@ from openpilot.common.basedir import BASEDIR
 from openpilot.selfdrive.ui.translations.potools import parse_po
 
 APN_AUTH_MSGIDS = (
+  "Modem Status",
+  "VIEW",
   "Enter APN user name",
   "Enter APN password",
   "APN User Name",

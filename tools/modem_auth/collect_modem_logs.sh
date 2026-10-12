@@ -4,7 +4,7 @@ set -euo pipefail
 umask 077
 
 if [[ $(id -u) == 0 ]]; then
-  printf '%s\n' 'Run as comma, not root (tmux and Params belong to comma).' >&2
+  printf '%s\n' 'Run as comma, not root (tmux and credentials belong to comma).' >&2
   exit 1
 fi
 if [[ ! ${PYTHONPATH+x} ]]; then
@@ -16,12 +16,12 @@ fi
 export PYTHONDONTWRITEBYTECODE=1
 OPENPILOT_DIR=${OPENPILOT_DIR:-/data/openpilot}
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-params_dir=${MODEM_PARAMS_DIR:-/data/params/d}
+store_dir=${APN_AUTH_STORE_DIR:-/data/apn_auth}
 at_port=${MODEM_AT_PORT:-/dev/modem_at0}
 at_lock=${MODEM_AT_LOCK:-/dev/shm/modem.lock}
 
 redact() {
-  python3 "$script_dir/modem_at_read.py" --redact-stdin --secrets-from-params --params-dir "$params_dir"
+  python3 "$script_dir/modem_at_read.py" --redact-stdin --secrets-from-store --store-dir "$store_dir"
 }
 
 # Check secret access before collecting anything.
@@ -72,12 +72,13 @@ collect ip_route.txt ip route
 collect ip_rule.txt ip rule
 collect dev_shm.txt ls -l /dev/shm
 collect at_probe.txt python3 "$script_dir/modem_at_read.py" --preset probe \
-  --port "$at_port" --lock "$at_lock" --secrets-from-params --params-dir "$params_dir"
+  --port "$at_port" --lock "$at_lock" --secrets-from-store --store-dir "$store_dir"
 if [[ $(awk '/^> AT\+GMR: / { print ($0 ~ /^> AT\+GMR: EG25/); exit }' "$bundle/at_probe.txt") == 1 ]]; then
   collect at_eg25.txt python3 "$script_dir/modem_at_read.py" --preset eg25 \
-    --port "$at_port" --lock "$at_lock" --secrets-from-params --params-dir "$params_dir"
+    --port "$at_port" --lock "$at_lock" --secrets-from-store --store-dir "$store_dir"
 fi
-collect apn_auth.txt env OPENPILOT_DIR="$OPENPILOT_DIR" bash "$script_dir/set_apn_auth.sh" show
+# Only the summary enters the bundle; never copy the credential directory.
+collect apn_auth.txt python3 "$script_dir/modem_at_read.py" --summary --store-dir "$store_dir"
 
 archive="$bundle.tar.gz"
 if ! tar -czf "$archive" -C "$HOME" "${bundle##*/}" 2>/dev/null; then

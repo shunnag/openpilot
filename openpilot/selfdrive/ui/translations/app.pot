@@ -860,3 +860,6 @@ msgstr ""
 
 msgid "Delete the saved APN user name and password?"
 msgstr ""
+
+msgid "Modem Status"
+msgstr ""

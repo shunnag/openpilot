@@ -235,14 +235,25 @@ def redact_line(line: str, secrets: dict[str, str] | None = None, *, show_auth_v
     return re.sub(r"(?<![\d.])(?:[0-9]{1,3}\.){3}[0-9]{1,3}(?![\d.])", ipv4, line)
 
 
-def load_secrets(params_dir: str | Path) -> dict[str, str]:
-    secrets = {}
-    for key, name in (("GsmUsername", "username"), ("GsmPassword", "password")):
-        try:
-            secrets[name] = (Path(params_dir) / key).read_bytes().decode("utf-8", errors="replace")
-        except FileNotFoundError:
-            continue
-    return secrets
+def load_settings(store_dir: str | Path, *, strict: bool = False) -> tuple[str, str, str]:
+    try:
+        settings = json.loads((Path(store_dir) / "settings.json").read_text())
+        values = tuple(settings.get(key, "") for key in ("auth", "user", "password"))
+        if all(isinstance(value, str) for value in values):
+            return values
+    except FileNotFoundError:
+        return "", "", ""
+    except (ValueError, AttributeError, TypeError):
+        if strict:
+            raise ValueError("Cannot read APN auth store") from None
+    if strict:
+        raise ValueError("Cannot read APN auth store")
+    return "", "", ""
+
+
+def load_secrets(store_dir: str | Path) -> dict[str, str]:
+    _, user, password = load_settings(store_dir, strict=True)
+    return {"username": user, "password": password}
 
 
 @contextlib.contextmanager
@@ -353,31 +364,34 @@ def main(argv=None) -> int:
     parser.add_argument("--port", default="/dev/modem_at0")
     parser.add_argument("--lock", default="/dev/shm/modem.lock")
     parser.add_argument("--lock-timeout", type=nonnegative, default=10.0)
-    parser.add_argument("--params-dir", default="/data/params/d")
-    parser.add_argument("--secrets-from-params", action="store_true")
+    parser.add_argument("--store-dir", default=os.environ.get("APN_AUTH_STORE_DIR", "/data/apn_auth"))
+    parser.add_argument("--secrets-from-store", action="store_true")
+    parser.add_argument("--summary", action="store_true", help="print auth mode and credential presence only")
     parser.add_argument("--show-auth-values", action="store_true", help="developer only: show auth fields with dummy values")
     parser.add_argument("--redact-stdin", action="store_true")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
     if args.show_auth_values:
         print("showing APN auth fields unredacted: use only with dummy values", file=sys.stderr, flush=True)
-        if args.secrets_from_params:
-            parser.exit(2, "Cannot combine --show-auth-values with --secrets-from-params.\n")
+        if args.secrets_from_store:
+            parser.exit(2, "Cannot combine --show-auth-values with --secrets-from-store.\n")
         try:
-            with (Path(args.params_dir) / "GsmPassword").open("rb") as password:
-                configured = bool(password.read(1))
-        except FileNotFoundError:
-            configured = False
-        except OSError:
-            parser.exit(2, "Cannot check GsmPassword; refusing --show-auth-values.\n")
+            configured = bool(load_settings(args.store_dir, strict=True)[2])
+        except (OSError, ValueError):
+            parser.exit(2, "Cannot check stored password; refusing --show-auth-values.\n")
         if configured:
-            parser.exit(2, "GsmPassword is non-empty; refusing --show-auth-values.\n")
+            parser.exit(2, "Stored password is non-empty; refusing --show-auth-values.\n")
+    if args.summary:
+        auth, user, password = load_settings(args.store_dir)
+        mode = auth if auth in ("none", "pap", "chap") else "invalid" if auth else "unmanaged"
+        print(f"auth: {mode}; user: {len(user)} chars; password set: {bool(password)}")
+        return 0
     commands = [cmd for preset in args.preset for cmd in PRESETS[preset]] + args.commands
     if args.redact_stdin and (commands or args.json):
         parser.error("incompatible options")
     if not args.redact_stdin and (not commands or not all(is_allowed_command(cmd) for cmd in commands)):
         parser.exit(2, "Only allowlisted read-only AT commands are accepted.\n")
-    secrets = load_secrets(args.params_dir) if args.secrets_from_params else {}
+    secrets = load_secrets(args.store_dir) if args.secrets_from_store else {}
     if args.redact_stdin:
         for raw in sys.stdin.buffer:
             sys.stdout.write(redact_line(raw.decode("utf-8", errors="replace"), secrets, show_auth_values=args.show_auth_values))
@@ -405,6 +419,6 @@ def main(argv=None) -> int:
 if __name__ == "__main__":
     try:
         sys.exit(main())
-    except (Exception, KeyboardInterrupt):  # noqa: BLE001 -- Never expose modem data in a traceback.
+    except (Exception, KeyboardInterrupt):  # Never expose modem data in a traceback.
         print("modem_at_read: operation failed; error details suppressed.", file=sys.stderr)
         sys.exit(1)

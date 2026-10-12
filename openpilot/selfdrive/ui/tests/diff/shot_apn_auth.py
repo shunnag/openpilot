@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Capture APN auth settings with isolated params using the desktop raylib backend.
+"""Capture APN auth settings with isolated params and credential storage using the desktop raylib backend.
 
 SCALE=1 python3 openpilot/selfdrive/ui/tests/diff/shot_apn_auth.py /tmp/apn_auth_shots/mici
 BIG=1 SCALE=0.75 python3 openpilot/selfdrive/ui/tests/diff/shot_apn_auth.py /tmp/apn_auth_shots/tizi
@@ -8,6 +8,8 @@ Add --lang ja to render translated strings in Japanese.
 import argparse
 import os
 from collections.abc import Callable
+from copy import deepcopy
+from tempfile import TemporaryDirectory
 from pathlib import Path
 
 BIG = os.getenv("BIG") == "1"
@@ -17,6 +19,7 @@ os.environ["OFFSCREEN"] = "1"
 
 import pyray as rl
 from openpilot.common.params import Params
+from openpilot.common.hardware import HARDWARE
 from openpilot.common.prefix import OpenpilotPrefix
 from openpilot.selfdrive.ui.tests.diff.replay import setup_state
 
@@ -32,12 +35,15 @@ def main(output: Path, lang: str | None = None):
     multilang.change_language(lang)
   params = Params()
 
+  from openpilot.common.hardware.comma import apn_auth_store
+
   def seed(populated: bool):
-    for key, value in (("GsmApn", "example.apn"), ("GsmAuth", "chap"), ("GsmUsername", "mio@iij"), ("GsmPassword", "example-secret")):
-      if populated:
-        params.put(key, value, block=True)
-      else:
-        params.remove(key)
+    if populated:
+      params.put("GsmApn", "fixture.apn", block=True)
+      apn_auth_store.write("chap", "fixture-user@invalid", "fixture-password")
+    else:
+      params.remove("GsmApn")
+      apn_auth_store.clear()
 
   seed(True)
   from openpilot.selfdrive.ui.ui_state import ui_state, device
@@ -101,9 +107,9 @@ def main(output: Path, lang: str | None = None):
 
   def type_password():
     if BIG:
-      panel._keyboard.set_text("new-secret")
+      panel._keyboard.set_text("fixture-password-typed")
     else:
-      gui_app.get_active_widget()._keyboard.set_text("new-secret")
+      gui_app.get_active_widget()._keyboard.set_text("fixture-password-typed")
 
   def choose_off():
     # Start at CHAP even in the empty fixture so selecting off isn't a no-op.
@@ -148,6 +154,64 @@ def main(output: Path, lang: str | None = None):
   else:
     add(panel._apn_user_btn._long_press_callback, "credential_rule")
 
+  base = {
+    "state": "CONNECTED", "connected": True, "registration": "home", "network_type": "lte", "operator": "Fixture",
+    "signal_strength": 72, "diag": {
+      "fw": "EG916-fixture", "sim": True, "comma_sim": False, "mcc_mnc": "44020", "roaming_allowed": True,
+      "reg": {"creg": "home", "cgreg": "home", "at": 42}, "ceer": {"text": "No report", "at": 40},
+      "apn": {"setting": "fixture.apn", "cid1_before": ""},
+      "auth": {"mode": "chap", "cmd": "CGAUTH", "warning": "", "user_len": 20, "user_has_at": True, "password_set": True,
+               "readback": {"ok": True, "protocol_ok": True, "user_ok": True, "password_ok": None}, "at": 41},
+      "ppp": {"fails": 0, "last_exit": None, "ip_present": True},
+      "reattach": {"left": 0, "count": 1, "last_reason": "denied", "last_at": 42},
+      "times": {"connected_at": 47, "auth_changed_at": 40, "connected_after_change_s": 7},
+      "events": ["41s auth applied CGAUTH", "41s auth readback ok", "42s reattach denied", "47s state CONNECTING->CONNECTED"],
+    },
+  }
+  denied = deepcopy(base)
+  denied.update(state="SEARCHING", connected=False, registration="denied")
+  denied["diag"]["reg"].update(creg="denied", cgreg="searching")
+  denied["diag"]["ceer"] = {"text": '"ESM",29', "at": 52}
+  denied["diag"]["reattach"].update(left=1, count=1)
+  denied["diag"]["ppp"]["ip_present"] = False
+  failed = deepcopy(denied)
+  failed["diag"]["ppp"].update(fails=3, last_exit=19, last_exit_at=53)
+  failed["diag"]["events"] = ["53s PPP fail 3/3 exit=19"]
+  fallback = deepcopy(base)
+  fallback["diag"]["fw"] = "EG25-fixture"
+  fallback["diag"]["auth"]["cmd"] = "QICSGP"
+  fallback["diag"]["events"] = ["41s auth applied QICSGP", "41s auth readback ok"]
+  fixture_states = {"connected_chap": base, "denied_reattach": denied, "ppp_exit_19": failed, "qicsgp_fallback": fallback, "not_running": {}}
+  prime_type = PrimeType.NONE
+  original_get_modem_state = HARDWARE.get_modem_state
+  fixture_info = {"branch": "fixture", "commit": "123456789", "uptime_s": 3725, "wall_clock": None}
+
+  def show_status(fixture, prime):
+    nonlocal prime_type
+    prime_type = prime
+    ui_state.prime_state.set_type(prime)
+    seed(bool(fixture))
+    HARDWARE.get_modem_state = lambda: fixture
+    panel._show_modem_status()
+    # Fixture metadata stays local to the reader; never replace the global clock.
+    panel._modem_status._reader._next_read = 0
+    panel._modem_status._reader._info = lambda now: fixture_info
+
+  # Use both prime states to exercise the unpaired tizi auth/status gating.
+  for prime in (PrimeType.NONE, PrimeType.UNPAIRED):
+    def show_prime_rows(prime=prime):
+      nonlocal prime_type
+      prime_type = prime
+      ui_state.prime_state.set_type(prime)
+      show_state(True)
+
+    add(show_prime_rows)
+    add(lambda: scroll_to(panel._modem_status_btn), f"{prime.name.lower()}_status_row")
+    for name, fixture in fixture_states.items():
+      add(lambda fixture=fixture, prime=prime: show_status(fixture, prime), f"{prime.name.lower()}_status_{name}")
+      if not BIG and fixture:
+        add(lambda: panel._modem_status._scroll_panel.set_offset(-220), f"{prime.name.lower()}_status_{name}_details", close=False)
+
   frame = 0
   written: list[str] = []
   original_end_drawing = rl.end_drawing
@@ -172,7 +236,7 @@ def main(output: Path, lang: str | None = None):
   try:
     for _ in gui_app.render():
       ui_state.update()
-      ui_state.prime_state.set_type(PrimeType.NONE)
+      ui_state.prime_state.set_type(prime_type)
       if frame in steps:
         steps[frame]()
       frame += 1
@@ -180,6 +244,7 @@ def main(output: Path, lang: str | None = None):
         break
   finally:
     rl.end_drawing = original_end_drawing
+    HARDWARE.get_modem_state = original_get_modem_state
     gui_app.close()
   if len(written) != len(captures):
     raise RuntimeError(f"Captured {len(written)} of {len(captures)} screenshots")
@@ -191,5 +256,6 @@ if __name__ == "__main__":
   parser.add_argument("output", type=Path)
   parser.add_argument("--lang", help="Language code for translated strings (e.g. ja)")
   args = parser.parse_args()
-  with OpenpilotPrefix():
+  with TemporaryDirectory(prefix="apn-auth-shots-") as store_dir, OpenpilotPrefix():
+    os.environ["APN_AUTH_STORE_DIR"] = store_dir
     main(args.output, args.lang)

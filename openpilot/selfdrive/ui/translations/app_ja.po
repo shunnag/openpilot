@@ -858,3 +858,6 @@ msgstr "削除"
 
 msgid "Delete the saved APN user name and password?"
 msgstr "保存済みのAPNユーザー名とパスワードを削除しますか？"
+
+msgid "Modem Status"
+msgstr "モデムの状態"

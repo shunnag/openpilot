@@ -3,6 +3,7 @@ from functools import partial
 from typing import cast
 
 import pyray as rl
+from openpilot.common.hardware.comma import apn_auth_store
 from openpilot.system.ui.lib.application import gui_app, TextAlignment
 from openpilot.system.ui.lib.multilang import tr
 from openpilot.system.ui.lib.scroll_panel import GuiScrollPanel
@@ -138,7 +139,7 @@ class AdvancedNetworkSettings(Widget):
     self._apn_btn = button_item(lambda: tr("APN Setting"), lambda: tr("EDIT"), callback=self._edit_apn)
 
     self._apn_user_action = ButtonAction(lambda: tr("EDIT"))
-    self._apn_user_action.set_value(lambda: self._apn_user)
+    self._apn_user_action.set_value(lambda: f"set ({len(self._apn_user)} chars)" if self._apn_user else "")
     self._apn_user_btn = ListItem(lambda: tr("APN User Name"), action_item=self._apn_user_action, callback=self._edit_apn_user)
     self._apn_password_action = ButtonAction(lambda: tr("EDIT"))
     self._apn_password_action.set_value(lambda: "••••••" if self._apn_has_password else "")
@@ -148,6 +149,9 @@ class AdvancedNetworkSettings(Widget):
     self._apn_auth_btn = ListItem(lambda: tr("APN Authentication"), action_item=self._apn_auth_action)
     self._apn_delete_btn = button_item(lambda: tr("Delete APN Credentials"), lambda: tr("DELETE"), callback=self._delete_apn_credentials)
     self._refresh_apn_auth()
+    self._modem_status = None
+    self._modem_status_btn = button_item(lambda: tr("Modem Status"), lambda: tr("VIEW"),
+                                         callback=self._show_modem_status, enabled=ui_state.is_offroad)
 
     # Wi-Fi metered toggle
     self._wifi_metered_action = MultipleButtonAction([lambda: tr("default"), lambda: tr("metered"), lambda: tr("unmetered")], 255, 0,
@@ -165,6 +169,7 @@ class AdvancedNetworkSettings(Widget):
       self._apn_password_btn,
       self._apn_auth_btn,
       self._apn_delete_btn,
+      self._modem_status_btn,
       self._cellular_metered_btn,
       wifi_metered_btn,
       button_item(lambda: tr("Hidden Network"), lambda: tr("CONNECT"), callback=self._connect_to_hidden_network),
@@ -176,19 +181,22 @@ class AdvancedNetworkSettings(Widget):
     super().show_event()
     self._refresh_apn_auth()
 
+  def _show_modem_status(self):
+    from openpilot.system.ui.widgets.modem_status_dialog import ModemStatusDialog
+    if self._modem_status is None:
+      self._modem_status = ModemStatusDialog()
+    gui_app.push_widget(self._modem_status)
+
   def _refresh_apn_auth(self):
-    auth = self._params.get("GsmAuth")
+    auth, self._apn_user, password = apn_auth_store.read()
     self._apn_auth = auth if auth in ("pap", "chap") else "none"
-    self._apn_user = self._params.get("GsmUsername") or ""
-    self._apn_has_password = bool(self._params.get("GsmPassword"))
+    self._apn_has_password = bool(password)
     self._apn_auth_action.set_selected_button(("none", "pap", "chap").index(self._apn_auth))
 
   def _delete_apn_credentials(self):
     def clear_credentials(result: DialogResult):
       if result == DialogResult.CONFIRM:
-        self._params.put("GsmAuth", "none", block=True)
-        self._params.remove("GsmUsername")
-        self._params.remove("GsmPassword")
+        apn_auth_store.write("none", "", "")
         self._refresh_apn_auth()
 
     gui_app.push_widget(ConfirmDialog(tr("Delete the saved APN user name and password?"), tr("Yes"), tr("No"), callback=clear_credentials))
@@ -198,23 +206,21 @@ class AdvancedNetworkSettings(Widget):
     # MultipleButtonAction also calls back when the selected button is tapped again.
     if auth == self._apn_auth:
       return
-    self._params.put("GsmAuth", auth, block=True)
+    apn_auth_store.write(auth=auth)
     self._refresh_apn_auth()
     if auth == "none":
       def clear_credentials(result: DialogResult):
         if result == DialogResult.CONFIRM:
-          self._params.remove("GsmUsername")
-          self._refresh_apn_auth()
-          self._params.remove("GsmPassword")
+          apn_auth_store.write("none", "", "")
           self._refresh_apn_auth()
 
       gui_app.push_widget(ConfirmDialog(tr("Also delete the saved APN user name and password?"), tr("Yes"), tr("No"), callback=clear_credentials))
 
   def _edit_apn_user(self):
-    self._edit_apn_field("GsmUsername", tr("Enter APN user name"), False)
+    self._edit_apn_field("user", tr("Enter APN user name"), False)
 
   def _edit_apn_password(self):
-    self._edit_apn_field("GsmPassword", tr("Enter APN password"), True)
+    self._edit_apn_field("password", tr("Enter APN password"), True)
 
   def _edit_apn_field(self, key: str, title: str, password_mode: bool):
     def update(result: DialogResult):
@@ -225,7 +231,7 @@ class AdvancedNetworkSettings(Widget):
       if not _valid_auth_field(value):
         gui_app.push_widget(alert_dialog(tr("Use 1-64 ASCII letters, digits or symbols, without spaces, double quotes, backslashes or commas.")))
         return
-      self._params.put(key, value, block=True)
+      apn_auth_store.write(**{key: value})
       self._refresh_apn_auth()
 
     self._keyboard.reset(min_text_size=1)
@@ -341,10 +347,12 @@ class AdvancedNetworkSettings(Widget):
     self._wifi_manager.set_ipv4_forward(show_cell_settings)
     self._roaming_btn.set_visible(show_cell_settings)
     self._apn_btn.set_visible(show_cell_settings)
-    self._apn_user_btn.set_visible(show_cell_settings)
-    self._apn_password_btn.set_visible(show_cell_settings)
-    self._apn_auth_btn.set_visible(show_cell_settings)
-    self._apn_delete_btn.set_visible(show_cell_settings and bool(self._apn_user or self._apn_has_password))
+    show_apn_auth_rows = not self._prime_state.is_full_prime()
+    self._apn_user_btn.set_visible(show_apn_auth_rows)
+    self._apn_password_btn.set_visible(show_apn_auth_rows)
+    self._apn_auth_btn.set_visible(show_apn_auth_rows)
+    self._modem_status_btn.set_visible(show_apn_auth_rows)
+    self._apn_delete_btn.set_visible(show_apn_auth_rows and bool(self._apn_user or self._apn_has_password))
     self._cellular_metered_btn.set_visible(show_cell_settings)
 
   def _render(self, _):

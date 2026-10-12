@@ -5,6 +5,7 @@ import glob
 import json
 import logging
 import os
+import re
 import select
 import signal
 import string
@@ -14,12 +15,14 @@ import tempfile
 import termios
 import time
 
+from collections import deque
 from contextlib import contextmanager
 from ipaddress import IPv4Address, AddressValueError
 
 from enum import Enum
 
 from openpilot.common.esim.base import WEBBING_ICCID_PREFIX
+from openpilot.common.hardware.comma import apn_auth_store
 
 logging.basicConfig(
   level=logging.INFO,
@@ -78,8 +81,8 @@ def _resolve_auth(auth: str, user: str, password: str) -> tuple[int, str, str] |
   if auth == "none":
     return 0, "", ""
   if auth not in ("chap", "pap"):
-    raise ValueError("GsmAuth not understood")
-  for field, value in (("GsmUsername", user), ("GsmPassword", password)):
+    raise ValueError("auth not understood")
+  for field, value in (("user", user), ("password", password)):
     if any(not 0x21 <= ord(c) <= 0x7e or c in '"\\,' for c in value):
       raise ValueError(f"{field} rejected (unsupported character)")
     if len(value) > 64:  # validated ASCII, so bytes equal characters
@@ -284,6 +287,8 @@ class Modem:
     self._stall_since: float | None = None
     self.running = True
     self.S = INITIAL_STATE.copy()
+    self._auth_store = ("", "", "")
+    self._events: deque[str] = deque(maxlen=6)
 
   @staticmethod
   def _read_param(key):
@@ -312,13 +317,113 @@ class Modem:
   def _publish_state(self, **kwargs):
     reg = kwargs.get("registration")
     if reg != self.S["registration"] and reg in ("denied", "searching", "not_registered"):
-      logging.info(f"last network cause (AT+CEER, may be stale): {self._at('AT+CEER')}")
+      ceer = self._at("AT+CEER")
+      logging.info(f"last network cause (AT+CEER, may be stale): {ceer}")
+      self._diag_ceer(ceer)
     self.S.update(kwargs)
     self.S["seconds_since_boot"] = time.monotonic()
     with tempfile.NamedTemporaryFile(mode="w", dir="/dev/shm", delete=False) as f:
       json.dump(self.S, f, indent=2)
     os.chmod(f.name, 0o644)
     os.replace(f.name, STATE_PATH)
+
+  def _diag_set(self, section, **values):
+    try:
+      def primitives(value):
+        if type(value) in (str, int, float, bool) or value is None:
+          return True
+        if type(value) is list:
+          return all(primitives(item) for item in value)
+        if type(value) is dict:
+          return all(type(key) is str and primitives(item) for key, item in value.items())
+        return False
+
+      if not primitives(values):
+        return
+      values = json.loads(json.dumps(values, allow_nan=False))
+      diag = self.S.get("diag", {})
+      previous = diag.get(section, {}) if section else diag
+      updated = {**previous, **values}
+      if updated == previous:
+        return
+      if section in ("reg", "ceer", "auth"):
+        updated["at"] = time.monotonic()
+      self.S["diag"] = {**diag, section: updated} if section else updated
+      self._publish_state()
+    except Exception:
+      pass
+
+  def _event(self, text):
+    try:
+      states = "INITIALIZING|SEARCHING|CONNECTING|CONNECTED|DISCONNECTING"
+      allowed = (
+        rf"state ({states})->({states})", r"auth applied (CGAUTH|QICSGP)",
+        r"auth readback (ok|mismatch|failed)", r"reattach (denied|stalled)",
+        r'CEER (?:(?:[0-9]+|"(?:ESM|EMM|CC|SM|SS)"),[0-9]+)',
+        r"PPP fail [0-3]/3 exit=(?:-?[0-9]+|unknown)",
+        r"no auth command", r"auth warning", r"APN changed", r"roaming blocked", r"sim missing",
+      )
+      if not any(re.fullmatch(pattern, text) for pattern in allowed):
+        return
+      self._events.append(f"{int(time.monotonic())}s {text}")
+      self._diag_set("", events=list(self._events))
+    except Exception:
+      pass
+
+  def _diag_auth(self, readback=None, store=None):
+    try:
+      auth, user, password = self._auth_store if store is None else store
+      mode = "invalid" if self._auth_warning else auth or "unmanaged"
+      if self.S["iccid"].startswith(WEBBING_ICCID_PREFIX):
+        mode = "unmanaged"
+      cmd = "-" if self._auth is None else "unsupported" if self._auth_unavailable else self._auth_command or "-"
+      values = {"mode": mode, "cmd": cmd, "warning": self._auth_warning,
+                "user_len": len(user), "user_has_at": "@" in user, "password_set": bool(password)}
+      if readback is not None:
+        values["readback"] = readback
+      self._diag_set("auth", **values)
+    except Exception:
+      pass
+
+  def _diag_reattach(self, reason=None):
+    try:
+      values = {"left": self._reattach_tries, "count": self.S.get("diag", {}).get("reattach", {}).get("count", 0)}
+      if reason is not None:
+        values.update(count=values["count"] + 1, last_reason=reason, last_at=time.monotonic())
+      self._diag_set("reattach", **values)
+    except Exception:
+      pass
+
+  def _diag_auth_changed(self):
+    try:
+      self._diag_set("times", auth_changed_at=time.monotonic(), connected_after_change_s=None)
+    except Exception:
+      pass
+
+  def _diag_identity(self, identity):
+    try:
+      self._diag_set("", fw=identity["modem_version"], sim=bool(identity["iccid"]),
+                     comma_sim=identity["iccid"].startswith(WEBBING_ICCID_PREFIX), mcc_mnc=identity["mcc_mnc"][:5],
+                     roaming_allowed=self._roaming_allowed)
+      if not identity["iccid"]:
+        self._event("sim missing")
+    except Exception:
+      pass
+
+  def _diag_ceer(self, lines):
+    try:
+      for line in lines:
+        if line.startswith("+CEER:"):
+          text = line.split(":", 1)[1].strip()
+          # Cause codes only; unexpected modem text could carry identifiers.
+          if re.fullmatch(r'(?:[0-9]{1,3}|"(?:ESM|EMM|CC|SM|SS)")(?:,[0-9]{1,3})+', text):
+            self._diag_set("ceer", text=text[:60])
+            self._event("CEER " + ",".join(text.split(",")[:2]))
+          elif text in ("No report", "No cause information"):
+            self._diag_set("ceer", text=text)
+          break
+    except Exception:
+      pass
 
   def _at(self, cmd, shown=None):
     """Send AT command, return response lines. [] on error or if LPA holds port."""
@@ -403,6 +508,7 @@ class Modem:
       self._at("AT+COPS=0")
 
     identity = self._read_identity()
+    self._diag_identity(identity)
     if not identity["iccid"] or not identity["imei"]:
       logging.warning(f"identity read incomplete: {identity}, retrying")
       return State.INITIALIZING
@@ -412,10 +518,13 @@ class Modem:
     self.S.update(identity)
     self._apn = self._read_param("GsmApn")
     self._roaming_allowed = self._is_roaming_allowed()
-    self._auth = self._read_auth()
+    self._auth_store = apn_auth_store.read()
+    self._auth = self._read_auth(self._auth_store)
+    self._diag_identity(identity)
     if self._auth is None:
       self._reattach_on_stall = False
     self._auth_command = None
+    self._diag_auth(readback={"ok": None, "protocol_ok": None, "user_ok": None, "password_ok": None})
     if self._auth_changed and self._auth is not None:
       self._arm_auth_reattach()
     self._auth_changed = False
@@ -427,17 +536,22 @@ class Modem:
           return State.INITIALIZING
         logging.warning("modem has no APN auth command")
         self._auth_unavailable = True
+        self._event("no auth command")
       else:
         self._auth_probe_tries = 0
         profile = self._read_auth_profile()
         if profile is not None and (profile[:2] != self._auth[:2] or (profile[2] is not None and profile[2] != self._auth[2])):
           self._arm_auth_reattach()
     # the modem attaches with the APN it has stored, so a new one only applies on its next attach
-    if self._read_dial_apn() != self._apn:
+    cid1_before = self._read_dial_apn()
+    self._diag_set("apn", setting=self._apn, cid1_before=cid1_before)
+    if cid1_before != self._apn:
       self._reattach_tries = 2
     # blank APN lets the carrier supply one via PCO
     self._at(f'AT+CGDCONT={DIAL_CID},"IP","{self._apn}"')
+    self._diag_auth(readback={"ok": None, "protocol_ok": None, "user_ok": None, "password_ok": None})
     self._write_auth()
+    self._diag_reattach()
     logging.info(f"APN '{self._apn or '(network-provided)'}' written to CID {DIAL_CID}, roaming={'on' if self._roaming_allowed else 'off'}")
 
     self._sim_change = False  # clear since we just re-read identity with the new SIM
@@ -470,16 +584,24 @@ class Modem:
     fields = v.split(",") if v else []
     return fields[2].strip('"') if len(fields) > 2 else None
 
-  def _read_auth(self) -> tuple[int, str, str] | None:
+  def _read_auth(self, store=None) -> tuple[int, str, str] | None:
     try:
-      auth_param, user, password = (self._read_param(key) for key in ("GsmAuth", "GsmUsername", "GsmPassword"))
+      auth_param, user, password = apn_auth_store.read() if store is None else store
+      if self.S["iccid"].startswith(WEBBING_ICCID_PREFIX):
+        warning = "APN auth ignored for comma SIM" if auth_param else ""
+        if warning and warning != self._auth_warning:
+          logging.warning(warning)
+          self._event("auth warning")
+        self._auth_warning = warning
+        return None
       auth = _resolve_auth(auth_param, user, password)
       if not auth_param and (user or password):
-        raise ValueError("GsmUsername/GsmPassword set but GsmAuth is empty")
+        raise ValueError("user/password set but auth is empty")
     except ValueError as e:
       warning = str(e)
       if warning != self._auth_warning:
         logging.warning(warning)
+        self._event("auth warning")
       self._auth_warning = warning
       return None
     self._auth_warning = ""
@@ -527,16 +649,24 @@ class Modem:
     self._at(cmd, shown=f"AT+{self._auth_command}={DIAL_CID},<redacted>")
     profile = self._read_auth_profile()
     result = "readback failed"
+    readback = {"ok": False, "protocol_ok": None, "user_ok": None, "password_ok": None}
     if profile is not None:
       password_ok = f"password ok={profile[2] == password}" if profile[2] is not None else "password not shown"
       result = f"readback protocol ok={profile[0] == protocol}, user ok={profile[1] == user}, {password_ok}"
-    logging.info(f"APN auth via {self._auth_command}: protocol={AUTH_PROTOCOLS[protocol]}, {result}")
+      readback = {"protocol_ok": profile[0] == protocol, "user_ok": profile[1] == user,
+                  "password_ok": profile[2] == password if profile[2] is not None else None}
+      readback["ok"] = readback["protocol_ok"] and readback["user_ok"] and readback["password_ok"] is not False
+    self._diag_auth(readback=readback)
+    self._event(f"auth applied {self._auth_command}")
+    self._event("auth readback " + ("failed" if profile is None else "ok" if readback["ok"] else "mismatch"))
+    logging.info(f"APN auth via {self._auth_command}: protocol={AUTH_PROTOCOLS.get(protocol, str(protocol))}, {result}")
 
   def _do_searching(self):
     new_roaming = self._is_roaming_allowed()
     if new_roaming != self._roaming_allowed:
       logging.info(f"roaming changed: {self._roaming_allowed} -> {new_roaming}")
       self._roaming_allowed = new_roaming
+      self._diag_set("", roaming_allowed=new_roaming)
 
     # roaming was just synced; INITIALIZING writes the new APN and auth
     if self._params_changed():
@@ -548,6 +678,7 @@ class Modem:
 
     reg = self._parse_reg(v)
     greg = self._parse_reg(self._atv("AT+CGREG?", "+CGREG:") or "")
+    self._diag_set("reg", creg=reg, cgreg=greg)
     logging.debug(f"creg={reg} cgreg={greg} roaming_allowed={self._roaming_allowed}")
 
     if reg not in ("searching", "not_registered"):
@@ -565,6 +696,7 @@ class Modem:
         return self._reattach(stalled=True)
 
     if reg == "roaming" and not self._roaming_allowed:
+      self._event("roaming blocked")
       self._publish_state(registration=reg)
       return State.SEARCHING
 
@@ -591,6 +723,8 @@ class Modem:
     self._at(f'AT+CGDCONT={DIAL_CID},"IP","{self._apn}"')
     self._write_auth()
     self._at("AT+COPS=0")  # automatic registration, attaches with the APN in DIAL_CID
+    self._diag_reattach(reason)
+    self._event(f"reattach {reason}")
     self._reattach_on_stall &= self._reattach_tries > 0
     self._stall_since = time.monotonic() if self._reattach_on_stall else None
     if self._cops_mode() != "0":
@@ -611,12 +745,23 @@ class Modem:
     self._reattach_on_stall = False
     self._stall_since = None
     self._ppp.start(self._auth)
+    self._diag_set("reattach", left=0)
+    self._diag_set("ppp", fails=0, ip_present=False)
     return State.CONNECTED
 
   def _handle_pppd_exit(self):
+    code = None
+    try:
+      code = getattr(self._ppp._proc, "returncode", None)
+      code = code if type(code) is int else None
+      self._diag_set("ppp", last_exit=code, last_exit_at=time.monotonic(), ip_present=False)
+    except Exception:
+      pass
     if self._sim_change or not os.path.exists(AT_PORT):
       return State.DISCONNECTING
     give_up = self._ppp.record_fail()
+    self._diag_set("ppp", fails=self._ppp.fails)
+    self._event(f"PPP fail {self._ppp.fails}/3 exit={code if code is not None else 'unknown'}")
     if give_up:
       logging.warning(f"PPP fail {self._ppp.fails}/{self._ppp.MAX_FAILS}, reconnecting")
       return State.DISCONNECTING
@@ -628,12 +773,21 @@ class Modem:
     return State.CONNECTED
 
   def _params_changed(self) -> bool:
-    auth_changed = self._read_auth() != self._auth
+    new_store = apn_auth_store.read()
+    resolved = self._read_auth(new_store)
+    # Ignored credentials do not reconnect unmanaged/none sessions.
+    auth_changed = new_store != self._auth_store and (resolved != self._auth or resolved is not None and resolved[0] != 0)
+    if not auth_changed:
+      self._auth_store = new_store
+      self._diag_auth()
     if auth_changed:
       logging.info("APN auth settings changed")
       self._auth_changed = True
+      self._diag_auth_changed()
+      self._diag_auth(store=new_store, readback={"ok": None, "protocol_ok": None, "user_ok": None, "password_ok": None})
     new_apn = self._read_param("GsmApn")
     if new_apn != self._apn:
+      self._event("APN changed")
       logging.info(f"GsmApn changed: '{self._apn}' -> '{new_apn}'")
       return True
     new_roaming = self._is_roaming_allowed()
@@ -662,6 +816,7 @@ class Modem:
 
   def _do_disconnecting(self):
     logging.warning("reconnecting")
+    self._diag_set("ppp", ip_present=False)
     self._publish_state(**INITIAL_STATE)
     self._ppp.kill()
     self._ppp.cleanup_routes()
@@ -782,6 +937,14 @@ class Modem:
                self._poll_byte_counters):
       s.update(fn())
     if s:
+      try:
+        self._diag_set("ppp", ip_present=bool(s.get("ip_address", self.S.get("ip_address"))))
+        if s.get("connected") and not self.S.get("connected"):
+          now = time.monotonic()
+          changed_at = self.S.get("diag", {}).get("times", {}).get("auth_changed_at")
+          self._diag_set("times", connected_at=now, connected_after_change_s=int(now - changed_at) if changed_at is not None else None)
+      except Exception:
+        pass
       self._publish_state(**s)
 
   def run(self):
@@ -809,6 +972,7 @@ class Modem:
         prev = state
         state = handlers[state]()
         if state != prev:
+          self._event(f"state {prev.value}->{state.value}")
           self._publish_state(state=state.value)
           logging.info(f"{prev.value} -> {state.value}")
       except Exception:

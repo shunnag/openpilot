@@ -813,3 +813,39 @@ msgstr[0] "{}分前"
 msgid "✓ SUBSCRIBED"
 msgstr "✓ 登録済み"
 
+
+msgid "Enter APN user name"
+msgstr "APNユーザー名を入力"
+
+msgid "Enter APN password"
+msgstr "APNパスワードを入力"
+
+msgid "APN User Name"
+msgstr "APNユーザー名"
+
+msgid "APN Password"
+msgstr "APNパスワード"
+
+msgid "APN Authentication"
+msgstr "APN認証"
+
+msgid "Off"
+msgstr "オフ"
+
+msgid "PAP"
+msgstr "PAP"
+
+msgid "CHAP"
+msgstr "CHAP"
+
+msgid "Also delete the saved APN user name and password?"
+msgstr "保存済みのAPNユーザー名とパスワードも削除しますか？"
+
+msgid "Yes"
+msgstr "はい"
+
+msgid "No"
+msgstr "いいえ"
+
+msgid "Use 1-64 ASCII letters, digits or symbols, without spaces, double quotes, backslashes or commas."
+msgstr "半角英数字または記号を1〜64文字で入力してください。スペース、ダブルクォート、バックスラッシュ、カンマは使用できません。"

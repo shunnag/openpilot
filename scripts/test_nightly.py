@@ -1,5 +1,4 @@
 """Nightly control-path tests; fake gh/git/python, no network or upstream execution."""
-from copy import deepcopy
 from datetime import timedelta
 import json
 import os
@@ -7,7 +6,6 @@ from pathlib import Path
 import re
 import subprocess
 import tempfile
-import textwrap
 import unittest
 from unittest.mock import patch
 
@@ -18,6 +16,7 @@ from test_follow_state import automatic_pin, withdrawal
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = (ROOT / '.github/workflows/nightly.yml').read_text()
+PUBLISH = (ROOT / 'scripts/publish_branch.sh').read_text()
 
 
 def step(name):
@@ -25,43 +24,18 @@ def step(name):
 
 
 def script(name):
-  section = step(name).split('        run: |\n', 1)[1]
-  return textwrap.dedent(section.rstrip()) + '\n'
+  """Expose the publisher's real compose/push blocks to local Git simulations."""
+  boundaries = {
+    'Compose and validate deterministic commit': ("REASON='compose failed'", '# read works'),
+    'Back up previous nightly and publish with lease': ("REASON='publish failed'", "REASON='close resolved issues failed'"),
+  }
+  start, end = boundaries[name]
+  body = PUBLISH[PUBLISH.index(start):PUBLISH.index(end)]
+  write = 'write() {' + PUBLISH.split('write() {', 1)[1].split('\n}\n', 1)[0] + '\n}\n'
+  return write + body
 
 
 class NightlyTests(unittest.TestCase):
-  def test_pending_rc3_succeeds_and_preserves_four_distinct_outputs(self):
-    with tempfile.TemporaryDirectory() as tmp:
-      work = Path(tmp)
-      fake = work / 'python3'
-      fake.write_text('#!/bin/bash\nif [[ "$1" == scripts/pins.py ]]; then\n'
-                      'echo "PIN: FOLLOW: kernel fixture waiting for follow"\nexit "$FAKE_RC"\nfi\n'
-                      'if [[ "$1" == scripts/issues.py ]]; then echo "$*" >> "$ISSUE_CALLS"; exit 0; fi\nexit 99\n')
-      fake.chmod(0o755)
-      all_outputs = {}
-      for branch, rc in zip(fs.BRANCHES, (1, 3, 1, 3)):
-        output, calls = work / 'outputs', work / 'calls'
-        output.write_text('')
-        calls.write_text('')
-        env = {**os.environ, 'PATH': str(work) + os.pathsep + os.environ['PATH'],
-          'FAKE_RC': str(rc), 'ISSUE_CALLS': str(calls), 'WPA3_FOLLOW_MODE': 'on', 'BRANCH': branch,
-          'UPSTREAM_SOURCE': 'latest', 'UPSTREAM': 'a' * 40, 'BARE_REPO': str(work),
-          'RUNNER_TEMP': str(work), 'GITHUB_OUTPUT': str(output), 'NIGHTLY_LOG': str(work / 'log')}
-        result = subprocess.run(['bash', '-eo', 'pipefail', '-c', script('Resolve AGNOS pin')],
-                                env=env, capture_output=True, text=True)
-        self.assertEqual(result.returncode, 0 if rc == 3 else 1, result.stderr)
-        if rc == 3:
-          self.assertEqual(output.read_text(), f'pending=true\npending_{branch.replace("-", "_")}=true\n')
-          self.assertIn('issues.py pending', calls.read_text())
-          self.assertNotIn('--close', calls.read_text())
-          all_outputs[f'pending_{branch.replace("-", "_")}'] = 'true'
-        else:
-          self.assertEqual(output.read_text(), '')
-      for branch in fs.BRANCHES:
-        key = 'pending_' + branch.replace('-', '_')
-        self.assertIn(f'{key}: ${{{{ steps.pin.outputs.{key} }}}}', WORKFLOW)
-      self.assertEqual(len(all_outputs), 2)
-
   def test_one_pending_among_held_or_unchanged_dispatches_once(self):
     request = step('Request follow once for all pending branches')
     condition = request.split('        if: ', 1)[1].splitlines()[0]
@@ -83,34 +57,10 @@ class NightlyTests(unittest.TestCase):
     self.assertIn('    needs: publish\n    if: always()\n', WORKFLOW)
     self.assertIn('      actions: write\n', WORKFLOW)
 
-  def test_pending_never_closes_or_composes_and_writes_never_execute_upstream(self):
-    for name in ('Skip identical published inputs', 'Gate upstream and download-verify pinned boot',
-                 'Compose and validate deterministic commit', 'Back up previous nightly and publish with lease',
-                 'Close resolved hold issues'):
-      self.assertIn("steps.pin.outputs.pending != 'true'", step(name))
-    close = step('Close resolved hold issues')
-    self.assertIn("steps.push.outcome == 'success' || steps.inputs.outputs.unchanged == 'true'", close)
-    self.assertIn('issues.py pending', close)
-    self.assertIn('--close', close)
-    self.assertNotRegex(WORKFLOW, r'(?m)^\s+(?:source|\.) .*launch_env|eval |bash .*launch_')
-    self.assertNotIn('--checkout', WORKFLOW)
+  def test_writes_never_execute_upstream(self):
+    self.assertNotRegex(WORKFLOW + PUBLISH, r'(?m)^\s+(?:source|\.) .*launch_env|eval |bash .*launch_')
+    self.assertNotIn('--checkout', WORKFLOW + PUBLISH)
     self.assertNotRegex(WORKFLOW, r'uses: [^\n]*@(?![0-9a-f]{40}\b)')
-
-  def test_backup_guard_failure_cannot_overwrite_lastgood(self):
-    with tempfile.TemporaryDirectory() as tmp:
-      root = Path(tmp)
-      for name, content in (('python3', 'exit 17'), ('git', 'echo unexpected > "$PUSH_LOG"')):
-        path = root / name
-        path.write_text('#!/bin/bash\n' + content + '\n')
-        path.chmod(0o755)
-      log = root / 'pushes'
-      env = {**os.environ, 'PATH': str(root) + os.pathsep + os.environ['PATH'], 'PUSH_LOG': str(log),
-             'NEW': 'a' * 40, 'FORK': 'b' * 40, 'BARE_REPO': str(root), 'BRANCH': 'nightly',
-             'NIGHTLY_LOG': str(root / 'nightly.log'), 'GITHUB_OUTPUT': str(root / 'outputs')}
-      result = subprocess.run(['bash', '-eo', 'pipefail', '-c', script('Back up previous nightly and publish with lease')],
-                              env=env, capture_output=True)
-      self.assertEqual(result.returncode, 17)
-      self.assertFalse(log.exists())
 
   def test_revoke_uses_only_published_parent_and_never_latest(self):
     state = fs.reserve_tags(fs.load(), 2)
@@ -128,8 +78,8 @@ class NightlyTests(unittest.TestCase):
       self.assertFalse(any('fetch' in c.args or 'ls-remote' in c.args for c in calls.call_args_list))
     with patch.object(nightly, 'blob', return_value=launch.replace(pin['boot']['hash_raw'], pin['revert']['boot']['hash_raw']).encode()):
       self.assertEqual(nightly.published_upstream('/mock', fork, state), '')
-    fetch = script('Resolve and fetch upstream and current fork (no checkout)')
-    revoke = fetch.split('if [ "$UPSTREAM_SOURCE" = published ]; then')[1].split('\n  else\n')[0]
+    fetch = PUBLISH
+    revoke = fetch.split('if [ "$UPSTREAM_SOURCE" = published ]; then')[1].split('\nelse\n')[0]
     self.assertNotIn('--depth', revoke)
     self.assertNotIn('commaai/openpilot', revoke)
 

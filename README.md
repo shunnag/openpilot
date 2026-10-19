@@ -63,11 +63,11 @@ Installing
 
 The first install needs a network that isn't WPA3-only: WPA2, WPA2/WPA3 mixed mode, a phone hotspot, or LTE. AGNOS setup and the stock kernel can't join WPA3-only networks. After install, the WPA3 kernel is flashed through the normal A/B AGNOS update, which may download about 1 GB. After the next reboot, WPA3-only networks work.
 
-This fork was tested only on the comma four. The comma 3X uses the same kernel and firmware, but it is untested.
+This fork was tested only on the comma four. The comma 3X uses the same kernel and firmware, but it is untested. comma 3 (tici) is not supported.
 
 初回のインストールには、WPA3 専用ではないネットワーク（WPA2、WPA2/WPA3 混在モード、スマートフォンのテザリング、LTE のいずれか）が必要です。AGNOS のセットアップ画面と純正カーネルは、WPA3 専用のネットワークにつながりません。インストール後、通常の A/B 方式の AGNOS 更新で WPA3 カーネルを書き込みます。このとき約 1 GB をダウンロードすることがあります。再起動後は、WPA3 専用のネットワークも使えます。
 
-動作確認は comma four でのみ行っています。comma 3X はカーネルとファームウェアが同じですが、未確認です。
+動作確認は comma four でのみ行っています。comma 3X はカーネルとファームウェアが同じですが、未確認です。comma 3（tici）はサポートしていません。
 
 
 Kernel install
@@ -123,9 +123,17 @@ An auto-built wpa_supplicant is used only if the stock binary matches; on failur
 Nightly builds
 ------
 
-The **Nightly WPA3** workflow runs every day at 11:00 UTC (20:00 JST), with a catch-up run at 12:30 UTC (21:30 JST). It rebuilds each branch from comma's latest commit. comma's branches are squashed orphan commits, so each build is a new commit on top of theirs, and nothing is merged. Builds are deterministic: the same inputs always produce the same commit SHA. If comma hasn't published a new build, the branch is left as is.
+The **Nightly WPA3** workflow runs every day at 11:07 UTC (20:07 JST), with a catch-up run at 12:43 UTC (21:43 JST). The catch-up normally finishes after the cheap per-branch marker checks because the first run left matching evaluation markers. It still publishes when upstream or the follow mode changed between the two runs. One job processes all four branches sequentially in one shared bare repository, reusing common Git objects. Each branch runs independently; a held or failed branch does not stop the others, but makes the job fail.
 
-**Nightly WPA3** ワークフローは、毎日 11:00 UTC（20:00 JST）に実行されます。取りこぼしに備えて、12:30 UTC（21:30 JST）にも実行されます。実行のたびに、comma の最新コミットをもとに各ブランチを作り直します。comma のブランチは履歴を 1 つにまとめた親なしのコミットなので、各ビルドはその上に新しいコミットを 1 つ作るだけで、マージはしません。ビルドは再現可能で、入力が同じなら必ず同じコミット SHA になります。comma が新しいビルドを出していなければ、ブランチは変えません。
+Before fetching full upstream contents, a run on `refs/heads/wpa3-ci` can skip a branch whose evaluation marker at `refs/wpa3-evaluated/<branch>` matches the checked-out `wpa3-ci` HEAD, follow mode, upstream SHA and current published fork commit. The marker is written only after a full latest-upstream evaluation publishes successfully or confirms identical inputs, and closes resolved issues successfully. Changes to `wpa3-ci`, the follow mode, upstream or the published fork commit trigger a full evaluation and republication when needed. A held branch gets no new marker, and a rollback changes the fork commit so the old marker no longer matches; the next run evaluates fully. Run history and issue state are not skip evidence. Otherwise, `scripts/pins.py` first resolves the pin in a temporary blobless repository; pending branches stop before the full fetch. After the full fetch, the pin must be byte-identical, and the existing exact `WPA3-Inputs` check still skips unchanged inputs. Manual `force` runs bypass both skips; withdrawal uses the published upstream and always fetches the published fork with its parent.
+
+comma's branches are squashed orphan commits, so each build is a new commit on top of theirs, and nothing is merged. Builds are deterministic: the same inputs always produce the same commit SHA. Unchanged branches keep their published commits.
+
+**Nightly WPA3** ワークフローは、毎日 11:07 UTC（20:07 JST）に実行されます。取りこぼしに備えて 12:43 UTC（21:43 JST）にも実行されます。通常は最初の実行が残した評価マーカーが一致するため、負荷の小さいブランチごとのマーカー確認だけで終了します。2 回の実行の間に upstream や follow モードが変わっていれば、公開も行います。1 つのジョブが、共通の bare リポジトリで Git オブジェクトを使い回しながら、4 ブランチを順に処理します。各ブランチは独立して実行し、保留や失敗があっても残りを続けますが、ジョブ全体は失敗になります。
+
+upstream 全体を取得する前に、`refs/heads/wpa3-ci` の実行では、`refs/wpa3-evaluated/<branch>` の評価マーカーが、チェックアウトした `wpa3-ci` の HEAD、follow モード、upstream の SHA、公開中の fork のコミットとすべて一致すれば、そのブランチの処理を省略します。マーカーは、最新 upstream を完全に評価して公開に成功するか、入力が同じだと確認し、解決済み issue を閉じる処理にも成功したあとだけ記録します。`wpa3-ci`、follow モード、upstream、公開中の fork のコミットが変われば、完全に再評価し、必要なら再公開します。保留したブランチには新しいマーカーを記録せず、ロールバックでは fork のコミットが変わって古いマーカーと一致しなくなるため、次の実行で完全に評価します。実行履歴や issue の状態は、省略の根拠にしません。それ以外は、まず一時的な blobless リポジトリで `scripts/pins.py` が pin を決め、pending なら全体の取得前に止めます。全体を取得したあとも pin がバイト単位で一致することを確認し、従来の厳密な `WPA3-Inputs` の比較でも同じ入力なら省略します。手動の `force` は両方の省略を無効にします。取り下げでは公開中の upstream を使い、公開中の fork とその親を必ず取得します。
+
+comma のブランチは履歴を 1 つにまとめた親なしのコミットなので、各ビルドはその上に新しいコミットを 1 つ作るだけで、マージはしません。ビルドは再現可能で、入力が同じなら必ず同じコミット SHA になります。変化のないブランチは公開中のコミットを保ちます。
 
 First, `scripts/pins.py` picks the boot image for the upstream `AGNOS_VERSION`. See [AGNOS updates](#agnos-updates). Then the workflow checks:
 

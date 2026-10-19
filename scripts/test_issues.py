@@ -143,32 +143,31 @@ class TestIssues(unittest.TestCase):
 class TestNightlyWorkflow(unittest.TestCase):
   def test_resolve_step_and_pin_file_plumbing(self):
     workflow = (ROOT / ".github/workflows/nightly.yml").read_text()
-    steps = workflow.split("      - ")
-    fetch = next(i for i, step in enumerate(steps) if "id: fetch\n" in step)
-    self.assertIn("name: Resolve AGNOS pin\n        id: pin\n", steps[fetch + 1])
-    self.assertIn('python3 scripts/pins.py --repo "$BARE_REPO" --upstream "$UPSTREAM" --out "$RUNNER_TEMP/pin.json" --follow-mode "$MODE" --branch "$BRANCH" 2>&1 | tee -a "$NIGHTLY_LOG"', steps[fetch + 1])
-    self.assertIn("if pin['mode'] != 'pinned':", steps[fetch + 1])
-    self.assertIn('::notice::AGNOS pin:', steps[fetch + 1])
-    self.assertIn("steps.pin.outcome == 'failure' && 'AGNOS pin could not be resolved'", workflow)
-    gates = next(step for step in steps if "id: gates\n" in step)
-    self.assertIn('PUBLISHED_ARGS=()\n          if [ -n "$FORK" ]; then\n            PUBLISHED_ARGS=(--published "$FORK")\n          fi', gates)
-    self.assertIn('"${PUBLISHED_ARGS[@]}"', gates)
-    consumers = [line for line in workflow.splitlines() if "scripts/compose.py" in line or "scripts/gates.py" in line]
+    script = (ROOT / "scripts/publish_branch.sh").read_text()
+    self.assertIn('bash -eu -o pipefail scripts/publish_branch.sh', workflow)
+    self.assertIn('python3 scripts/pins.py --repo "$BARE_REPO" --upstream "$UPSTREAM" --out "$PIN_FILE" --follow-mode "$MODE" --branch "$BRANCH" 2>&1 | tee -a "$NIGHTLY_LOG"', script)
+    self.assertIn("if pin['mode'] != 'pinned':", script)
+    self.assertIn('::notice::AGNOS pin:', script)
+    self.assertIn("REASON='AGNOS pin could not be resolved'", script)
+    self.assertIn('PUBLISHED_ARGS=()\nif [ -n "$FORK" ]; then\n  PUBLISHED_ARGS=(--published "$FORK")\nfi', script)
+    self.assertIn('"${PUBLISHED_ARGS[@]}"', script)
+    consumers = [line for line in script.splitlines() if "scripts/compose.py" in line or "scripts/gates.py" in line]
     self.assertEqual(len(consumers), 3)
     for line in consumers:
-      self.assertIn('--pin-file "$RUNNER_TEMP/pin.json"', line)
+      self.assertIn('--pin-file "$PIN_FILE"', line)
       self.assertIn('--tether "$TETHER" --apn "$APN"', line)
-    self.assertNotIn('--modem', workflow)
-    self.assertNotIn('MODEM=', workflow)
-    for step in steps:
+    self.assertNotIn('--modem', script)
+    self.assertNotIn('MODEM=', script)
+    for step in workflow.split("      - "):
       if "        run:" in step:
         self.assertNotIn("${{", step.split("        run:", 1)[1])
 
-  def test_branch_names_only_in_matrix_patch_selection_and_smoke(self):
+  def test_branch_names_only_in_list_patch_selection_and_smoke(self):
     workflow = (ROOT / ".github/workflows/nightly.yml").read_text()
-    matrix = "branch: [nightly, nightly-chestnut, release-mici-staging, release-tizi-staging]"
-    self.assertIn(matrix, workflow)
-    selector = 'case "$BRANCH" in' + workflow.split('case "$BRANCH" in', 1)[1].split("esac", 1)[0] + "esac"
+    script = (ROOT / "scripts/publish_branch.sh").read_text()
+    branches = "BRANCHES: 'nightly nightly-chestnut release-mici-staging release-tizi-staging'"
+    self.assertEqual(workflow.count(branches), 1)
+    selector = 'case "$BRANCH" in' + script.split('case "$BRANCH" in', 1)[1].split("esac", 1)[0] + "esac"
     smoke_selector = 'if [ "$BRANCH" = release-tizi-staging ]; then DEVICE_TYPE=tizi; fi'
     for branch in ("nightly", "nightly-chestnut", "release-mici-staging", "release-tizi-staging", "unknown"):
       result = subprocess.run(["bash", "-eu", "-c", selector + '\nprintf "%s %s" "$TETHER" "$APN"'],
@@ -177,41 +176,37 @@ class TestNightlyWorkflow(unittest.TestCase):
       smoke = subprocess.run(["bash", "-eu", "-c", 'DEVICE_TYPE=mici\n' + smoke_selector + '\nprintf "%s" "$DEVICE_TYPE"'],
                              env={**os.environ, "BRANCH": branch}, text=True, capture_output=True, check=True)
       self.assertEqual(smoke.stdout, "tizi" if branch == "release-tizi-staging" else "mici")
-    self.assertIn('-H "X-openpilot-device-type: $DEVICE_TYPE"', workflow)
+    self.assertIn('-H "X-openpilot-device-type: $DEVICE_TYPE"', script)
+    combined = workflow.replace(branches, "") + script.replace(selector, "").replace(smoke_selector, "")
     for branch in ("nightly-chestnut", "release-mici-staging", "release-tizi-staging"):
-      self.assertNotIn(branch, workflow.replace(matrix, "").replace(selector, "").replace(smoke_selector, ""))
+      self.assertNotIn(branch, combined)
 
   def test_branch_environment_refs_and_job_concurrency(self):
     workflow = (ROOT / ".github/workflows/nightly.yml").read_text()
-    for expected in (
-      "fail-fast: false",
-      "group: publish-${{ matrix.branch }}",
-      "BRANCH: ${{ matrix.branch }}",
-      '"refs/heads/$BRANCH"',
-      "refs/heads/$BRANCH-lastgood",
-      '$NEW:refs/heads/$BRANCH"',
-      '--force-with-lease="refs/heads/$BRANCH:$FORK"',
-      '$OWNER/$BRANCH"',
-    ):
-      with self.subTest(expected=expected):
-        self.assertIn(expected, workflow)
-    self.assertNotRegex(workflow, r'refs/heads/nightly|/nightly(?:-chestnut)?["\']')
+    script = (ROOT / "scripts/publish_branch.sh").read_text()
+    for expected in ('"refs/heads/$BRANCH"', "refs/heads/$BRANCH-lastgood", '$NEW:refs/heads/$BRANCH"',
+                     '--force-with-lease="refs/heads/$BRANCH:$FORK"', '$OWNER/$BRANCH"'):
+      self.assertIn(expected, script)
+    self.assertIn("      group: publish\n      queue: max\n      cancel-in-progress: false", workflow)
+    self.assertIn("timeout-minutes: 90", workflow)
+    self.assertNotIn("matrix:", workflow)
+    self.assertNotRegex(workflow + script, r'refs/heads/nightly|/nightly(?:-chestnut)?["\']')
     self.assertNotRegex(workflow, r"(?m)^concurrency\s*:")
 
   def test_every_issue_call_passes_branch(self):
-    workflow = (ROOT / ".github/workflows/nightly.yml").read_text()
-    calls = [line for line in workflow.splitlines() if "scripts/issues.py" in line]
+    script = (ROOT / "scripts/publish_branch.sh").read_text()
+    calls = [line for line in script.splitlines() if "scripts/issues.py" in line]
     self.assertTrue(calls)
     for call in calls:
-      with self.subTest(call=call):
-        self.assertIn('--branch "$BRANCH"', call)
+      self.assertIn('--branch "$BRANCH"', call)
+      self.assertIn('write python3', call)
 
 
 class TestRollbackWorkflow(unittest.TestCase):
   def test_branch_environment_refs_concurrency_and_guard(self):
     workflow = (ROOT / ".github/workflows/rollback.yml").read_text()
     for expected in (
-      "group: publish-${{ inputs.branch }}",
+      "group: publish\n  queue: max",
       "BRANCH: ${{ inputs.branch }}",
       '"refs/heads/$BRANCH"',
       '"refs/heads/$BRANCH-lastgood"',

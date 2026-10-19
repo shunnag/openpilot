@@ -76,9 +76,9 @@ class WorkflowPolicyTests(unittest.TestCase):
             self.assertNotIn('concurrency', workflow)
             self.assertEqual(concurrency, {'group': 'wpa3-state', 'queue': 'max', 'cancel-in-progress': False})
           elif (name, job_name) == ('nightly', 'publish'):
-            self.assertEqual(concurrency, {'group': 'publish-${{ matrix.branch }}', 'cancel-in-progress': False})
+            self.assertEqual(concurrency, {'group': 'publish', 'queue': 'max', 'cancel-in-progress': False})
           elif name == 'rollback':
-            self.assertEqual(concurrency, {'group': 'publish-${{ inputs.branch }}', 'cancel-in-progress': False})
+            self.assertEqual(concurrency, {'group': 'publish', 'queue': 'max', 'cancel-in-progress': False})
           else:
             self.assertIsNone(concurrency)
 

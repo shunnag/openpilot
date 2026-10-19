@@ -1,0 +1,6 @@
+# actionlint 1.7.12 predates concurrency.queue, already used by follow workflows.
+# Keep checking everything else while retaining the required non-dropping queue.
+paths:
+  .github/workflows/*.yml:
+    ignore:
+      - '^unexpected key "queue" for "concurrency" section\. expected one of "cancel-in-progress", "group"$'

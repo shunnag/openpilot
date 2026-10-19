@@ -172,7 +172,7 @@ class FollowEndToEnd(unittest.TestCase):
                          ('19.10', 'wpa3.sae=5', automatic['revert']['boot']['hash_raw']))
         self.assertIn('was withdrawn;', compose.blob(revoke_repo, new, 'RELEASES.md').decode())
         self.assertTrue(nightly.withdrawn_release(revoke_repo, fork, state))
-        # Execute the actual workflow push step with only the metadata helper mocked
+        # Execute the publisher's push block with only the metadata helper mocked
         # to point at this simulation's state root (all git pushes remain local).
         from test_nightly import script
         fake_bin = root / 'bin'

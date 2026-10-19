@@ -20,7 +20,8 @@ permissions:
   actions: write
 
 concurrency:
-  group: publish-${{ inputs.branch }}
+  group: publish
+  queue: max
   cancel-in-progress: false
 
 env:

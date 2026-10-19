@@ -746,17 +746,16 @@ class TestCompose(unittest.TestCase):
           self.assertIn("G5: FAIL:", stderr.getvalue())
 
   def test_network_workflow_records_hold_diagnostic(self):
-    workflow = (ROOT / ".github/workflows/nightly.yml").read_text()
-    step = next(step for step in workflow.split("      - ") if "id: compose\n" in step)
-    pipeline = textwrap.dedent(step.split("        run: |\n", 1)[1].split("          mapfile", 1)[0])
-    # Match the workflow's python3 command to this suite's interpreter.
+    from test_nightly import script
+    pipeline = script('Compose and validate deterministic commit')
+    # Match the publisher's python3 command to this suite's interpreter.
     pipeline = pipeline.replace("python3 scripts/", f"{sys.executable} scripts/")
     with tempfile.TemporaryDirectory(dir=self.work) as directory:
       log = Path(directory) / "nightly.log"
       (Path(directory) / "pin.json").write_bytes(self.pin_file.read_bytes())
       result = subprocess.run(["bash", "-eo", "pipefail", "-c", pipeline], cwd=ROOT, text=True, capture_output=True,
                               env={**os.environ, "BARE_REPO": str(self.repo), "UPSTREAM": self.upstream, "TETHER": "apply", "APN": "auto",
-                                   "RUNNER_TEMP": directory, "NIGHTLY_LOG": str(log)})
+                                   "BRANCH_TEMP": directory, "PIN_FILE": str(Path(directory) / "pin.json"), "NIGHTLY_LOG": str(log)})
       self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
       self.assertEqual((Path(directory) / "composed.txt").read_text(), "")
       self.assertIn("compose: FAIL: no APN patch applies", result.stdout)

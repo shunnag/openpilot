@@ -1,0 +1,1362 @@
+From b7e585ed5c99d8dabb99753b152b5c8669591a0c Mon Sep 17 00:00:00 2001
+Subject: [PATCH] APN authentication runtime (nightly)
+
+Source: op-ui, git diff 6f4c0faf1 b7e585ed5 -- <ten runtime paths>
+
+diff --git a/openpilot/common/hardware/comma/apn_auth_store.py b/openpilot/common/hardware/comma/apn_auth_store.py
+new file mode 100644
+index 000000000..240bb1998
+--- /dev/null
++++ b/openpilot/common/hardware/comma/apn_auth_store.py
+@@ -0,0 +1,56 @@
++"""Private, atomic storage for APN authentication settings."""
++import json
++import os
++import tempfile
++
++STORE_DIR = os.environ.get("APN_AUTH_STORE_DIR", "/data/apn_auth")
++STORE_PATH = STORE_DIR + "/settings.json"
++
++
++def read() -> tuple[str, str, str]:
++  try:
++    with open(STORE_PATH) as f:
++      settings = json.load(f)
++    values = tuple(settings.get(key, "") for key in ("auth", "user", "password"))
++    if all(isinstance(value, str) for value in values):
++      return values
++  except (OSError, ValueError, AttributeError, TypeError):
++    pass
++  return "", "", ""
++
++
++def write(auth=None, user=None, password=None):
++  values = dict(zip(("auth", "user", "password"), read(), strict=True))
++  for key, value in (("auth", auth), ("user", user), ("password", password)):
++    if value is not None:
++      if not isinstance(value, str):
++        raise TypeError("APN auth settings must be strings")
++      values[key] = value
++  os.makedirs(STORE_DIR, mode=0o700, exist_ok=True)
++  fd, temporary = tempfile.mkstemp(dir=STORE_DIR, prefix=".settings-")
++  try:
++    with os.fdopen(fd, "w") as f:
++      os.fchmod(f.fileno(), 0o600)
++      json.dump(values, f)
++      f.flush()
++      os.fsync(f.fileno())
++    os.replace(temporary, STORE_PATH)
++  finally:
++    try:
++      os.unlink(temporary)
++    except FileNotFoundError:
++      pass
++
++
++def clear():
++  try:
++    os.unlink(STORE_PATH)
++  except FileNotFoundError:
++    pass
++
++
++def mtime() -> float | None:
++  try:
++    return os.stat(STORE_PATH).st_mtime
++  except OSError:
++    return None
+diff --git a/openpilot/common/hardware/comma/modem.py b/openpilot/common/hardware/comma/modem.py
+index f1b79862b..67650d1ff 100755
+--- a/openpilot/common/hardware/comma/modem.py
++++ b/openpilot/common/hardware/comma/modem.py
+@@ -1,8 +1,11 @@
+ #!/usr/bin/env python3
++import csv
+ import fcntl
++import glob
+ import json
+ import logging
+ import os
++import re
+ import select
+ import signal
+ import string
+@@ -12,12 +15,14 @@ import tempfile
+ import termios
+ import time
+ 
++from collections import deque
+ from contextlib import contextmanager
+ from ipaddress import IPv4Address, AddressValueError
+ 
+ from enum import Enum
+ 
+ from openpilot.common.esim.base import WEBBING_ICCID_PREFIX
++from openpilot.common.hardware.comma import apn_auth_store
+ 
+ logging.basicConfig(
+   level=logging.INFO,
+@@ -46,6 +51,8 @@ NETWORK_TYPE = {0: "gsm", 1: "gsm", 3: "gsm", 8: "gsm",
+                 11: "nr", 12: "nr", 13: "nr"}
+ 
+ DIAL_CID = 1
++AUTH_STALL_TIMEOUT = 60.0
++AUTH_PROTOCOLS = {0: "none", 1: "pap", 2: "chap"}
+ 
+ PPPD_CMD = [
+   "sudo", "pppd", PPP_PORT, "460800", "noauth", "nodetach", "noipdefault", "usepeerdns",
+@@ -68,6 +75,31 @@ INITIAL_STATE: dict[str, object] = {
+ }
+ 
+ 
++def _resolve_auth(auth: str, user: str, password: str) -> tuple[int, str, str] | None:
++  if not auth:
++    return None
++  if auth == "none":
++    return 0, "", ""
++  if auth not in ("chap", "pap"):
++    raise ValueError("auth not understood")
++  for field, value in (("user", user), ("password", password)):
++    if any(not 0x21 <= ord(c) <= 0x7e or c in '"\\,' for c in value):
++      raise ValueError(f"{field} rejected (unsupported character)")
++    if len(value) > 64:  # validated ASCII, so bytes equal characters
++      raise ValueError(f"{field} rejected (more than 64 bytes)")
++  return (1 if auth == "pap" else 2), user, password
++
++
++def _cleanup_pppd_auth():
++  for path in glob.glob("/dev/shm/modem_pppd_auth_*"):
++    try:
++      os.remove(path)
++    except FileNotFoundError:
++      pass
++    except OSError:
++      logging.warning("failed to remove stale PPP auth file")
++
++
+ @contextmanager
+ def _serial_port(port: str, baudrate: int):
+   fd = os.open(port, os.O_RDWR | os.O_NOCTTY)
+@@ -120,16 +152,45 @@ class PPPSession:
+     self._proc: subprocess.Popen | None = None
+     self._fails = 0
+     self._peer = ""
++    self._auth_path: str | None = None
+ 
+-  def start(self):
+-    self._proc = subprocess.Popen(PPPD_CMD, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
++  def start(self, auth: tuple[int, str, str] | None = None):
++    self._remove_auth_file()
++    cmd = PPPD_CMD
++    if auth is not None and auth[0] in (1, 2):
++      fd = None
++      try:
++        fd, self._auth_path = tempfile.mkstemp(dir="/dev/shm", prefix="modem_pppd_auth_")
++        with os.fdopen(fd, "w") as f:
++          f.write(f'user "{auth[1]}"\npassword "{auth[2]}"\n')
++        cmd = PPPD_CMD[:-4] + ["file", self._auth_path]
++      except Exception:
++        logging.warning("failed to create PPP auth file; using default options")
++        if fd is not None:
++          try:
++            os.close(fd)
++          except OSError:
++            pass
++        self._remove_auth_file()
++    self._proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+     self._peer = ""
+     logging.info(f"PPP dialing CID {DIAL_CID}")
+ 
+   def kill(self):
++    self._remove_auth_file()
+     subprocess.run(["sudo", "killall", "-9", "pppd"], capture_output=True)
+     self._peer = ""
+ 
++  def _remove_auth_file(self):
++    if self._auth_path is not None:
++      try:
++        os.remove(self._auth_path)
++        self._auth_path = None
++      except FileNotFoundError:
++        self._auth_path = None
++      except OSError:
++        logging.warning("failed to remove PPP auth file")
++
+   @staticmethod
+   def reset_data_port():
+     """Drop DTR on PPP_PORT so the modem terminates any stuck PPP session."""
+@@ -215,8 +276,19 @@ class Modem:
+     self._sim_change = False
+     self._apn = ""  # blank = network-provided via PCO
+     self._roaming_allowed = True
++    self._reattach_tries = 0  # re-registrations left to apply APN/auth to DIAL_CID
++    self._auth: tuple[int, str, str] | None = None
++    self._auth_command: str | None = None
++    self._auth_probe_tries = 0
++    self._auth_unavailable = False
++    self._auth_warning = ""
++    self._auth_changed = False
++    self._reattach_on_stall = False
++    self._stall_since: float | None = None
+     self.running = True
+     self.S = INITIAL_STATE.copy()
++    self._auth_store = ("", "", "")
++    self._events: deque[str] = deque(maxlen=6)
+ 
+   @staticmethod
+   def _read_param(key):
+@@ -243,6 +315,11 @@ class Modem:
+     return self._read_param("GsmRoaming") == "1"
+ 
+   def _publish_state(self, **kwargs):
++    reg = kwargs.get("registration")
++    if reg != self.S["registration"] and reg in ("denied", "searching", "not_registered"):
++      ceer = self._at("AT+CEER")
++      logging.info(f"last network cause (AT+CEER, may be stale): {ceer}")
++      self._diag_ceer(ceer)
+     self.S.update(kwargs)
+     self.S["seconds_since_boot"] = time.monotonic()
+     with tempfile.NamedTemporaryFile(mode="w", dir="/dev/shm", delete=False) as f:
+@@ -250,7 +327,105 @@ class Modem:
+     os.chmod(f.name, 0o644)
+     os.replace(f.name, STATE_PATH)
+ 
+-  def _at(self, cmd):
++  def _diag_set(self, section, **values):
++    try:
++      def primitives(value):
++        if type(value) in (str, int, float, bool) or value is None:
++          return True
++        if type(value) is list:
++          return all(primitives(item) for item in value)
++        if type(value) is dict:
++          return all(type(key) is str and primitives(item) for key, item in value.items())
++        return False
++
++      if not primitives(values):
++        return
++      values = json.loads(json.dumps(values, allow_nan=False))
++      diag = self.S.get("diag", {})
++      previous = diag.get(section, {}) if section else diag
++      updated = {**previous, **values}
++      if updated == previous:
++        return
++      if section in ("reg", "ceer", "auth"):
++        updated["at"] = time.monotonic()
++      self.S["diag"] = {**diag, section: updated} if section else updated
++      self._publish_state()
++    except Exception:
++      pass
++
++  def _event(self, text):
++    try:
++      states = "INITIALIZING|SEARCHING|CONNECTING|CONNECTED|DISCONNECTING"
++      allowed = (
++        rf"state ({states})->({states})", r"auth applied (CGAUTH|QICSGP)",
++        r"auth readback (ok|mismatch|failed)", r"reattach (denied|stalled)",
++        r'CEER (?:(?:[0-9]+|"(?:ESM|EMM|CC|SM|SS)"),[0-9]+)',
++        r"PPP fail [0-3]/3 exit=(?:-?[0-9]+|unknown)",
++        r"no auth command", r"auth warning", r"APN changed", r"roaming blocked", r"sim missing",
++      )
++      if not any(re.fullmatch(pattern, text) for pattern in allowed):
++        return
++      self._events.append(f"{int(time.monotonic())}s {text}")
++      self._diag_set("", events=list(self._events))
++    except Exception:
++      pass
++
++  def _diag_auth(self, readback=None, store=None):
++    try:
++      auth, user, password = self._auth_store if store is None else store
++      mode = "invalid" if self._auth_warning else auth or "unmanaged"
++      if self.S["iccid"].startswith(WEBBING_ICCID_PREFIX):
++        mode = "unmanaged"
++      cmd = "-" if self._auth is None else "unsupported" if self._auth_unavailable else self._auth_command or "-"
++      values = {"mode": mode, "cmd": cmd, "warning": self._auth_warning,
++                "user_len": len(user), "user_has_at": "@" in user, "password_set": bool(password)}
++      if readback is not None:
++        values["readback"] = readback
++      self._diag_set("auth", **values)
++    except Exception:
++      pass
++
++  def _diag_reattach(self, reason=None):
++    try:
++      values = {"left": self._reattach_tries, "count": self.S.get("diag", {}).get("reattach", {}).get("count", 0)}
++      if reason is not None:
++        values.update(count=values["count"] + 1, last_reason=reason, last_at=time.monotonic())
++      self._diag_set("reattach", **values)
++    except Exception:
++      pass
++
++  def _diag_auth_changed(self):
++    try:
++      self._diag_set("times", auth_changed_at=time.monotonic(), connected_after_change_s=None)
++    except Exception:
++      pass
++
++  def _diag_identity(self, identity):
++    try:
++      self._diag_set("", fw=identity["modem_version"], sim=bool(identity["iccid"]),
++                     comma_sim=identity["iccid"].startswith(WEBBING_ICCID_PREFIX), mcc_mnc=identity["mcc_mnc"][:5],
++                     roaming_allowed=self._roaming_allowed)
++      if not identity["iccid"]:
++        self._event("sim missing")
++    except Exception:
++      pass
++
++  def _diag_ceer(self, lines):
++    try:
++      for line in lines:
++        if line.startswith("+CEER:"):
++          text = line.split(":", 1)[1].strip()
++          # Cause codes only; unexpected modem text could carry identifiers.
++          if re.fullmatch(r'(?:[0-9]{1,3}|"(?:ESM|EMM|CC|SM|SS)")(?:,[0-9]{1,3})+', text):
++            self._diag_set("ceer", text=text[:60])
++            self._event("CEER " + ",".join(text.split(",")[:2]))
++          elif text in ("No report", "No cause information"):
++            self._diag_set("ceer", text=text)
++          break
++    except Exception:
++      pass
++
++  def _at(self, cmd, shown=None):
+     """Send AT command, return response lines. [] on error or if LPA holds port."""
+     fd = os.open(AT_LOCK, os.O_CREAT | os.O_RDWR, 0o666)
+     try:
+@@ -279,7 +454,7 @@ class Modem:
+           lines.append(line)
+         return lines
+     except (RuntimeError, TimeoutError, OSError) as e:
+-      logging.info(f"AT {cmd} failed: {e}")
++      logging.info(f"AT {shown if shown is not None else cmd} failed: {type(e).__name__ if shown is not None else e}")
+       return []
+     finally:
+       fcntl.flock(fd, fcntl.LOCK_UN)
+@@ -328,7 +503,12 @@ class Modem:
+       logging.warning("AT echo still on, retrying")
+       return State.INITIALIZING
+ 
++    # an interrupted re-registration can leave the modem deregistered
++    if self._cops_mode() == "2":
++      self._at("AT+COPS=0")
++
+     identity = self._read_identity()
++    self._diag_identity(identity)
+     if not identity["iccid"] or not identity["imei"]:
+       logging.warning(f"identity read incomplete: {identity}, retrying")
+       return State.INITIALIZING
+@@ -338,8 +518,40 @@ class Modem:
+     self.S.update(identity)
+     self._apn = self._read_param("GsmApn")
+     self._roaming_allowed = self._is_roaming_allowed()
++    self._auth_store = apn_auth_store.read()
++    self._auth = self._read_auth(self._auth_store)
++    self._diag_identity(identity)
++    if self._auth is None:
++      self._reattach_on_stall = False
++    self._auth_command = None
++    self._diag_auth(readback={"ok": None, "protocol_ok": None, "user_ok": None, "password_ok": None})
++    if self._auth_changed and self._auth is not None:
++      self._arm_auth_reattach()
++    self._auth_changed = False
++    if self._auth is not None and not self._auth_unavailable:
++      self._auth_command = self._select_auth_command(identity["modem_version"])
++      if self._auth_command is None:
++        if self._auth_probe_tries < 3:
++          self._auth_probe_tries += 1
++          return State.INITIALIZING
++        logging.warning("modem has no APN auth command")
++        self._auth_unavailable = True
++        self._event("no auth command")
++      else:
++        self._auth_probe_tries = 0
++        profile = self._read_auth_profile()
++        if profile is not None and (profile[:2] != self._auth[:2] or (profile[2] is not None and profile[2] != self._auth[2])):
++          self._arm_auth_reattach()
++    # the modem attaches with the APN it has stored, so a new one only applies on its next attach
++    cid1_before = self._read_dial_apn()
++    self._diag_set("apn", setting=self._apn, cid1_before=cid1_before)
++    if cid1_before != self._apn:
++      self._reattach_tries = 2
+     # blank APN lets the carrier supply one via PCO
+     self._at(f'AT+CGDCONT={DIAL_CID},"IP","{self._apn}"')
++    self._diag_auth(readback={"ok": None, "protocol_ok": None, "user_ok": None, "password_ok": None})
++    self._write_auth()
++    self._diag_reattach()
+     logging.info(f"APN '{self._apn or '(network-provided)'}' written to CID {DIAL_CID}, roaming={'on' if self._roaming_allowed else 'off'}")
+ 
+     self._sim_change = False  # clear since we just re-read identity with the new SIM
+@@ -367,11 +579,98 @@ class Modem:
+     logging.info(f"imei={imei} iccid={iccid} mcc_mnc={mcc_mnc} ver={modem_version}")
+     return {"imei": imei, "iccid": iccid, "mcc_mnc": mcc_mnc, "modem_version": modem_version}
+ 
++  def _read_dial_apn(self) -> str | None:
++    v = self._atv("AT+CGDCONT?", f"+CGDCONT: {DIAL_CID},")
++    fields = v.split(",") if v else []
++    return fields[2].strip('"') if len(fields) > 2 else None
++
++  def _read_auth(self, store=None) -> tuple[int, str, str] | None:
++    try:
++      auth_param, user, password = apn_auth_store.read() if store is None else store
++      if self.S["iccid"].startswith(WEBBING_ICCID_PREFIX):
++        warning = "APN auth ignored for comma SIM" if auth_param else ""
++        if warning and warning != self._auth_warning:
++          logging.warning(warning)
++          self._event("auth warning")
++        self._auth_warning = warning
++        return None
++      auth = _resolve_auth(auth_param, user, password)
++      if not auth_param and (user or password):
++        raise ValueError("user/password set but auth is empty")
++    except ValueError as e:
++      warning = str(e)
++      if warning != self._auth_warning:
++        logging.warning(warning)
++        self._event("auth warning")
++      self._auth_warning = warning
++      return None
++    self._auth_warning = ""
++    return auth
++
++  def _select_auth_command(self, modem_version: str) -> str | None:
++    commands = ("QICSGP", "CGAUTH") if modem_version.startswith("EG25") else ("CGAUTH", "QICSGP")
++    for command in commands:
++      if any(line.startswith(f"+{command}:") for line in self._at(f"AT+{command}=?")):
++        return command
++    return None
++
++  def _read_auth_profile(self) -> tuple[int, str, str | None] | None:
++    cmd = "AT+CGAUTH?" if self._auth_command == "CGAUTH" else f"AT+QICSGP={DIAL_CID}"
++    prefix = f"+CGAUTH: {DIAL_CID}," if self._auth_command == "CGAUTH" else "+QICSGP:"
++    for line in self._at(cmd, shown=cmd):
++      if not line.startswith(prefix):
++        continue
++      try:
++        fields = next(csv.reader([line.split(":", 1)[1].strip()], skipinitialspace=True, strict=True))
++        if self._auth_command == "CGAUTH":
++          protocol, user = int(fields[1]), fields[2] if len(fields) > 2 else ""
++          password = fields[3] if len(fields) > 3 else None
++        else:
++          protocol, user, password = int(fields[4]), fields[2], fields[3]
++        return protocol, user, password if protocol == 0 else password or None
++      except (ValueError, IndexError, csv.Error):
++        return None
++    return None
++
++  def _arm_auth_reattach(self):
++    self._reattach_tries = 2
++    self._reattach_on_stall = True
++    self._stall_since = None
++    logging.info("APN auth requires re-attach")
++
++  def _write_auth(self):
++    if self._auth is None or self._auth_command is None:
++      return
++    protocol, user, password = self._auth
++    if self._auth_command == "CGAUTH":
++      cmd = f'AT+CGAUTH={DIAL_CID},0,"",""' if protocol == 0 else f'AT+CGAUTH={DIAL_CID},{protocol},"{user}","{password}"'
++    else:
++      cmd = f'AT+QICSGP={DIAL_CID},1,"{self._apn}","{user}","{password}",{protocol}'
++    self._at(cmd, shown=f"AT+{self._auth_command}={DIAL_CID},<redacted>")
++    profile = self._read_auth_profile()
++    result = "readback failed"
++    readback = {"ok": False, "protocol_ok": None, "user_ok": None, "password_ok": None}
++    if profile is not None:
++      password_ok = f"password ok={profile[2] == password}" if profile[2] is not None else "password not shown"
++      result = f"readback protocol ok={profile[0] == protocol}, user ok={profile[1] == user}, {password_ok}"
++      readback = {"protocol_ok": profile[0] == protocol, "user_ok": profile[1] == user,
++                  "password_ok": profile[2] == password if profile[2] is not None else None}
++      readback["ok"] = readback["protocol_ok"] and readback["user_ok"] and readback["password_ok"] is not False
++    self._diag_auth(readback=readback)
++    self._event(f"auth applied {self._auth_command}")
++    self._event("auth readback " + ("failed" if profile is None else "ok" if readback["ok"] else "mismatch"))
++    logging.info(f"APN auth via {self._auth_command}: protocol={AUTH_PROTOCOLS.get(protocol, str(protocol))}, {result}")
++
+   def _do_searching(self):
+     new_roaming = self._is_roaming_allowed()
+     if new_roaming != self._roaming_allowed:
+       logging.info(f"roaming changed: {self._roaming_allowed} -> {new_roaming}")
+       self._roaming_allowed = new_roaming
++      self._diag_set("", roaming_allowed=new_roaming)
++
++    # roaming was just synced; INITIALIZING writes the new APN and auth
++    if self._params_changed():
++      return State.DISCONNECTING
+ 
+     v = self._atv("AT+CREG?", "+CREG:")
+     if not v:
+@@ -379,9 +678,25 @@ class Modem:
+ 
+     reg = self._parse_reg(v)
+     greg = self._parse_reg(self._atv("AT+CGREG?", "+CGREG:") or "")
++    self._diag_set("reg", creg=reg, cgreg=greg)
+     logging.debug(f"creg={reg} cgreg={greg} roaming_allowed={self._roaming_allowed}")
+ 
++    if reg not in ("searching", "not_registered"):
++      self._stall_since = None
++    elif self._reattach_on_stall and self._stall_since is None:
++      self._stall_since = time.monotonic()
++
++    if reg == "denied" and self._reattach_tries > 0:
++      self._publish_state(registration=reg)
++      return self._reattach()
++
++    if self._reattach_on_stall and self._reattach_tries > 0 and self._stall_since is not None:
++      if time.monotonic() - self._stall_since >= AUTH_STALL_TIMEOUT:
++        self._publish_state(registration=reg)
++        return self._reattach(stalled=True)
++
+     if reg == "roaming" and not self._roaming_allowed:
++      self._event("roaming blocked")
+       self._publish_state(registration=reg)
+       return State.SEARCHING
+ 
+@@ -393,6 +708,29 @@ class Modem:
+       self._publish_state(registration=reg)
+     return self._searching_idle()
+ 
++  def _cops_mode(self) -> str | None:
++    v = self._atv("AT+COPS?", "+COPS:")
++    return v.split(",", 1)[0].strip() if v else None
++
++  def _reattach(self, stalled=False):
++    reason = "stalled" if stalled else "denied"
++    logging.info(f"registration {reason}, re-attaching with APN '{self._apn or '(network-provided)'}'")
++    self._reattach_tries -= 1
++    self._at("AT+COPS=2")  # deregister
++    if self._cops_mode() == "2":
++      self._reattach_tries = 0
++    # context is inactive while deregistered; the INITIALIZING write may have been lost to the AT lock
++    self._at(f'AT+CGDCONT={DIAL_CID},"IP","{self._apn}"')
++    self._write_auth()
++    self._at("AT+COPS=0")  # automatic registration, attaches with the APN in DIAL_CID
++    self._diag_reattach(reason)
++    self._event(f"reattach {reason}")
++    self._reattach_on_stall &= self._reattach_tries > 0
++    self._stall_since = time.monotonic() if self._reattach_on_stall else None
++    if self._cops_mode() != "0":
++      return State.DISCONNECTING  # AT port busy; INITIALIZING sends AT+COPS=0
++    return State.SEARCHING
++
+   def _searching_idle(self):
+     if self._sim_change or not os.path.exists(AT_PORT):
+       logging.info(f"-> reconnecting (sim_change={self._sim_change} port={os.path.exists(AT_PORT)})")
+@@ -403,13 +741,27 @@ class Modem:
+     logging.info("starting pppd")
+     self._ppp.reset_fail_counter()
+     self._sim_change = False
+-    self._ppp.start()
++    self._reattach_tries = 0  # registered, nothing left to apply
++    self._reattach_on_stall = False
++    self._stall_since = None
++    self._ppp.start(self._auth)
++    self._diag_set("reattach", left=0)
++    self._diag_set("ppp", fails=0, ip_present=False)
+     return State.CONNECTED
+ 
+   def _handle_pppd_exit(self):
++    code = None
++    try:
++      code = getattr(self._ppp._proc, "returncode", None)
++      code = code if type(code) is int else None
++      self._diag_set("ppp", last_exit=code, last_exit_at=time.monotonic(), ip_present=False)
++    except Exception:
++      pass
+     if self._sim_change or not os.path.exists(AT_PORT):
+       return State.DISCONNECTING
+     give_up = self._ppp.record_fail()
++    self._diag_set("ppp", fails=self._ppp.fails)
++    self._event(f"PPP fail {self._ppp.fails}/3 exit={code if code is not None else 'unknown'}")
+     if give_up:
+       logging.warning(f"PPP fail {self._ppp.fails}/{self._ppp.MAX_FAILS}, reconnecting")
+       return State.DISCONNECTING
+@@ -417,19 +769,32 @@ class Modem:
+     self._ppp.reset_data_port()
+     if not os.path.exists(AT_PORT):
+       return State.DISCONNECTING
+-    self._ppp.start()
++    self._ppp.start(self._auth)
+     return State.CONNECTED
+ 
+   def _params_changed(self) -> bool:
++    new_store = apn_auth_store.read()
++    resolved = self._read_auth(new_store)
++    # Ignored credentials do not reconnect unmanaged/none sessions.
++    auth_changed = new_store != self._auth_store and (resolved != self._auth or resolved is not None and resolved[0] != 0)
++    if not auth_changed:
++      self._auth_store = new_store
++      self._diag_auth()
++    if auth_changed:
++      logging.info("APN auth settings changed")
++      self._auth_changed = True
++      self._diag_auth_changed()
++      self._diag_auth(store=new_store, readback={"ok": None, "protocol_ok": None, "user_ok": None, "password_ok": None})
+     new_apn = self._read_param("GsmApn")
+     if new_apn != self._apn:
++      self._event("APN changed")
+       logging.info(f"GsmApn changed: '{self._apn}' -> '{new_apn}'")
+       return True
+     new_roaming = self._is_roaming_allowed()
+     if new_roaming != self._roaming_allowed:
+       logging.info(f"roaming changed: {self._roaming_allowed} -> {new_roaming}")
+       return True
+-    return False
++    return auth_changed
+ 
+   def _check_iccid(self, state):
+     if state in (State.INITIALIZING, State.DISCONNECTING) or not self.S["iccid"]:
+@@ -451,11 +816,13 @@ class Modem:
+ 
+   def _do_disconnecting(self):
+     logging.warning("reconnecting")
++    self._diag_set("ppp", ip_present=False)
+     self._publish_state(**INITIAL_STATE)
+     self._ppp.kill()
+     self._ppp.cleanup_routes()
+     self._ppp.reset_data_port()
+     self._sim_change = False
++    self._stall_since = None
+     return State.INITIALIZING
+ 
+   def _poll_signal(self) -> dict:
+@@ -570,10 +937,19 @@ class Modem:
+                self._poll_byte_counters):
+       s.update(fn())
+     if s:
++      try:
++        self._diag_set("ppp", ip_present=bool(s.get("ip_address", self.S.get("ip_address"))))
++        if s.get("connected") and not self.S.get("connected"):
++          now = time.monotonic()
++          changed_at = self.S.get("diag", {}).get("times", {}).get("auth_changed_at")
++          self._diag_set("times", connected_at=now, connected_after_change_s=int(now - changed_at) if changed_at is not None else None)
++      except Exception:
++        pass
+       self._publish_state(**s)
+ 
+   def run(self):
+     logging.info("starting")
++    _cleanup_pppd_auth()
+     self._publish_state(state=State.INITIALIZING.value)
+     if self._has_modem_manager():
+       subprocess.run(["sudo", "systemctl", "mask", "--runtime", "ModemManager"], capture_output=True)
+@@ -596,6 +972,7 @@ class Modem:
+         prev = state
+         state = handlers[state]()
+         if state != prev:
++          self._event(f"state {prev.value}->{state.value}")
+           self._publish_state(state=state.value)
+           logging.info(f"{prev.value} -> {state.value}")
+       except Exception:
+diff --git a/openpilot/selfdrive/ui/lib/modem_status.py b/openpilot/selfdrive/ui/lib/modem_status.py
+new file mode 100644
+index 000000000..5de97caa3
+--- /dev/null
++++ b/openpilot/selfdrive/ui/lib/modem_status.py
+@@ -0,0 +1,103 @@
++"""Photo-safe modem status formatting and an on-demand, one Hz reader."""
++import time
++from datetime import datetime
++
++from openpilot.common.hardware.comma import apn_auth_store
++
++EXIT_MEANINGS = {8: "connect script failed", 10: "negotiation failed", 16: "hangup", 19: "auth failed"}
++
++
++def _yes(value) -> str:
++  return "unknown" if value is None else "yes" if value else "no"
++
++
++def _uptime(seconds) -> str:
++  seconds = max(0, int(seconds or 0))
++  return f"{seconds // 3600}h{seconds // 60 % 60:02d}m{seconds % 60:02d}s"
++
++
++def _captured(text: str, seconds, prefix: str = "at ") -> str:
++  return text if seconds is None else f"{text} ({prefix}{int(seconds)}s)"
++
++
++def status_lines(state: dict, store: tuple[str, str, str], info: dict) -> list[tuple[str, str]]:
++  diag = state.get("diag", {})
++  reg, auth, ppp = (diag.get(section, {}) for section in ("reg", "auth", "ppp"))
++  apn, reattach, times = (diag.get(section, {}) for section in ("apn", "reattach", "times"))
++  mode, user, password = store
++  mode = mode if mode in ("none", "pap", "chap") else "invalid" if mode else "unmanaged"
++  readback = auth.get("readback", {})
++  verdict = "n/a" if readback.get("ok") is None else "ok" if readback["ok"] else "failed"
++  code = ppp.get("last_exit")
++  exit_text = "-" if code is None else f"pppd exit {code}"
++  if code in EXIT_MEANINGS:
++    exit_text += f" ({EXIT_MEANINGS[code]})"
++  ppp_text = _captured(f"{int(ppp.get('fails', 0))}/3; {exit_text}", ppp.get("last_exit_at"))
++  if ppp.get("ip_present") or state.get("state") == "CONNECTED" and state.get("connected"):
++    ppp_text = "up"
++    if code is not None:
++      retry = f"pppd exit {code}"
++      if code in EXIT_MEANINGS:
++        retry += f" {EXIT_MEANINGS[code]}"
++      if ppp.get("last_exit_at") is not None:
++        retry += f" at {int(ppp['last_exit_at'])}s"
++      ppp_text += f" (last retry: {retry})"
++  build = f"{info.get('branch', '-') or '-'} {str(info.get('commit', '-'))[:9]}  up {_uptime(info.get('uptime_s'))}"
++  lines = [
++    ("State", state.get("state", "modem not running / no state yet")),
++    ("Registration", _captured(f"{reg.get('creg', state.get('registration', 'unknown'))} / {reg.get('cgreg', 'unknown')}", reg.get("at"), "")),
++    ("Auth", _captured(f"{auth.get('mode', mode)} {auth.get('cmd', '-')} / readback {verdict}", auth.get("at"))),
++    ("PPP", ppp_text),
++    ("Data", _yes(ppp.get("ip_present", bool(state.get("connected"))))),
++    ("Build", build),
++    ("Clock", str(info.get("wall_clock") or "clock not set")),
++  ]
++  if not state:
++    return lines
++  ceer = diag.get("ceer", {})
++  reattach_text = f"left {int(reattach.get('left', 0))}, count {int(reattach.get('count', 0))}, {reattach.get('last_reason', '-') or '-'}"
++  lines += [
++    ("CEER (last)", _captured(ceer.get("text", "-"), ceer.get("at"))),
++    ("SIM", f"present {_yes(diag.get('sim'))}, comma SIM {_yes(diag.get('comma_sim'))}"),
++    ("MCC-MNC", str(diag.get("mcc_mnc", state.get("mcc_mnc", "")))[:5] or "-"),
++    ("APN setting", apn.get("setting") or "(network)"),
++    ("CID1 before", apn.get("cid1_before") or "(network)"),
++    ("Readback", f"proto {_yes(readback.get('protocol_ok'))}, user {_yes(readback.get('user_ok'))}, pass {_yes(readback.get('password_ok'))}"),
++    ("User / password", f"{len(user)} chars, @ {_yes('@' in user)} / set {_yes(bool(password))}"),
++    ("Re-registrations", _captured(reattach_text, reattach.get("last_at"))),
++    ("Roaming allowed", _yes(diag.get("roaming_allowed"))),
++    ("Modem fw", diag.get("fw", state.get("modem_version", "")) or "-"),
++    ("After change", f"{int(times['connected_after_change_s'])}s" if times.get("connected_after_change_s") is not None else "-"),
++  ]
++  if state.get("state") == "CONNECTED":
++    network = f"{state.get('network_type', '')} {state.get('operator', '')}".strip() or "-"
++    lines.append(("Network / signal", f"{network} / {round(state.get('signal_strength', 0))}%"))
++  if auth.get("warning"):
++    lines.append(("Auth warning", auth["warning"]))
++  lines.extend(("Event", event) for event in diag.get("events", [])[-6:])
++  return lines
++
++
++class ModemStatusReader:
++  def __init__(self):
++    from openpilot.common.params import Params
++    self._params = Params()
++    self._next_read = 0.0
++    self.lines: list[tuple[str, str]] = []
++
++  def _info(self, now: float) -> dict:
++    from openpilot.common.time_helpers import system_time_valid
++    return {"branch": self._params.get("GitBranch"), "commit": self._params.get("GitCommit") or "-",
++            "uptime_s": int(now), "wall_clock": datetime.now().strftime("%Y-%m-%d %H:%M:%S") if system_time_valid() else None}
++
++  def update(self) -> bool:
++    from openpilot.common.hardware import HARDWARE
++    now = time.monotonic()
++    if now < self._next_read:
++      return False
++    self._next_read = now + 1.0
++    lines = status_lines(HARDWARE.get_modem_state(), apn_auth_store.read(), self._info(now))
++    if lines == self.lines:
++      return False
++    self.lines = lines
++    return True
+diff --git a/openpilot/selfdrive/ui/mici/layouts/settings/network/modem_status.py b/openpilot/selfdrive/ui/mici/layouts/settings/network/modem_status.py
+new file mode 100644
+index 000000000..db3bccb50
+--- /dev/null
++++ b/openpilot/selfdrive/ui/mici/layouts/settings/network/modem_status.py
+@@ -0,0 +1,46 @@
++import pyray as rl
++
++from openpilot.selfdrive.ui.lib.modem_status import ModemStatusReader
++from openpilot.selfdrive.ui.ui_state import device
++from openpilot.system.ui.lib.application import FONT_SCALE, font_fallback, gui_app
++from openpilot.system.ui.widgets.scroller import NavRawScrollPanel
++
++
++class ModemStatusMici(NavRawScrollPanel):
++  def __init__(self):
++    super().__init__()
++    self._reader = ModemStatusReader()
++    self._rows: list[str] = []
++
++  def show_event(self):
++    super().show_event()
++    device.set_override_interactive_timeout(300)
++
++  def hide_event(self):
++    super().hide_event()
++    device.set_override_interactive_timeout(None)
++
++  def _update_state(self):
++    super()._update_state()
++    if gui_app.get_active_widget() is self and self._reader.update():
++      font = font_fallback(gui_app.font())
++      self._rows = []
++      for label, value in self._reader.lines:
++        words = f"{label}: {value}".split()
++        row = ""
++        for word in words:
++          candidate = (row + " " + word).strip()
++          width = rl.measure_text_ex(font, candidate, 26 * FONT_SCALE, 0).x  # noqa: TID251 -- Avoid the unbounded text cache.
++          if row and width > gui_app.width - 24:
++            self._rows.append(row)
++            row = word
++          else:
++            row = candidate
++        self._rows.append(row)
++
++  def _render(self, rect: rl.Rectangle):
++    offset = round(self._scroll_panel.update(rect, 24 + len(self._rows) * 34))
++    rl.begin_scissor_mode(int(rect.x), int(rect.y), int(rect.width), int(rect.height))
++    for i, text in enumerate(self._rows):
++      rl.draw_text_ex(gui_app.font(), text, rl.Vector2(rect.x + 12, rect.y + 24 + i * 34 + offset), 26, 0, rl.WHITE)
++    rl.end_scissor_mode()
+diff --git a/openpilot/selfdrive/ui/mici/layouts/settings/network/network_layout.py b/openpilot/selfdrive/ui/mici/layouts/settings/network/network_layout.py
+index d38d640bd..79b78ecce 100644
+--- a/openpilot/selfdrive/ui/mici/layouts/settings/network/network_layout.py
++++ b/openpilot/selfdrive/ui/mici/layouts/settings/network/network_layout.py
+@@ -1,7 +1,11 @@
++from collections.abc import Callable
++
++from openpilot.common.hardware.comma import apn_auth_store
++
+ from openpilot.selfdrive.ui.mici.layouts.settings.network import EsimNetworkButton, WifiNetworkButton
+ from openpilot.selfdrive.ui.mici.layouts.settings.network.esim_ui import EsimUI
+ from openpilot.selfdrive.ui.mici.layouts.settings.network.wifi_ui import WifiUIMici
+-from openpilot.selfdrive.ui.mici.widgets.button import BigButton, BigMultiToggle, BigParamControl, BigToggle
++from openpilot.selfdrive.ui.mici.widgets.button import BigButton, BigMultiToggle, BigParamControl, BigToggle, GreyBigButton
+ from openpilot.selfdrive.ui.mici.widgets.dialog import BigInputDialog
+ from openpilot.selfdrive.ui.ui_state import ui_state
+ from openpilot.system.ui.lib.application import gui_app
+@@ -10,6 +14,27 @@ from openpilot.system.ui.lib.wifi_manager import WifiManager, Network, MeteredTy
+ from openpilot.system.ui.widgets.scroller import NavScroller
+ 
+ 
++AUTH_FIELD_RULE = 'use 1-64 ascii letters, digits or symbols, without spaces, double quotes, backslashes or commas.'
++
++
++def _valid_auth_field(text: str) -> bool:
++  return 1 <= len(text) <= 64 and all(0x21 <= ord(c) <= 0x7e and c not in '"\\,' for c in text)
++
++
++class ApnCredentialsConfirmDialog(NavScroller):
++  def __init__(self, confirm_callback: Callable[[], None], message: str = "also delete the saved apn user name and password?"):
++    super().__init__()
++    no_btn = BigButton("no", "keep saved credentials")
++    no_btn.set_click_callback(self.dismiss)
++    yes_btn = BigButton("yes", "delete saved credentials")
++    yes_btn.set_click_callback(lambda: self.dismiss(confirm_callback))
++    self._scroller.add_widgets([
++      GreyBigButton("", message),
++      no_btn,
++      yes_btn,
++    ])
++
++
+ class NetworkLayoutMici(NavScroller):
+   def __init__(self):
+     super().__init__()
+@@ -86,6 +111,18 @@ class NetworkLayoutMici(NavScroller):
+                               description="Set the access point name required by your cellular carrier. Leave blank for automatic configuration.")
+     self._apn_btn.set_click_callback(self._edit_apn)
+ 
++    self._apn_user_btn = BigButton("apn user name", "not set", description=AUTH_FIELD_RULE)
++    self._apn_user_btn.set_click_callback(self._edit_apn_user)
++    self._apn_password_btn = BigButton("apn password", "not set", description=AUTH_FIELD_RULE)
++    self._apn_password_btn.set_click_callback(self._edit_apn_password)
++    self._apn_auth_btn = BigMultiToggle("apn auth", ["off", "chap", "pap"], select_callback=self._set_apn_auth)
++    self._apn_delete_btn = BigButton("delete apn credentials", "delete")
++    self._apn_delete_btn.set_click_callback(self._delete_apn_credentials)
++    self._refresh_apn_auth()
++    self._modem_status = None
++    self._modem_status_btn = BigButton("modem status", "view")
++    self._modem_status_btn.set_click_callback(self._show_modem_status)
++
+     # ******** Cellular metered toggle ********
+     self._cellular_metered_btn = BigParamControl("cellular metered", "GsmMetered", description="Prevent large uploads over the cellular connection.")
+ 
+@@ -99,6 +136,11 @@ class NetworkLayoutMici(NavScroller):
+       # /* Advanced settings
+       self._roaming_btn,
+       self._apn_btn,
++      self._apn_user_btn,
++      self._apn_password_btn,
++      self._apn_auth_btn,
++      self._apn_delete_btn,
++      self._modem_status_btn,
+       self._cellular_metered_btn,
+       # */
+     ])
+@@ -110,10 +152,15 @@ class NetworkLayoutMici(NavScroller):
+     self._wifi_manager.set_ipv4_forward(show_cell_settings)
+     self._roaming_btn.set_visible(show_cell_settings)
+     self._apn_btn.set_visible(show_cell_settings)
++    self._apn_user_btn.set_visible(show_cell_settings)
++    self._apn_password_btn.set_visible(show_cell_settings)
++    self._apn_auth_btn.set_visible(show_cell_settings)
++    self._apn_delete_btn.set_visible(show_cell_settings and bool(self._apn_user or self._apn_has_password))
+     self._cellular_metered_btn.set_visible(show_cell_settings)
+ 
+   def show_event(self):
+     super().show_event()
++    self._refresh_apn_auth()
+     self._wifi_manager.set_active(True)
+ 
+     # Process wifi and esim callbacks while at any point in the nav stack
+@@ -134,11 +181,61 @@ class NetworkLayoutMici(NavScroller):
+         ui_state.params.remove("GsmApn")
+       else:
+         ui_state.params.put("GsmApn", apn)
++      self._refresh_apn_auth()
+ 
+     current_apn = ui_state.params.get("GsmApn") or ""
+     dlg = BigInputDialog("enter APN...", current_apn, minimum_length=0, confirm_callback=update_apn)
+     gui_app.push_widget(dlg)
+ 
++  def _show_modem_status(self):
++    from openpilot.selfdrive.ui.mici.layouts.settings.network.modem_status import ModemStatusMici
++    if self._modem_status is None:
++      self._modem_status = ModemStatusMici()
++    gui_app.push_widget(self._modem_status)
++
++  def _refresh_apn_auth(self):
++    auth, self._apn_user, password = apn_auth_store.read()
++    self._apn_auth = auth if auth in ("chap", "pap") else "off"
++    self._apn_has_password = bool(password)
++    self._apn_auth_btn.set_value(self._apn_auth)
++    self._apn_user_btn.set_value("set" if self._apn_user else "not set")
++    self._apn_password_btn.set_value("set" if self._apn_has_password else "not set")
++
++  def _delete_apn_credentials(self):
++    def clear_credentials():
++      apn_auth_store.write("none", "", "")
++      self._refresh_apn_auth()
++
++    gui_app.push_widget(ApnCredentialsConfirmDialog(clear_credentials, message="delete the saved apn user name and password?"))
++
++  def _set_apn_auth(self, value: str):
++    # BigMultiToggle changes its value before calling us; compare with the cached setting.
++    if value == self._apn_auth:
++      return
++    apn_auth_store.write(auth="none" if value == "off" else value)
++    self._refresh_apn_auth()
++    if value == "off":
++      def clear_credentials():
++        apn_auth_store.write("none", "", "")
++        self._refresh_apn_auth()
++
++      gui_app.push_widget(ApnCredentialsConfirmDialog(clear_credentials))
++
++  def _edit_apn_user(self):
++    self._edit_apn_field("user", "enter user name...", self._apn_user)
++
++  def _edit_apn_password(self):
++    self._edit_apn_field("password", "enter password...", "")
++
++  def _edit_apn_field(self, key: str, hint: str, default_text: str):
++    def update(value: str):
++      if _valid_auth_field(value):
++        apn_auth_store.write(**{key: value})
++        self._refresh_apn_auth()
++
++    gui_app.push_widget(BigInputDialog(hint, default_text, minimum_length=1, confirm_callback=update,
++                                      text_validator=_valid_auth_field))
++
+   def _on_network_updated(self, networks: list[Network]):
+     # Update tethering state
+     tethering_active = self._wifi_manager.is_tethering_active()
+diff --git a/openpilot/selfdrive/ui/translations/app.pot b/openpilot/selfdrive/ui/translations/app.pot
+index b75382e95..7bd59e9f5 100644
+--- a/openpilot/selfdrive/ui/translations/app.pot
++++ b/openpilot/selfdrive/ui/translations/app.pot
+@@ -796,3 +796,51 @@ msgstr ""
+ msgid "camera starting"
+ msgstr ""
+ 
++
++msgid "Enter APN user name"
++msgstr ""
++
++msgid "Enter APN password"
++msgstr ""
++
++msgid "APN User Name"
++msgstr ""
++
++msgid "APN Password"
++msgstr ""
++
++msgid "APN Authentication"
++msgstr ""
++
++msgid "Off"
++msgstr ""
++
++msgid "PAP"
++msgstr ""
++
++msgid "CHAP"
++msgstr ""
++
++msgid "Also delete the saved APN user name and password?"
++msgstr ""
++
++msgid "Yes"
++msgstr ""
++
++msgid "No"
++msgstr ""
++
++msgid "Use 1-64 ASCII letters, digits or symbols, without spaces, double quotes, backslashes or commas."
++msgstr ""
++
++msgid "Delete APN Credentials"
++msgstr ""
++
++msgid "DELETE"
++msgstr ""
++
++msgid "Delete the saved APN user name and password?"
++msgstr ""
++
++msgid "Modem Status"
++msgstr ""
+diff --git a/openpilot/selfdrive/ui/translations/app_ja.po b/openpilot/selfdrive/ui/translations/app_ja.po
+index 2a2f76ae1..31c835d87 100644
+--- a/openpilot/selfdrive/ui/translations/app_ja.po
++++ b/openpilot/selfdrive/ui/translations/app_ja.po
+@@ -813,3 +813,51 @@ msgstr[0] "{}分前"
+ msgid "✓ SUBSCRIBED"
+ msgstr "✓ 登録済み"
+ 
++
++msgid "Enter APN user name"
++msgstr "APNユーザー名を入力"
++
++msgid "Enter APN password"
++msgstr "APNパスワードを入力"
++
++msgid "APN User Name"
++msgstr "APNユーザー名"
++
++msgid "APN Password"
++msgstr "APNパスワード"
++
++msgid "APN Authentication"
++msgstr "APNログイン方法"
++
++msgid "Off"
++msgstr "オフ"
++
++msgid "PAP"
++msgstr "PAP"
++
++msgid "CHAP"
++msgstr "CHAP"
++
++msgid "Also delete the saved APN user name and password?"
++msgstr "保存済みのAPNユーザー名とパスワードも削除しますか？"
++
++msgid "Yes"
++msgstr "はい"
++
++msgid "No"
++msgstr "いいえ"
++
++msgid "Use 1-64 ASCII letters, digits or symbols, without spaces, double quotes, backslashes or commas."
++msgstr "ASCIIのみ、1-64までで入力してください。スペース、ダブルクォート、バックスラッシュ、カンマは使用できません。"
++
++msgid "Delete APN Credentials"
++msgstr "APNログイン情報を削除"
++
++msgid "DELETE"
++msgstr "削除"
++
++msgid "Delete the saved APN user name and password?"
++msgstr "保存済みのAPNユーザー名とパスワードを削除しますか？"
++
++msgid "Modem Status"
++msgstr "モデムの状態"
+diff --git a/openpilot/system/ui/widgets/keyboard.py b/openpilot/system/ui/widgets/keyboard.py
+index c9d2187cb..3880691d1 100644
+--- a/openpilot/system/ui/widgets/keyboard.py
++++ b/openpilot/system/ui/widgets/keyboard.py
+@@ -110,6 +110,10 @@ class Keyboard(Widget):
+   def set_text(self, text: str):
+     self._input_box.text = text
+ 
++  def set_password_mode(self, password_mode: bool):
++    self._password_mode = password_mode
++    self._input_box.set_password_mode(password_mode)
++
+   @property
+   def text(self):
+     return self._input_box.text
+diff --git a/openpilot/system/ui/widgets/modem_status_dialog.py b/openpilot/system/ui/widgets/modem_status_dialog.py
+new file mode 100644
+index 000000000..3f0de7ad8
+--- /dev/null
++++ b/openpilot/system/ui/widgets/modem_status_dialog.py
+@@ -0,0 +1,86 @@
++import pyray as rl
++
++from openpilot.selfdrive.ui.lib.modem_status import ModemStatusReader
++from openpilot.selfdrive.ui.ui_state import device, ui_state
++from openpilot.system.ui.lib.application import FONT_SCALE, font_fallback, gui_app
++from openpilot.system.ui.lib.multilang import tr
++from openpilot.system.ui.widgets import Widget
++from openpilot.system.ui.widgets.button import Button, ButtonStyle
++
++LABEL_SIZE = 34
++VALUE_SIZE = 40
++ROW_PITCH = 60
++
++
++class ModemStatusDialog(Widget):
++  def __init__(self):
++    super().__init__()
++    self._reader = ModemStatusReader()
++    self._close_button = Button(tr("Close"), click_callback=gui_app.pop_widget, button_style=ButtonStyle.PRIMARY)
++    self._rows: list[tuple[str, str]] = []
++    self._title = ""
++    self._layout_key = None
++
++  def show_event(self):
++    super().show_event()
++    device.set_override_interactive_timeout(300)
++
++  def hide_event(self):
++    super().hide_event()
++    device.set_override_interactive_timeout(None)
++
++  def _update_state(self):
++    if gui_app.get_active_widget() is self:
++      if ui_state.started:
++        gui_app.pop_widget()
++        return
++      self._reader.update()
++
++  @staticmethod
++  def _truncate(font, text: str, font_size: int, max_width: float) -> str:
++    def width(value):
++      return rl.measure_text_ex(font, value, font_size * FONT_SCALE, 0).x  # noqa: TID251 -- Avoid the unbounded text cache.
++
++    if width(text) <= max_width:
++      return text
++    ellipsis = "..."
++    if width(ellipsis) > max_width:
++      return ""
++    left, right = 0, len(text)
++    while left < right:
++      mid = (left + right + 1) // 2
++      if width(text[:mid] + ellipsis) <= max_width:
++        left = mid
++      else:
++        right = mid - 1
++    return text[:left] + ellipsis
++
++  def _render(self, rect: rl.Rectangle):
++    font = font_fallback(gui_app.font())
++    content = rl.Rectangle(rect.x + 50, rect.y + 120, rect.width - 100, rect.height - 290)
++    column_gap = 60
++    column_width = (content.width - column_gap) / 2
++    label_width = 320
++    value_offset = label_width + 20
++    rows_per_column = max(1, int(content.height // ROW_PITCH))
++    layout_key = (id(self._reader.lines), content.width, content.height)
++    if self._layout_key != layout_key:
++      metadata = dict(self._reader.lines)
++      title = f"MODEM STATUS  {metadata.get('Build', '')}  {metadata.get('Clock', 'clock not set')}"
++      self._title = self._truncate(font, title, VALUE_SIZE, content.width)
++      self._rows = [
++        (self._truncate(font, label, LABEL_SIZE, label_width),
++         self._truncate(font, str(value), VALUE_SIZE, column_width - value_offset))
++        for label, value in self._reader.lines if label not in ("Build", "Clock")
++      ]
++      self._layout_key = layout_key
++    rl.draw_text_ex(font, self._title, rl.Vector2(content.x, rect.y + 35), VALUE_SIZE, 0, rl.WHITE)
++    rl.begin_scissor_mode(int(content.x), int(content.y), int(content.width), int(content.height))
++    for i, (label, value) in enumerate(self._rows):
++      column, row = divmod(i, rows_per_column)
++      x = content.x + column * (column_width + column_gap)
++      y = content.y + row * ROW_PITCH
++      rl.draw_text_ex(font, label, rl.Vector2(x, y + 4), LABEL_SIZE, 0, rl.GRAY)
++      rl.draw_text_ex(font, value, rl.Vector2(x + value_offset, y), VALUE_SIZE, 0, rl.WHITE)
++    rl.end_scissor_mode()
++    self._close_button.render(rl.Rectangle(rect.x + rect.width - 490, rect.y + rect.height - 170, 440, 120))
+diff --git a/openpilot/system/ui/widgets/network.py b/openpilot/system/ui/widgets/network.py
+index 3aa670194..ca866c8f4 100644
+--- a/openpilot/system/ui/widgets/network.py
++++ b/openpilot/system/ui/widgets/network.py
+@@ -3,13 +3,14 @@ from functools import partial
+ from typing import cast
+ 
+ import pyray as rl
++from openpilot.common.hardware.comma import apn_auth_store
+ from openpilot.system.ui.lib.application import gui_app, TextAlignment
+ from openpilot.system.ui.lib.multilang import tr
+ from openpilot.system.ui.lib.scroll_panel import GuiScrollPanel
+ from openpilot.system.ui.lib.wifi_manager import WifiManager, SecurityType, Network, MeteredType, normalize_ssid
+ from openpilot.system.ui.widgets import DialogResult, Widget
+ from openpilot.system.ui.widgets.button import ButtonStyle, Button
+-from openpilot.system.ui.widgets.confirm_dialog import ConfirmDialog
++from openpilot.system.ui.widgets.confirm_dialog import ConfirmDialog, alert_dialog
+ from openpilot.system.ui.widgets.keyboard import Keyboard
+ from openpilot.system.ui.widgets.label import gui_label
+ from openpilot.system.ui.widgets.scroller_tici import Scroller
+@@ -29,6 +30,10 @@ STRENGTH_ICONS = [
+ ]
+ 
+ 
++def _valid_auth_field(text: str) -> bool:
++  return 1 <= len(text) <= 64 and all(0x21 <= ord(c) <= 0x7e and c not in '"\\,' for c in text)
++
++
+ class PanelType(IntEnum):
+   WIFI = 0
+   ADVANCED = 1
+@@ -91,6 +96,8 @@ class NetworkUI(Widget):
+ 
+   def _set_current_panel(self, panel: PanelType):
+     self._current_panel = panel
++    if panel == PanelType.ADVANCED:
++      self._advanced_panel.show_event()
+ 
+ 
+ class AdvancedNetworkSettings(Widget):
+@@ -131,6 +138,21 @@ class AdvancedNetworkSettings(Widget):
+     # APN setting
+     self._apn_btn = button_item(lambda: tr("APN Setting"), lambda: tr("EDIT"), callback=self._edit_apn)
+ 
++    self._apn_user_action = ButtonAction(lambda: tr("EDIT"))
++    self._apn_user_action.set_value(lambda: f"set ({len(self._apn_user)} chars)" if self._apn_user else "")
++    self._apn_user_btn = ListItem(lambda: tr("APN User Name"), action_item=self._apn_user_action, callback=self._edit_apn_user)
++    self._apn_password_action = ButtonAction(lambda: tr("EDIT"))
++    self._apn_password_action.set_value(lambda: "••••••" if self._apn_has_password else "")
++    self._apn_password_btn = ListItem(lambda: tr("APN Password"), action_item=self._apn_password_action, callback=self._edit_apn_password)
++    self._apn_auth_action = MultipleButtonAction([lambda: tr("Off"), lambda: tr("PAP"), lambda: tr("CHAP")], 180,
++                                               callback=self._set_apn_auth)
++    self._apn_auth_btn = ListItem(lambda: tr("APN Authentication"), action_item=self._apn_auth_action)
++    self._apn_delete_btn = button_item(lambda: tr("Delete APN Credentials"), lambda: tr("DELETE"), callback=self._delete_apn_credentials)
++    self._refresh_apn_auth()
++    self._modem_status = None
++    self._modem_status_btn = button_item(lambda: tr("Modem Status"), lambda: tr("VIEW"),
++                                         callback=self._show_modem_status, enabled=ui_state.is_offroad)
++
+     # Wi-Fi metered toggle
+     self._wifi_metered_action = MultipleButtonAction([lambda: tr("default"), lambda: tr("metered"), lambda: tr("unmetered")], 255, 0,
+                                                      callback=self._toggle_wifi_metered)
+@@ -143,6 +165,11 @@ class AdvancedNetworkSettings(Widget):
+       text_item(lambda: tr("IP Address"), lambda: self._wifi_manager.ipv4_address),
+       self._roaming_btn,
+       self._apn_btn,
++      self._apn_user_btn,
++      self._apn_password_btn,
++      self._apn_auth_btn,
++      self._apn_delete_btn,
++      self._modem_status_btn,
+       self._cellular_metered_btn,
+       wifi_metered_btn,
+       button_item(lambda: tr("Hidden Network"), lambda: tr("CONNECT"), callback=self._connect_to_hidden_network),
+@@ -150,6 +177,70 @@ class AdvancedNetworkSettings(Widget):
+ 
+     self._scroller = Scroller(items, line_separator=True, spacing=0)
+ 
++  def show_event(self):
++    super().show_event()
++    self._refresh_apn_auth()
++
++  def _show_modem_status(self):
++    from openpilot.system.ui.widgets.modem_status_dialog import ModemStatusDialog
++    if self._modem_status is None:
++      self._modem_status = ModemStatusDialog()
++    gui_app.push_widget(self._modem_status)
++
++  def _refresh_apn_auth(self):
++    auth, self._apn_user, password = apn_auth_store.read()
++    self._apn_auth = auth if auth in ("pap", "chap") else "none"
++    self._apn_has_password = bool(password)
++    self._apn_auth_action.set_selected_button(("none", "pap", "chap").index(self._apn_auth))
++
++  def _delete_apn_credentials(self):
++    def clear_credentials(result: DialogResult):
++      if result == DialogResult.CONFIRM:
++        apn_auth_store.write("none", "", "")
++        self._refresh_apn_auth()
++
++    gui_app.push_widget(ConfirmDialog(tr("Delete the saved APN user name and password?"), tr("Yes"), tr("No"), callback=clear_credentials))
++
++  def _set_apn_auth(self, index: int):
++    auth = ("none", "pap", "chap")[index]
++    # MultipleButtonAction also calls back when the selected button is tapped again.
++    if auth == self._apn_auth:
++      return
++    apn_auth_store.write(auth=auth)
++    self._refresh_apn_auth()
++    if auth == "none":
++      def clear_credentials(result: DialogResult):
++        if result == DialogResult.CONFIRM:
++          apn_auth_store.write("none", "", "")
++          self._refresh_apn_auth()
++
++      gui_app.push_widget(ConfirmDialog(tr("Also delete the saved APN user name and password?"), tr("Yes"), tr("No"), callback=clear_credentials))
++
++  def _edit_apn_user(self):
++    self._edit_apn_field("user", tr("Enter APN user name"), False)
++
++  def _edit_apn_password(self):
++    self._edit_apn_field("password", tr("Enter APN password"), True)
++
++  def _edit_apn_field(self, key: str, title: str, password_mode: bool):
++    def update(result: DialogResult):
++      self._keyboard.set_password_mode(False)
++      if result != DialogResult.CONFIRM:
++        return
++      value = self._keyboard.text
++      if not _valid_auth_field(value):
++        gui_app.push_widget(alert_dialog(tr("Use 1-64 ASCII letters, digits or symbols, without spaces, double quotes, backslashes or commas.")))
++        return
++      apn_auth_store.write(**{key: value})
++      self._refresh_apn_auth()
++
++    self._keyboard.reset(min_text_size=1)
++    self._keyboard.set_password_mode(password_mode)
++    self._keyboard.set_title(title)
++    self._keyboard.set_text("" if password_mode else self._apn_user)
++    self._keyboard.set_callback(update)
++    gui_app.push_widget(self._keyboard)
++
+   def _on_network_updated(self, networks: list[Network]):
+     self._tethering_action.set_enabled(True)
+     self._tethering_action.set_state(self._wifi_manager.is_tethering_active())
+@@ -183,9 +274,11 @@ class AdvancedNetworkSettings(Widget):
+         self._params.remove("GsmApn")
+       else:
+         self._params.put("GsmApn", apn, block=True)
++      self._refresh_apn_auth()
+ 
+     current_apn = self._params.get("GsmApn") or ""
+     self._keyboard.reset(min_text_size=0)
++    self._keyboard.set_password_mode(False)
+     self._keyboard.set_title(tr("Enter APN"), tr("leave blank for automatic configuration"))
+     self._keyboard.set_text(current_apn)
+     self._keyboard.set_callback(update_apn)
+@@ -226,6 +319,7 @@ class AdvancedNetworkSettings(Widget):
+       gui_app.push_widget(self._keyboard)
+ 
+     self._keyboard.reset(min_text_size=1)
++    self._keyboard.set_password_mode(False)
+     self._keyboard.set_title(tr("Enter SSID"), "")
+     self._keyboard.set_callback(connect_hidden)
+     gui_app.push_widget(self._keyboard)
+@@ -253,6 +347,12 @@ class AdvancedNetworkSettings(Widget):
+     self._wifi_manager.set_ipv4_forward(show_cell_settings)
+     self._roaming_btn.set_visible(show_cell_settings)
+     self._apn_btn.set_visible(show_cell_settings)
++    show_apn_auth_rows = not self._prime_state.is_full_prime()
++    self._apn_user_btn.set_visible(show_apn_auth_rows)
++    self._apn_password_btn.set_visible(show_apn_auth_rows)
++    self._apn_auth_btn.set_visible(show_apn_auth_rows)
++    self._modem_status_btn.set_visible(show_apn_auth_rows)
++    self._apn_delete_btn.set_visible(show_apn_auth_rows and bool(self._apn_user or self._apn_has_password))
+     self._cellular_metered_btn.set_visible(show_cell_settings)
+ 
+   def _render(self, _):

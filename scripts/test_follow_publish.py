@@ -12,7 +12,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 import bootimg
-from compose import LAUNCHER_PATCHES
+from compose import APN_PATCHES, LAUNCHER_PATCHES
 import follow_admin as admin
 import follow_git as transaction
 import follow_publish as publish
@@ -227,7 +227,7 @@ class TransactionTests(unittest.TestCase):
   def test_allowlist_checks_final_commit_before_every_push(self):
     for path in ('.github/workflows/follow.yml', 'follow/policy.json', 'follow/reference/test.txt', 'scripts/pins.py',
                  'agnos/pins.json', *(f'patches/{p.name}' for p in LAUNCHER_PATCHES), 'patches/tethering-nat.patch',
-                 'patches/apn-auth-release.patch', 'patches/apn-auth-nightly.patch', 'userspace/wpa_supplicant', 'other.txt'):
+                 *(f'patches/{p.name}' for p in APN_PATCHES), 'userspace/wpa_supplicant', 'other.txt'):
       with self.subTest(path=path):
         self.remote.events.clear()
         self.remote.disallowed = path

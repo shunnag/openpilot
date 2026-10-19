@@ -476,13 +476,17 @@ class TestCompose(unittest.TestCase):
 
   def apn_upstream(self, variant="release"):
     # Local reference files from op-prebuilt 0ea343233 and op-ui 6f4c0faf1;
-    # retain only the six existing runtime files needed by the two patches.
-    fixture = ROOT / "ref/apn-auth" / variant
+    # retain only the six existing runtime files needed by the APN patches.
+    fixture = ROOT / "ref/apn-auth" / ("nightly" if variant == "nightly-v0113" else variant)
     with compose.temporary_index(self.repo, self.upstream) as (env, _):
       for path in sorted(compose.APN_ALLOWED):
         source = fixture / path
         if source.is_file():
-          compose.put_blob(self.repo, env, path, source.read_bytes(),
+          data = source.read_bytes()
+          if variant == "nightly-v0113" and path.endswith("/app.pot"):
+            # v0.11.3's regenerated catalog ends with this entry after Reboot Device.
+            data += b'#: openpilot/selfdrive/ui/onroad/cabin_camera_dialog.py\nmsgid "camera starting"\nmsgstr ""\n\n'
+          compose.put_blob(self.repo, env, path, data,
                            mode="100755" if path.endswith("/modem.py") else "100644")
       tree = compose.git(self.repo, "write-tree", env=env).decode().strip()
       return compose.git(self.repo, "commit-tree", tree, data=b"Upstream APN runtime\n", env=self.identity).decode().strip()
@@ -558,7 +562,9 @@ class TestCompose(unittest.TestCase):
     self.assert_patch_hold(upstream, ("--tether", "apply"), "patch does not apply")
 
   def test_apn_selection_is_exclusive_and_stacked(self):
-    for variant, matching in zip(("release", "nightly"), compose.APN_PATCHES):
+    variants = ("release", "nightly", "nightly-v0113")
+    self.assertEqual(len(compose.APN_PATCHES), len(variants))
+    for variant, matching in zip(variants, compose.APN_PATCHES):
       upstream = self.apn_upstream(variant)
       for tether in (False, True):
         with self.subTest(variant=variant, tether=tether):

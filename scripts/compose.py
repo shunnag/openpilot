@@ -24,7 +24,10 @@ LAUNCHER_PATCHES = (
 )
 UI_PATCH = ROOT / "patches/ui-wpa3.patch"
 TETHER_PATCH = ROOT / "patches/tethering-nat.patch"
-APN_PATCHES = (ROOT / "patches/apn-auth-release.patch", ROOT / "patches/apn-auth-nightly.patch")
+APN_PATCHES = (
+  ROOT / "patches/apn-auth-release.patch", ROOT / "patches/apn-auth-nightly.patch",
+  ROOT / "patches/apn-auth-nightly-v0113.patch",
+)
 TETHER_ALLOWED = {"openpilot/system/ui/lib/tests/test_tethering_nat.py"}
 APN_ALLOWED = {
   "openpilot/common/hardware/comma/apn_auth_store.py",

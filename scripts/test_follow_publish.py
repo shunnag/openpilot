@@ -363,7 +363,9 @@ class PublicationTests(unittest.TestCase):
     shutil.copyfile(ROOT / 'scripts/fixtures/wpa_request/valid.json', source / 'test-request.json')
     write_json(source / 'build-report.json', {'R1': 'PASS', 'device_tested': False})
     write_json(source / 'test-report.json', {'T0': 'PASS', 'T1': 'PASS', 'T2': 'PASS', 'T3': 'PENDING (dryrun)'})
-    self.pub.wpa_draft(source)
+    with patch.object(wpa_request, 'datetime', wraps=wpa_request.datetime) as clock:
+      clock.now.return_value = wpa_request.utc('2026-10-02T00:00:00Z')
+      self.pub.wpa_draft(source)
     release = self.gh.release(1)
     self.assertTrue(release['draft'])
     provenance = json.loads(self.gh.assets[1]['provenance.json'])

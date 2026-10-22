@@ -83,11 +83,11 @@ fi
 [[ "$WPA3_CI_HEAD" =~ ^[0-9a-f]{40}$ ]]
 
 case "$BRANCH" in
-  nightly) TETHER=apply; APN=auto ;;
-  nightly-chestnut) TETHER=apply; APN=auto ;;
-  release-mici-staging) TETHER=apply; APN=auto ;;
-  release-tizi-staging) TETHER=apply; APN=auto ;;
-  *) TETHER=off; APN=off ;;
+  nightly) TETHER=apply; APN=auto; APN_FAMILY=nightly ;;
+  nightly-chestnut) TETHER=apply; APN=auto; APN_FAMILY=nightly ;;
+  release-mici-staging) TETHER=apply; APN=auto; APN_FAMILY=release ;;
+  release-tizi-staging) TETHER=apply; APN=auto; APN_FAMILY=release ;;
+  *) TETHER=off; APN=off; APN_FAMILY=nightly ;;
 esac
 
 # Resolve metadata before fetching any upstream or fork objects.
@@ -195,7 +195,7 @@ PY
 
 # Keep the full-repository, exact inputs check as the second skip decision.
 REASON='fetch or inputs failed'
-if INPUTS=$(python3 scripts/compose.py --repo "$BARE_REPO" --upstream "$UPSTREAM" --pin-file "$PIN_FILE" --tether "$TETHER" --apn "$APN" --inputs-only 2>> "$NIGHTLY_LOG"); then
+if INPUTS=$(python3 scripts/compose.py --repo "$BARE_REPO" --upstream "$UPSTREAM" --pin-file "$PIN_FILE" --tether "$TETHER" --apn "$APN" --apn-family "$APN_FAMILY" --inputs-only 2>> "$NIGHTLY_LOG"); then
   if [ -n "$FORK" ]; then
     PREVIOUS=$(git -C "$BARE_REPO" show -s --format='%(trailers:key=WPA3-Inputs,valueonly)' "$FORK")
     if [ "$PREVIOUS" = "$INPUTS" ] && [ "$FORCE" != true ]; then
@@ -216,11 +216,11 @@ if [ -n "$FORK" ]; then
   PUBLISHED_ARGS=(--published "$FORK")
 fi
 if [ "$UPSTREAM_SOURCE" = published ]; then PUBLISHED_ARGS+=(--revoke); fi
-python3 scripts/gates.py --repo "$BARE_REPO" --upstream "$UPSTREAM" --pin-file "$PIN_FILE" --tether "$TETHER" --apn "$APN" "${PUBLISHED_ARGS[@]}" 2>&1 | tee -a "$NIGHTLY_LOG"
+python3 scripts/gates.py --repo "$BARE_REPO" --upstream "$UPSTREAM" --pin-file "$PIN_FILE" --tether "$TETHER" --apn "$APN" --apn-family "$APN_FAMILY" "${PUBLISHED_ARGS[@]}" 2>&1 | tee -a "$NIGHTLY_LOG"
 
 REASON='compose failed'
 {
-  python3 scripts/compose.py --repo "$BARE_REPO" --upstream "$UPSTREAM" --pin-file "$PIN_FILE" --tether "$TETHER" --apn "$APN" | tee "$BRANCH_TEMP/composed.txt"
+  python3 scripts/compose.py --repo "$BARE_REPO" --upstream "$UPSTREAM" --pin-file "$PIN_FILE" --tether "$TETHER" --apn "$APN" --apn-family "$APN_FAMILY" | tee "$BRANCH_TEMP/composed.txt"
 } 2>&1 | tee -a "$NIGHTLY_LOG"
 # read works with macOS bash 3.2 as well as the runner's bash 5.
 IFS= read -r NEW < "$BRANCH_TEMP/composed.txt"

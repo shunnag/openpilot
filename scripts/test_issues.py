@@ -155,7 +155,7 @@ class TestNightlyWorkflow(unittest.TestCase):
     self.assertEqual(len(consumers), 3)
     for line in consumers:
       self.assertIn('--pin-file "$PIN_FILE"', line)
-      self.assertIn('--tether "$TETHER" --apn "$APN"', line)
+      self.assertIn('--tether "$TETHER" --apn "$APN" --apn-family "$APN_FAMILY"', line)
     self.assertNotIn('--modem', script)
     self.assertNotIn('MODEM=', script)
     for step in workflow.split("      - "):
@@ -170,9 +170,10 @@ class TestNightlyWorkflow(unittest.TestCase):
     selector = 'case "$BRANCH" in' + script.split('case "$BRANCH" in', 1)[1].split("esac", 1)[0] + "esac"
     smoke_selector = 'if [ "$BRANCH" = release-tizi-staging ]; then DEVICE_TYPE=tizi; fi'
     for branch in ("nightly", "nightly-chestnut", "release-mici-staging", "release-tizi-staging", "unknown"):
-      result = subprocess.run(["bash", "-eu", "-c", selector + '\nprintf "%s %s" "$TETHER" "$APN"'],
+      result = subprocess.run(["bash", "-eu", "-c", selector + '\nprintf "%s %s %s" "$TETHER" "$APN" "$APN_FAMILY"'],
                               env={**os.environ, "BRANCH": branch}, text=True, capture_output=True, check=True)
-      self.assertEqual(result.stdout, "off off" if branch == "unknown" else "apply auto")
+      self.assertEqual(result.stdout, "off off nightly" if branch == "unknown" else
+                       "apply auto release" if branch.startswith("release-") else "apply auto nightly")
       smoke = subprocess.run(["bash", "-eu", "-c", 'DEVICE_TYPE=mici\n' + smoke_selector + '\nprintf "%s" "$DEVICE_TYPE"'],
                              env={**os.environ, "BRANCH": branch}, text=True, capture_output=True, check=True)
       self.assertEqual(smoke.stdout, "tizi" if branch == "release-tizi-staging" else "mici")

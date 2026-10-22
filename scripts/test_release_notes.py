@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def provenance():
-  state = fs.reserve_tags(fs.load(), 2)
+  state = fs.load()
   pin = automatic_pin(state)
   return {'schema': 'wpa3-follow-release-v1', 'version': '19.10', 'key': 'a' * 64, 'pin': pin,
     'facts': {'gates': [{'gate': 'K7b', 'result': 'OK', 'detail': 'only expected objects changed'}],

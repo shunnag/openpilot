@@ -8,6 +8,7 @@ import sys
 
 from boot_download import fetch_boot
 from compose import AGNOS_PY, MANIFEST, apply_tether, apply_ui, blob, error_text, git, launch_values, load_pin, resolve_commit, select_apn_patch, select_launcher_patch, supplicant_files, temporary_index
+from compose import agnos20, apply_modem_bundle, check_modem_bundle
 from follow_state import load, mode_value, resolve_supplicant
 
 
@@ -39,7 +40,7 @@ def check_g8(resolved, system_hash, state, mode="off", revoke=False):
     print(f"G8: {level}: probed stock wpa_supplicant and override agree", flush=True)
 
 
-def run_gates(repo, upstream, pin_file, skip_download=False, published=None, follow_mode=None, revoke=False, tether="off", apn="off"):
+def run_gates(repo, upstream, pin_file, skip_download=False, published=None, follow_mode=None, revoke=False, tether="off", apn="off", apn_family="nightly"):
   gate = "G1"
   try:
     upstream = resolve_commit(repo, upstream)
@@ -90,8 +91,17 @@ def run_gates(repo, upstream, pin_file, skip_download=False, published=None, fol
         apply_tether(repo, env)
         print("G5: OK: tethering patch applies cleanly", flush=True)
       if apn == "auto":
-        apn_patch = select_apn_patch(repo, git(repo, "write-tree", env=env).decode().strip())
+        apn_patch = select_apn_patch(repo, git(repo, "write-tree", env=env).decode().strip(), apn_family)
         print(f"G5: OK: APN patch {apn_patch.name} applies cleanly", flush=True)
+      if agnos20(version):
+        gate = "G9"
+        git(repo, "apply", "--cached", "--whitespace=error", str(launcher_patch), env=env)
+        if apn == "auto":
+          apply_modem_bundle(repo, env, resolved)
+          git(repo, "apply", "--cached", "--whitespace=error", str(apn_patch), env=env)
+        check_modem_bundle(repo, git(repo, "write-tree", env=env).decode().strip(), resolved, required=apn == "auto")
+        print("G9: OK: AGNOS-20 APN UI, stdlib modem override and pinned launcher bundle verified" if apn == "auto"
+              else "G9: OK: no unbundled AGNOS-20 APN UI", flush=True)
 
     gate = "G6"
     if native:
@@ -141,8 +151,9 @@ def main():
   parser.add_argument("--revoke", action="store_true", help="G8 is advisory for a withdrawal publish")
   parser.add_argument("--tether", choices=("apply", "off"), default="off", help="fork tethering NAT patch")
   parser.add_argument("--apn", choices=("auto", "off"), default="off", help="select the matching APN authentication patch")
+  parser.add_argument("--apn-family", choices=("nightly", "release"), default="nightly", help="APN UI family for AGNOS >= 20")
   args = parser.parse_args()
-  return run_gates(args.repo.resolve(), args.upstream, args.pin_file, args.skip_download, args.published, args.follow_mode, args.revoke, args.tether, args.apn)
+  return run_gates(args.repo.resolve(), args.upstream, args.pin_file, args.skip_download, args.published, args.follow_mode, args.revoke, args.tether, args.apn, args.apn_family)
 
 
 if __name__ == "__main__":

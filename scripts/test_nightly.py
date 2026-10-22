@@ -63,8 +63,9 @@ class NightlyTests(unittest.TestCase):
     self.assertNotRegex(WORKFLOW, r'uses: [^\n]*@(?![0-9a-f]{40}\b)')
 
   def test_revoke_uses_only_published_parent_and_never_latest(self):
-    state = fs.reserve_tags(fs.load(), 2)
+    state = fs.load()
     pin = automatic_pin(state)
+    state = fs.reserve_tags(state, 2)
     pin['withdrawn'] = withdrawal()
     state['pins'] = {'19.10': pin}
     fork, upstream = 'e' * 40, 'd' * 40
@@ -84,8 +85,9 @@ class NightlyTests(unittest.TestCase):
     self.assertNotIn('commaai/openpilot', revoke)
 
   def test_revoke_rejects_forged_parent_and_shell_syntax(self):
-    state = fs.reserve_tags(fs.load(), 2)
+    state = fs.load()
     pin = automatic_pin(state)
+    state = fs.reserve_tags(state, 2)
     pin['withdrawn'] = withdrawal()
     state['pins'] = {'19.10': pin}
     launch = f'if [ -z "$AGNOS_VERSION" ]; then\n  export AGNOS_VERSION="19.10"\nfi\nexport WPA3_BOOT_HASH="{pin["boot"]["hash_raw"]}"\n'
@@ -98,8 +100,9 @@ class NightlyTests(unittest.TestCase):
         nightly.published_upstream('/mock', 'e' * 40, state)
 
   def test_lastgood_guard_uses_withdrawn_release_trailer(self):
-    state = fs.reserve_tags(fs.load(), 2)
+    state = fs.load()
     pin = automatic_pin(state)
+    state = fs.reserve_tags(state, 2)
     state['pins'] = {'19.10': pin}
     with patch.object(nightly, 'trailer', return_value=pin['release_tag']):
       self.assertIsNone(nightly.withdrawn_release('/mock', 'f' * 40, state))

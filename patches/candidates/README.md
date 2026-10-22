@@ -1,5 +1,19 @@
 # APN release 0.11.3 candidate
 
+**Superseded for AGNOS >= 20:** use the registered
+[`apn-auth-nightly-agnos20.patch`](../apn-auth-nightly-agnos20.patch) or
+[`apn-auth-release-agnos20.patch`](../apn-auth-release-agnos20.patch), without
+openpilot modem hunks, together with the pinned modem/launcher bundle. The
+publisher passes `--apn-family nightly|release` explicitly; both real families
+carry `prebuilt`, so it cannot distinguish them. Exactly one candidate in the
+chosen family must apply. A release-staging tree still using a 0.11.2 UI will
+HOLD at G5 until a matching release form exists; that hold is accepted.
+AGNOS < 20 retains its old registry, input hash and tree. The evidence and
+proposals below describe the historical preparation for the older registry;
+this candidate remains unregistered. The current real pin is `20.1` /
+`agnos-20.1-wpa3.4`, with stock system `7300706856…`; see
+[publication details](../../follow/PUBLISHING.md#agnos-20-apn-patch-registry-and-modem-pin).
+
 `apn-auth-release-v0113.patch` is an inactive preparation for the next
 release-staging update. It preserves every added and removed runtime line from
 `../apn-auth-release.patch`; only context, hunk positions and two blob-index lines
@@ -115,7 +129,7 @@ content, because the nightly variant adds field descriptions; tuple order cannot
 resolve that policy choice. The selector counts all matches, so adding a patch
 at either end of the tuple would hold both nightlies at G5.
 
-## Selection proposal (documentation only)
+## Historical selection proposal (implemented for AGNOS >= 20)
 
 Use an explicit APN family derived from the branch already known to
 `scripts/publish_branch.sh`: release for `release-mici-staging` and
@@ -134,7 +148,8 @@ byte-identical, so the already-selected launcher variant cannot identify the APN
 family. `common/version.h` and the release-notes version will coincide after a
 release bump; they are also unsuitable discriminators. Reassess a tree marker
 only if the real release update provides a documented, stable distinction.
-There is no selection-rule implementation in this preparation.
+The current AGNOS >= 20 implementation uses explicit family selection. The
+older registry and this historical candidate remain unchanged.
 
 ## Validate when the real release-staging trees move
 
@@ -210,7 +225,7 @@ composed commit's `WPA3-APN-Patch` trailer and changed paths, and compare its tr
 to the expected UI + tether + candidate stack. A G5 failure on either release
 means the candidate needs review. Repeat if upstream moves during validation.
 
-## Future wiring checklist
+## Historical wiring checklist (not for AGNOS >= 20)
 
 1. Validate both real releases with the candidate-only DRY_RUN above. Then copy
    the reviewed patch to `patches/apn-auth-release-v0113.patch`.

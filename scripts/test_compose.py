@@ -648,7 +648,8 @@ class TestCompose(unittest.TestCase):
       "upstream": self.upstream,
       "patches": {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in (launcher, compose.UI_PATCH)},
       "pin": self.resolved,
-      "compose.py": hashlib.sha256(Path(compose.__file__).read_bytes()).hexdigest(),
+      # git show bc0d561ee:scripts/compose.py | shasum -a 256; keep independent of the implementation.
+      "compose.py": "01da873d5ba539bbbeec1ecaccc6208f5c80ae41cc0f7f290bf6b92bcca7a156",
       "wpa_supplicant.copyright": hashlib.sha256(compose.repo_path(self.pin["wpa_supplicant"]["copyright"]).read_bytes()).hexdigest(),
     }
     expected = hashlib.sha256(json.dumps(legacy, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
@@ -754,7 +755,7 @@ class TestCompose(unittest.TestCase):
       log = Path(directory) / "nightly.log"
       (Path(directory) / "pin.json").write_bytes(self.pin_file.read_bytes())
       result = subprocess.run(["bash", "-eo", "pipefail", "-c", pipeline], cwd=ROOT, text=True, capture_output=True,
-                              env={**os.environ, "BARE_REPO": str(self.repo), "UPSTREAM": self.upstream, "TETHER": "apply", "APN": "auto",
+                              env={**os.environ, "BARE_REPO": str(self.repo), "UPSTREAM": self.upstream, "TETHER": "apply", "APN": "auto", "APN_FAMILY": "nightly",
                                    "BRANCH_TEMP": directory, "PIN_FILE": str(Path(directory) / "pin.json"), "NIGHTLY_LOG": str(log)})
       self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
       self.assertEqual((Path(directory) / "composed.txt").read_text(), "")
@@ -1077,7 +1078,7 @@ class TestCompose(unittest.TestCase):
       commit = self.cli('compose.py', upstream, pin_file=pin_file).stdout.splitlines()[0]
       if withdrawn:
         launch = compose.blob(self.repo, commit, 'launch_env.sh')
-        self.assertIn(b'export WPA3_BOOT_TAG="wpa3.sae=5"', launch)
+        self.assertIn(f'export WPA3_BOOT_TAG="{auto["revert"]["tag"]}"'.encode(), launch)
         self.assertIn(f'export WPA3_BOOT_HASH="{auto["revert"]["boot"]["hash_raw"]}"'.encode(), launch)
       data = compose.blob(self.repo, commit, 'RELEASES.md')
       self.assertEqual(data, compose.release_notice(resolved) + original)

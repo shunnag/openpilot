@@ -77,11 +77,11 @@ class FollowEndToEnd(unittest.TestCase):
       commits = git_text(remote, 'rev-list', '--reverse', f'{before}..{after}').splitlines()
       self.assertEqual(len(commits), 2, 'reservation must precede the pin state commit')
       reserved_status = json.loads(git(remote, 'show', f'{commits[0]}:agnos/auto/status.json'))
-      self.assertEqual(reserved_status['allocated_tags'], [1, 2, 3, 4, 5])
+      self.assertEqual(reserved_status['allocated_tags'], fixture.initial_allocated + [fixture.number, fixture.number + 1])
       self.assertEqual(json.loads(git(remote, 'show', f'{commits[0]}:agnos/auto/pins.json')), {})
       state, _ = writer.read(operation="mark-tested")
       automatic = state['pins']['19.10']
-      self.assertEqual(automatic['tag'], 'wpa3.sae=4')
+      self.assertEqual(automatic['tag'], fixture.tag)
       print('E2E: reservation commit -> immutable release -> pin state commit')
       dispatches = [e for e in fixture.gh.events if isinstance(e, tuple) and e[0] == 'dispatch']
       self.assertEqual(dispatches, [('dispatch', 'nightly.yml', None)])
@@ -120,7 +120,7 @@ class FollowEndToEnd(unittest.TestCase):
                                 state=state, mode='on', branch=branch)
         self.assertEqual(resolved['mode'], 'pinned', branch)
         self.assertIn('auto', resolved['pin'])
-        self.assertEqual(resolved['pin']['tag'], 'wpa3.sae=4')
+        self.assertEqual(resolved['pin']['tag'], fixture.tag)
         pin_file = root / 'pin.json'
         pin_file.write_text(fs.dumps(resolved))
         log = io.StringIO()
@@ -138,7 +138,7 @@ class FollowEndToEnd(unittest.TestCase):
         self.assertIn('Version 0.11.2', release_notes.split('\n\n')[0])
         compose.git(repo, 'push', f'--force-with-lease=refs/heads/{branch}:{backup}', 'simulation', f'{new}:refs/heads/{branch}')
         published[branch] = new
-        print(f'E2E: {branch}: pinned automatic tag 4; G1-G8 pass (G4 skipped offline); composed and published locally')
+        print(f'E2E: {branch}: pinned automatic {fixture.tag}; G1-G8 pass (G4 skipped offline); composed and published locally')
 
       # Today's latest upstream cannot pass the launcher gate. Revoke must never use it.
       latest = upstreams.variant('launch_chffrplus.sh', b'upstream changed incompatibly\n')
@@ -159,7 +159,7 @@ class FollowEndToEnd(unittest.TestCase):
           resolved = pins.resolve(lambda path: compose.blob(revoke_repo, upstream, path), state['manual'], fixture.fetch,
                                   state=state, mode=mode, branch=branch)
           self.assertEqual(resolved['pin']['boot'], automatic['revert']['boot'])
-          self.assertEqual(resolved['pin']['tag'], 'wpa3.sae=5')
+          self.assertEqual(resolved['pin']['tag'], fixture.revert_tag)
         pin_file.write_text(fs.dumps(resolved))
         log = io.StringIO()
         with patch.object(gates, 'load', return_value=state), redirect_stdout(log):
@@ -169,7 +169,7 @@ class FollowEndToEnd(unittest.TestCase):
         new = command(os.sys.executable, ROOT / 'scripts/compose.py', '--repo', revoke_repo,
                       '--upstream', upstream, '--pin-file', pin_file).splitlines()[0]
         self.assertEqual(compose.launch_values(compose.blob(revoke_repo, new, 'launch_env.sh'))[:3],
-                         ('19.10', 'wpa3.sae=5', automatic['revert']['boot']['hash_raw']))
+                         ('19.10', fixture.revert_tag, automatic['revert']['boot']['hash_raw']))
         self.assertIn('was withdrawn;', compose.blob(revoke_repo, new, 'RELEASES.md').decode())
         self.assertTrue(nightly.withdrawn_release(revoke_repo, fork, state))
         # Execute the publisher's push block with only the metadata helper mocked
@@ -187,7 +187,7 @@ class FollowEndToEnd(unittest.TestCase):
         self.assertEqual(git_text(remote, 'rev-parse', branch + '-lastgood'), backups[branch])
         self.assertEqual(git_text(remote, 'rev-parse', branch), new)
         self.assertEqual(nightly.published_upstream(revoke_repo, new, state), '')
-        print(f'E2E: {branch}: revoked to tag 5 against published upstream; lastgood retained')
+        print(f'E2E: {branch}: revoked to {fixture.revert_tag} against published upstream; lastgood retained')
       print('E2E: PASS; all changes stayed in temporary local repositories; GitHub was fake')
 
 

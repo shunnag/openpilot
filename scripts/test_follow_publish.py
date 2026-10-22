@@ -170,6 +170,7 @@ class TransactionTests(unittest.TestCase):
     self.tmp = tempfile.TemporaryDirectory()
     self.addCleanup(self.tmp.cleanup)
     self.remote = MemoryGit(fs.load(), Path(self.tmp.name))
+    self.number = fs.allocate_tag(self.remote.state)
     self.brakes = Mock()
     self.writer = transaction.StateWriter(self.brakes, 'on', 'https://github.com/shunnag/openpilot/actions/runs/123')
     self.writer.fresh = self.remote.fresh
@@ -184,13 +185,13 @@ class TransactionTests(unittest.TestCase):
 
   def test_reservation_reapplies_on_push_conflict_and_serializes_allocators(self):
     self.remote.rejects = 1
-    self.remote.on_reject = lambda state: state['status']['allocated_tags'].extend([4, 5])
+    self.remote.on_reject = lambda state: state['status'].update(allocated_tags=fs.reserve_tags(state, 2)['status']['allocated_tags'])
     result = self.writer.commit(self.allocate, 'reserve')
-    self.assertEqual(result.value, 6)
+    self.assertEqual(result.value, self.number + 2)
     self.assertFalse(result.dispatch)
     second = self.writer.commit(self.allocate, 'reserve')
-    self.assertEqual(second.value, 8)
-    self.assertEqual(self.remote.state['status']['allocated_tags'], list(range(1, 10)))
+    self.assertEqual(second.value, self.number + 4)
+    self.assertEqual(self.remote.state['status']['allocated_tags'], list(range(1, self.number + 6)))
     pushes = [e for e in self.remote.events if isinstance(e, tuple) and e[0] == 'push']
     self.assertEqual(pushes, [('push', 'origin', 'HEAD:refs/heads/wpa3-ci')] * 3)
     checks = [e for e in self.remote.events if isinstance(e, tuple) and e[:2] == ('diff', '--no-renames')]
@@ -209,11 +210,11 @@ class TransactionTests(unittest.TestCase):
       nonlocal count
       count += 1
       if count == 2:
-        state['status']['allocated_tags'].extend([4, 5])
+        state['status'].update(allocated_tags=fs.reserve_tags(state, 2)['status']['allocated_tags'])
         self.remote.head = '2' * 40
     self.remote.on_fetch = fetch
     result = self.writer.commit(self.allocate, 'reserve')
-    self.assertEqual(result.value, 6)
+    self.assertEqual(result.value, self.number + 2)
     self.assertEqual(sum(isinstance(e, tuple) and e[0] == 'push' for e in self.remote.events), 1)
 
   def test_pause_on_retry_prevents_push(self):
@@ -293,6 +294,11 @@ class PublicationTests(unittest.TestCase):
     self.addCleanup(self.tmp.cleanup)
     self.root = Path(self.tmp.name)
     state = fs.load()
+    self.number = fs.allocate_tag(state)
+    self.initial_allocated = list(state["status"]["allocated_tags"])
+    self.release_tag = f"agnos-19.10-wpa3.{self.number}"
+    self.tag = f"wpa3.sae={self.number}"
+    self.revert_tag = f"wpa3.sae={self.number + 1}"
     state['policy']['vble_public_key_sha256'] = bootimg.pubkey_sha256(bootimg._openssl('rsa', '-in', self.key, '-pubout'))
     self.raw = {sha256(self.stock): self.stock}
     for pin in state['manual'].values():
@@ -325,8 +331,8 @@ class PublicationTests(unittest.TestCase):
       shutil.copyfile(ROOT / 'follow/kernel-patches' / name, self.verified / name)
     for name in ('source.tar.xz', 'SOURCE.txt', 'stock-rebuild-report.txt', 'build.log'):
       (self.verified / name).write_bytes(b'fixture data\n')
-    wpa = bootimg.with_tag(self.wpa, 'wpa3.sae=4', self.key)
-    revert = bootimg.with_tag(self.stock, 'wpa3.sae=5', self.key)
+    wpa = bootimg.with_tag(self.wpa, self.tag, self.key)
+    revert = bootimg.with_tag(self.stock, self.revert_tag, self.key)
     for name, image in (('boot', wpa), ('revert', revert)):
       self.facts[name] = {'hash_raw': sha256(image), 'size': len(image)}
     publish.assembly.write_artifacts(self.verified, wpa, revert, self.facts)
@@ -381,9 +387,9 @@ class PublicationTests(unittest.TestCase):
     self.kernel()
     state = self.remote.state
     pin = state['pins']['19.10']
-    self.assertEqual(state['status']['allocated_tags'], [1, 2, 3, 4, 5])
-    self.assertEqual(pin['tag'], 'wpa3.sae=4')
-    self.assertEqual(pin['revert']['tag'], 'wpa3.sae=5')
+    self.assertEqual(state['status']['allocated_tags'], self.initial_allocated + [self.number, self.number + 1])
+    self.assertEqual(pin['tag'], self.tag)
+    self.assertEqual(pin['revert']['tag'], self.revert_tag)
     self.assertEqual(len(self.published()), 1)
     self.assertTrue(self.gh.items[1]['immutable'])
     self.assertTrue(self.gh.items[1]['prerelease'])
@@ -429,8 +435,8 @@ class PublicationTests(unittest.TestCase):
     self.kernel()
     self.assertTrue(self.gh.items[1]['name'].startswith('ABANDONED:'))
     self.assertTrue(self.gh.items[1]['draft'])
-    self.assertEqual(self.remote.state['pins']['19.10']['tag'], 'wpa3.sae=6')
-    self.assertEqual(self.remote.state['status']['allocated_tags'], list(range(1, 8)))
+    self.assertEqual(self.remote.state['pins']['19.10']['tag'], f"wpa3.sae={self.number + 2}")
+    self.assertEqual(self.remote.state['status']['allocated_tags'], self.initial_allocated + list(range(self.number, self.number + 4)))
     self.assertEqual(len(self.gh.items), 2)
 
   def test_crash_reservation_leaks_numbers_safely(self):
@@ -439,7 +445,7 @@ class PublicationTests(unittest.TestCase):
         self.kernel()
     self.assertEqual(self.gh.items, {})
     self.kernel()
-    self.assertEqual(self.remote.state['pins']['19.10']['tag'], 'wpa3.sae=6')
+    self.assertEqual(self.remote.state['pins']['19.10']['tag'], f"wpa3.sae={self.number + 2}")
 
   def test_draft_reuses_retained_data_and_reverifies_without_building(self):
     with patch.object(self.pub, 'publish_draft', side_effect=RuntimeError('crash')):
@@ -466,7 +472,7 @@ class PublicationTests(unittest.TestCase):
     verify.assert_called_once()
     self.assertEqual(len(downloads), 2)
     self.assertTrue(self.gh.items[1]['name'].startswith('ABANDONED:'))
-    self.assertEqual(self.remote.state['pins']['19.10']['tag'], 'wpa3.sae=6')
+    self.assertEqual(self.remote.state['pins']['19.10']['tag'], f"wpa3.sae={self.number + 2}")
 
   def test_expired_artifacts_abandon_draft_and_request_rebuild_next_detect(self):
     with patch.object(self.pub, 'publish_draft', side_effect=RuntimeError('crash')):
@@ -504,7 +510,7 @@ class PublicationTests(unittest.TestCase):
     with self.assertRaisesRegex(ValueError, 'disabled'):
       self.kernel()
     self.assertEqual(self.gh.items, {})
-    self.assertEqual(self.remote.state['status']['allocated_tags'], [1, 2, 3])
+    self.assertEqual(self.remote.state['status']['allocated_tags'], self.initial_allocated)
 
   def test_pause_between_build_and_publish(self):
     self.gh.after_upload = lambda: self.remote.state['status'].update(paused=withdrawal())
@@ -595,19 +601,19 @@ class PublicationTests(unittest.TestCase):
     self.assertEqual(self.remote.state['status']['attempts'][sha256(self.stock)]['result'], 'risk_held')
     self.admin.approve(sha256(self.stock), 'no', '', 'reviewed content diff')
     self.assertIn('without a device test', self.gh.items[1]['name'])
-    self.assertNotIn('agnos-19.10-wpa3.4', self.remote.state['status']['device_tested'])
+    self.assertNotIn(self.release_tag, self.remote.state['status']['device_tested'])
     self.assertEqual(len(self.published()), 1)
 
   def test_approve_with_device_test_and_mark_another_device(self):
     self.risk()
     self.kernel()
     self.admin.approve(sha256(self.stock), 'yes', 'mici', 'flashed and checked SAE')
-    tested = self.remote.state['status']['device_tested']['agnos-19.10-wpa3.4']
+    tested = self.remote.state['status']['device_tested'][self.release_tag]
     self.assertEqual(tested['devices'], ['mici'])
     self.assertEqual(tested['kernel_commit'], 'a' * 40)
     dispatches = [e for e in self.gh.events if isinstance(e, tuple) and e[0] == 'dispatch']
-    self.admin.mark_tested('agnos-19.10-wpa3.4', 'tizi', 'tested on tizi')
-    self.assertEqual(self.remote.state['status']['device_tested']['agnos-19.10-wpa3.4']['devices'], ['mici', 'tizi'])
+    self.admin.mark_tested(self.release_tag, 'tizi', 'tested on tizi')
+    self.assertEqual(self.remote.state['status']['device_tested'][self.release_tag]['devices'], ['mici', 'tizi'])
     self.assertEqual(dispatches, [e for e in self.gh.events if isinstance(e, tuple) and e[0] == 'dispatch'])
 
   def test_integrity_hold_cannot_be_approved_even_with_risk_attempt(self):
@@ -635,9 +641,9 @@ class PublicationTests(unittest.TestCase):
     self.kernel()
     self.gh.items[1]['name'] = 'WITHDRAWN: owner brake'
     with self.assertRaisesRegex(ValueError, 'withdrawn'):
-      self.admin.mark_tested('agnos-19.10-wpa3.4', 'mici', 'test note')
+      self.admin.mark_tested(self.release_tag, 'mici', 'test note')
     self.assertEqual(self.gh.items[1]['name'], 'WITHDRAWN: owner brake')
-    self.assertNotIn('agnos-19.10-wpa3.4', self.remote.state['status']['device_tested'])
+    self.assertNotIn(self.release_tag, self.remote.state['status']['device_tested'])
 
   def test_missing_qualified_references_hold_on_publication(self):
     self.facts['gates'] = [row for row in self.facts['gates'] if row['gate'] != 'K7b']
@@ -651,7 +657,7 @@ class PublicationTests(unittest.TestCase):
     self.kernel()
     self.gh.active = False  # rollback's brake must not prevent a revoke.
     self.gh.nightly_active = False
-    self.admin.revoke('agnos-19.10-wpa3.4', 'device failed')
+    self.admin.revoke(self.release_tag, 'device failed')
     pin = self.remote.state['pins']['19.10']
     self.assertIsNotNone(pin['withdrawn'])
     self.assertEqual(self.remote.state['status']['paused'], pin['withdrawn'])
@@ -660,13 +666,13 @@ class PublicationTests(unittest.TestCase):
     for mode in fs.MODES:
       for branch in fs.BRANCHES:
         merged = fs.merged_pins(self.remote.state['manual'], self.remote.state['pins'], mode, branch)
-        self.assertEqual(merged['19.10']['tag'], 'wpa3.sae=5')
+        self.assertEqual(merged['19.10']['tag'], self.revert_tag)
         self.assertEqual(merged['19.10']['boot'], pin['revert']['boot'])
         import pins
         launch = b'if [ -z "$AGNOS_VERSION" ]; then\n  export AGNOS_VERSION="19.10"\nfi\n'
         resolved = pins.resolve(lambda path: launch, self.remote.state['manual'], self.fetch,
                                 state=self.remote.state, mode=mode, branch=branch)
-        self.assertEqual(resolved['pin']['tag'], 'wpa3.sae=5')
+        self.assertEqual(resolved['pin']['tag'], self.revert_tag)
         self.assertEqual(resolved['pin']['boot'], pin['revert']['boot'])
     self.assertIn(('dispatch', 'nightly.yml', {'upstream': 'published'}), self.gh.events)
     self.assertFalse(self.gh.nightly_active)
@@ -677,7 +683,7 @@ class PublicationTests(unittest.TestCase):
     self.gh.nightly_active = False
     with patch.object(self.gh, 'dispatch', side_effect=ValueError('unsupported upstream input')):
       with self.assertRaisesRegex(ValueError, 'unsupported'):
-        self.admin.revoke('agnos-19.10-wpa3.4', 'bad kernel')
+        self.admin.revoke(self.release_tag, 'bad kernel')
     self.assertFalse(self.gh.nightly_active)
     self.assertIsNotNone(self.remote.state['status']['paused'])
     self.assertTrue(any(e[:2] == ('issue', 'revoke-blocked') for e in self.gh.events if isinstance(e, tuple)))
@@ -723,8 +729,8 @@ class DetectionTests(unittest.TestCase):
         item = {'manifest': [{'name': 'boot', 'hash_raw': stock}]}
         release = {'id': 1, 'name': 'automatic', 'draft': False, 'immutable': found == 'immutable'}
         if found == 'pin':
-          state = fs.reserve_tags(state, 2)
           pin = automatic_pin(state)
+          state = fs.reserve_tags(state, 2)
           pin['derived_from']['boot_hash_raw'] = stock
           pin['derived_from']['boot_url'] = f'https://commadist.azureedge.net/agnosupdate/boot-{stock}.img.xz'
           state = fs.apply(state, {'pins': {'19.10': pin}})

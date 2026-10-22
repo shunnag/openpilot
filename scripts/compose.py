@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Compose a deterministic WPA3 commit in a bare repository, without checkout."""
 import argparse
+import ast
 from contextlib import contextmanager
 from datetime import datetime, timezone
 import hashlib
@@ -28,6 +29,19 @@ APN_PATCHES = (
   ROOT / "patches/apn-auth-release.patch", ROOT / "patches/apn-auth-nightly.patch",
   ROOT / "patches/apn-auth-nightly-v0113.patch",
 )
+APN_AGNOS20_PATCHES = {
+  "nightly": (ROOT / "patches/apn-auth-nightly-agnos20.patch",),
+  "release": (ROOT / "patches/apn-auth-release-agnos20.patch",),
+}
+MODEM_LAUNCHER_PATCH = ROOT / "patches/launcher-modem-agnos20.patch"
+MODEM_PATH = "wpa3/modem.py"
+MODEM_ALLOWED_IMPORTS = frozenset({
+  "collections", "contextlib", "csv", "enum", "fcntl", "glob", "ipaddress", "json", "logging",
+  "os", "re", "select", "signal", "string", "struct", "subprocess", "tempfile", "termios", "time",
+})
+# Preserve the pre-AGNOS-20 input identity, including the old composer digest.
+# Changing the composer must not trigger a rebuild of any AGNOS 19.9 tree.
+LEGACY_COMPOSE_SHA256 = "01da873d5ba539bbbeec1ecaccc6208f5c80ae41cc0f7f290bf6b92bcca7a156"
 TETHER_ALLOWED = {"openpilot/system/ui/lib/tests/test_tethering_nat.py"}
 APN_ALLOWED = {
   "openpilot/common/hardware/comma/apn_auth_store.py",
@@ -168,6 +182,8 @@ def validate_pin_values(pin):
     raise ValueError("derived_from.boot_url must be a nonempty URL")
   if "wpa_supplicant" in pin:
     validate_supplicant(pin["wpa_supplicant"])
+  if "modem" in pin:
+    validate_modem(pin["modem"])
 
 
 def utc_time(value):
@@ -241,6 +257,95 @@ def validate_supplicant(supplicant):
     repo_path(supplicant[key])
 
 
+def agnos20(version):
+  return tuple(map(int, version.split("."))) >= (20,)
+
+
+def validate_modem(modem):
+  if not isinstance(modem, dict):
+    raise ValueError("modem must be an object")
+  keys = {"path", "sha256", "stock_sha256", "service_sha256"}
+  for key in sorted(keys):
+    if key not in modem:
+      raise ValueError(f"missing modem.{key}")
+  if set(modem) != keys:
+    raise ValueError("unexpected modem keys")
+  for key in ("sha256", "stock_sha256", "service_sha256"):
+    if not isinstance(modem[key], str) or not re.fullmatch(r"[0-9a-f]{64}", modem[key]):
+      raise ValueError(f"modem.{key} must be a SHA-256 hash")
+  repo_path(modem["path"])
+
+
+def modem_source(pin):
+  if "modem" not in pin:
+    raise ValueError("AGNOS >= 20 APN auto requires a pinned modem override")
+  modem = pin["modem"]
+  validate_modem(modem)
+  data = repo_path(modem["path"]).read_bytes()
+  if hashlib.sha256(data).hexdigest() != modem["sha256"]:
+    raise ValueError("modem SHA-256 differs from pin")
+  for node in ast.walk(ast.parse(data)):
+    if isinstance(node, ast.Import):
+      modules = [alias.name for alias in node.names]
+    elif isinstance(node, ast.ImportFrom):
+      modules = [node.module or ""] if not node.level else [""]
+    else:
+      continue
+    if any(module not in MODEM_ALLOWED_IMPORTS for module in modules):
+      raise ValueError(f"modem import outside stdlib allowlist: {', '.join(modules)}")
+  return data
+
+
+def modem_values(script):
+  values = []
+  text = script.decode("utf-8")
+  for name in ("STOCK_SHA256", "SERVICE_SHA256", "SHA256"):
+    name = "WPA3_MODEM_" + name
+    assignment = re.compile(r'^export ' + name + r'="([0-9a-f]{64})"$', re.M)
+    matches = list(assignment.finditer(text))
+    if len(matches) != 1 or name in assignment.sub("", text):
+      raise ValueError(f"launch_env.sh requires exactly one literal {name}")
+    values.append(matches[0][1])
+  return tuple(values)
+
+
+def apply_modem_bundle(repo, env, resolved):
+  pin = resolved if resolved["mode"] == "native" else resolved["pin"]
+  data = modem_source(pin)
+  git(repo, "apply", "--cached", "--whitespace=error", str(MODEM_LAUNCHER_PATCH), env=env)
+  launch_env = git(repo, "show", ":launch_env.sh", env=env)
+  for name, key in (("STOCK_SHA256", "stock_sha256"), ("SERVICE_SHA256", "service_sha256"), ("SHA256", "sha256")):
+    placeholder = f"__WPA3_MODEM_{name}__".encode()
+    if launch_env.count(placeholder) != 1:
+      raise ValueError(f"expected exactly one {placeholder.decode()} placeholder")
+    launch_env = launch_env.replace(placeholder, pin["modem"][key].encode())
+  put_blob(repo, env, "launch_env.sh", launch_env)
+  put_blob(repo, env, MODEM_PATH, data, mode="100644")
+
+
+def check_modem_bundle(repo, tree, resolved, required=False):
+  if not agnos20(resolved["version"]):
+    return
+  has_ui = bool(git(repo, "ls-tree", tree, "--", "openpilot/common/hardware/comma/apn_auth_store.py"))
+  if not required and not has_ui:
+    return
+  pin = resolved if resolved["mode"] == "native" else resolved["pin"]
+  data = modem_source(pin)
+  if not git(repo, "ls-tree", tree, "--", MODEM_PATH) or blob(repo, tree, MODEM_PATH) != data:
+    raise ValueError("AGNOS-20 APN UI requires the pinned modem override in the same tree")
+  if not git(repo, "ls-tree", tree, "--", MODEM_PATH).startswith(b"100644 blob "):
+    raise ValueError("composed modem override must have mode 100644")
+  launcher = blob(repo, tree, "launch_chffrplus.sh")
+  if b"function wpa3_modem_override {\n" not in launcher or b"  wpa3_supplicant_override\n  wpa3_modem_override\n" not in launcher:
+    raise ValueError("AGNOS-20 APN UI requires launcher-modem patch in the same tree")
+  # Verify the complete launcher addition, not just a function-name marker.
+  with temporary_index(repo, tree) as (env, _):
+    git(repo, "apply", "--cached", "--reverse", "--check", "--include=launch_chffrplus.sh", str(MODEM_LAUNCHER_PATCH), env=env)
+  modem = pin["modem"]
+  if modem_values(blob(repo, tree, "launch_env.sh")) != (modem["stock_sha256"], modem["service_sha256"], modem["sha256"]):
+    raise ValueError("composed modem launch values differ from pin")
+
+
 def repo_path(value):
   if (not isinstance(value, str) or not value or "\0" in value or Path(value).is_absolute()
       or ".." in Path(value).parts or Path(value) == Path(".")):
@@ -274,6 +379,8 @@ def load_pin(repo, upstream, pin_file):
   if resolved["mode"] == "native":
     if "wpa_supplicant" in resolved:
       validate_supplicant(resolved["wpa_supplicant"])
+    if "modem" in resolved:
+      validate_modem(resolved["modem"])
     return resolved
   if resolved["mode"] == "derived" and not resolved.get("base"):
     raise ValueError("derived pin has no base version")
@@ -283,13 +390,13 @@ def load_pin(repo, upstream, pin_file):
   return resolved
 
 
-def inputs_hash(upstream, resolved, launcher_patch, tether="off", apn="off", apn_patch=None):
+def inputs_hash(upstream, resolved, launcher_patch, tether="off", apn="off", apn_patch=None, apn_family="nightly"):
   # Hash the entire resolved pin as canonical JSON, independent of file formatting.
   inputs = {
     "upstream": upstream,
     "patches": {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in (launcher_patch, UI_PATCH)},
     "pin": resolved,
-    "compose.py": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+    "compose.py": hashlib.sha256(Path(__file__).read_bytes()).hexdigest() if agnos20(resolved["version"]) else LEGACY_COMPOSE_SHA256,
   }
   if tether == "apply":
     inputs.update(tether=tether, tether_patch=hashlib.sha256(TETHER_PATCH.read_bytes()).hexdigest())
@@ -298,6 +405,13 @@ def inputs_hash(upstream, resolved, launcher_patch, tether="off", apn="off", apn
       raise ValueError("APN auto requires a selected patch")
     inputs.update(apn=apn, apn_patch=apn_patch.name, apn_patch_sha256=hashlib.sha256(apn_patch.read_bytes()).hexdigest())
   pin = resolved if resolved["mode"] == "native" else resolved["pin"]
+  if agnos20(resolved["version"]):
+    if apn_family not in APN_AGNOS20_PATCHES:
+      raise ValueError("unknown APN family")
+    inputs["apn_family"] = apn_family
+  if agnos20(resolved["version"]) and apn == "auto":
+    modem_source(pin)
+    inputs["launcher-modem-agnos20.patch"] = hashlib.sha256(MODEM_LAUNCHER_PATCH.read_bytes()).hexdigest()
   if "wpa_supplicant" in pin:
     # The binary digest is in the pin; the accompanying license also affects the tree.
     copyright_file = repo_path(pin["wpa_supplicant"]["copyright"])
@@ -356,11 +470,16 @@ def apply_tether(repo, env, check=False):
   raise ValueError("tethering patch already upstream; human review required")
 
 
-def select_apn_patch(repo, upstream):
+def select_apn_patch(repo, upstream, apn_family="nightly"):
   # upstream is the stacked tree from the caller's UI/tether scratch index.
   matches, already_upstream, diagnostics = [], [], []
+  modern = agnos20(launch_values(blob(repo, upstream, "launch_env.sh"))[0])
+  if modern and apn_family not in APN_AGNOS20_PATCHES:
+    raise ValueError("unknown APN family")
+  candidates = APN_AGNOS20_PATCHES[apn_family] if modern else APN_PATCHES
+  registered = tuple(p for family in APN_AGNOS20_PATCHES.values() for p in family) if modern else APN_PATCHES
   with temporary_index(repo, upstream) as (env, _):
-    for patch in APN_PATCHES:
+    for patch in registered:
       try:
         git(repo, "apply", "--cached", "--reverse", "--check", str(patch), env=env)
       except subprocess.CalledProcessError:
@@ -368,6 +487,8 @@ def select_apn_patch(repo, upstream):
       else:
         already_upstream.append(patch)
         diagnostics.append(f"{patch.name}: already upstream")
+        continue
+      if patch not in candidates:
         continue
       try:
         git(repo, "apply", "--cached", "--check", "--whitespace=error", str(patch), env=env)
@@ -384,7 +505,7 @@ def select_apn_patch(repo, upstream):
   return matches[0]
 
 
-def compose_inputs(repo, upstream, resolved, tether="off", apn="off"):
+def compose_inputs(repo, upstream, resolved, tether="off", apn="off", apn_family="nightly"):
   launcher_patch = select_launcher_patch(repo, upstream)
   apn_patch = None
   if tether == "apply" or apn == "auto":
@@ -393,8 +514,16 @@ def compose_inputs(repo, upstream, resolved, tether="off", apn="off"):
       if tether == "apply":
         apply_tether(repo, env)
       if apn == "auto":
-        apn_patch = select_apn_patch(repo, git(repo, "write-tree", env=env).decode().strip())
-  return inputs_hash(upstream, resolved, launcher_patch, tether, apn, apn_patch)
+        apn_patch = select_apn_patch(repo, git(repo, "write-tree", env=env).decode().strip(), apn_family)
+      if agnos20(resolved["version"]):
+        git(repo, "apply", "--cached", "--whitespace=error", str(launcher_patch), env=env)
+        if apn == "auto":
+          apply_modem_bundle(repo, env, resolved)
+          git(repo, "apply", "--cached", "--whitespace=error", str(apn_patch), env=env)
+        check_modem_bundle(repo, git(repo, "write-tree", env=env).decode().strip(), resolved, required=apn == "auto")
+  elif agnos20(resolved["version"]):
+    check_modem_bundle(repo, upstream, resolved)
+  return inputs_hash(upstream, resolved, launcher_patch, tether, apn, apn_patch, apn_family)
 
 
 def put_blob(repo, env, path, data, mode=None):
@@ -430,7 +559,10 @@ def post_checks(repo, upstream, tree, resolved, scratch, tether_result="off", ap
   if tether_result == "applied":
     allowed = allowed | TETHER_ALLOWED
   if apn_result == "applied":
-    allowed = allowed | APN_ALLOWED
+    allowed = allowed | (APN_ALLOWED - {"openpilot/common/hardware/comma/modem.py"} if agnos20(resolved["version"]) else APN_ALLOWED)
+    if agnos20(resolved["version"]):
+      allowed = allowed | {MODEM_PATH}
+  check_modem_bundle(repo, tree, resolved, required=apn_result == "applied")
   notice = release_notice(resolved)
   if notice:
     allowed = allowed | {"RELEASES.md"}
@@ -489,7 +621,7 @@ def post_checks(repo, upstream, tree, resolved, scratch, tether_result="off", ap
     raise ValueError("non-boot manifest bytes changed")
 
 
-def compose(repo, upstream, resolved, tether="off", apn="off"):
+def compose(repo, upstream, resolved, tether="off", apn="off", apn_family="nightly"):
   native = resolved["mode"] == "native"
   pin = resolved if native else resolved["pin"]
   files = supplicant_files(pin)
@@ -502,6 +634,8 @@ def compose(repo, upstream, resolved, tether="off", apn="off"):
         raise ValueError("RELEASES.md must start with the upstream Version heading")
       put_blob(repo, env, "RELEASES.md", notice + releases)
     git(repo, "apply", "--cached", "--whitespace=error", str(launcher_patch), env=env)
+    if agnos20(resolved["version"]) and apn == "auto":
+      apply_modem_bundle(repo, env, resolved)
     launch_env = git(repo, "show", ":launch_env.sh", env=env)
     for name, value in (("BOOT_TAG", "" if native else pin["tag"]), ("BOOT_HASH", "" if native else pin["boot"]["hash_raw"]),
                         ("SUPPLICANT_STOCK_SHA256", pin.get("wpa_supplicant", {}).get("stock_sha256", ""))):
@@ -532,9 +666,9 @@ def compose(repo, upstream, resolved, tether="off", apn="off"):
     tether_result = apply_tether(repo, env) if tether == "apply" else "off"
     apn_patch = None
     if apn == "auto":
-      apn_patch = select_apn_patch(repo, git(repo, "write-tree", env=env).decode().strip())
+      apn_patch = select_apn_patch(repo, git(repo, "write-tree", env=env).decode().strip(), apn_family)
       git(repo, "apply", "--cached", "--whitespace=error", str(apn_patch), env=env)
-    inputs = inputs_hash(upstream, resolved, launcher_patch, tether, apn, apn_patch)
+    inputs = inputs_hash(upstream, resolved, launcher_patch, tether, apn, apn_patch, apn_family)
     tree = git(repo, "write-tree", env=env).decode().strip()
     post_checks(repo, upstream, tree, resolved, scratch, tether_result, "applied" if apn_patch else "off")
 
@@ -561,15 +695,16 @@ def main():
   parser.add_argument("--inputs-only", action="store_true", help="print only WPA3-Inputs, without composing")
   parser.add_argument("--tether", choices=("apply", "off"), default="off", help="fork tethering NAT patch")
   parser.add_argument("--apn", choices=("auto", "off"), default="off", help="select the matching APN authentication patch")
+  parser.add_argument("--apn-family", choices=("nightly", "release"), default="nightly", help="APN UI family for AGNOS >= 20")
   args = parser.parse_args()
   try:
     repo = args.repo.resolve()
     upstream = resolve_commit(repo, args.upstream)
     resolved = load_pin(repo, upstream, args.pin_file)
     if args.inputs_only:
-      print(compose_inputs(repo, upstream, resolved, args.tether, args.apn))
+      print(compose_inputs(repo, upstream, resolved, args.tether, args.apn, args.apn_family))
     else:
-      commit, inputs = compose(repo, upstream, resolved, args.tether, args.apn)
+      commit, inputs = compose(repo, upstream, resolved, args.tether, args.apn, args.apn_family)
       print(f"{commit}\n{inputs}")
   except (OSError, ValueError, AssertionError, KeyError, subprocess.CalledProcessError, py_compile.PyCompileError) as error:
     print(f"compose: FAIL: {error_text(error)}", file=sys.stderr)

@@ -81,6 +81,26 @@ class TestResolver(unittest.TestCase):
     self.assertEqual(self.pins["19.9"]["wpa_supplicant"], self.pins["19.8"]["wpa_supplicant"])
     self.assertEqual(self.calls, [])
 
+  def test_repository_201_pin_cli_and_probe(self):
+    self.version = "20.1"
+    self.pins = json.loads((compose.ROOT / "agnos/pins.json").read_text())
+    self.manifest = None  # An exact pin must not enter derived resolution.
+    self.assertNotIn("20", self.pins)
+    with tempfile.TemporaryDirectory() as directory:
+      output = Path(directory) / "pin.json"
+      args = ["pins.py", "--repo", "unused.git", "--upstream", "upstream",
+              "--out", str(output), "--follow-mode", "off"]
+      stdout, stderr = io.StringIO(), io.StringIO()
+      with patch("sys.argv", args), patch("pins.resolve_commit", return_value="upstream"), \
+           patch("pins.fetch_boot", self.fetch), redirect_stdout(stdout), redirect_stderr(stderr):
+        self.assertEqual(pins.main(), 0)
+      self.assertEqual(stdout.getvalue(), "PIN: OK: pinned 20.1\n")
+      self.assertEqual(json.loads(output.read_text()),
+                       {"mode": "pinned", "version": "20.1", "pin": self.pins["20.1"]})
+      self.assertIn("probed supplicant matches", stderr.getvalue())
+      self.assertNotIn("has not been probed", stderr.getvalue())
+    self.assertEqual(self.calls, [])
+
   def test_derived_preserves_tested_pin_and_replaces_origin(self):
     original = deepcopy(self.pins)
     resolved = self.resolve()
@@ -287,8 +307,9 @@ class TestFollowResolver(unittest.TestCase):
   def setUp(self):
     import follow_state as fs
     from test_follow_state import automatic_pin
-    self.state = fs.reserve_tags(fs.load(), 2)
+    self.state = fs.load()
     self.auto = automatic_pin(self.state)
+    self.state = fs.reserve_tags(self.state, 2)
     self.base, self.stock = identity_pair()
     self.source = b'# synthetic agnos implementation\n'
     origin = self.auto['derived_from']
@@ -359,13 +380,15 @@ class TestFollowResolver(unittest.TestCase):
     self.assertNotIn(newer['derived_from']['boot_url'], self.calls)
 
   def test_manual_fix_overrides_withdrawn_derived_base(self):
+    import follow_state as fs
     from test_follow_state import withdrawal
     self.auto['withdrawn'] = withdrawal()
     fixed = deepcopy(self.auto)
     for key in ('auto', 'revert', 'withdrawn'):
       del fixed[key]
-    fixed['tag'] = 'wpa3.sae=6'
-    fixed['release_tag'] = 'agnos-19.10-wpa3.6'
+    number = fs.allocate_tag(self.state)
+    fixed['tag'] = f'wpa3.sae={number}'
+    fixed['release_tag'] = f'agnos-19.10-wpa3.{number}'
     fixed['boot'].update(hash='6' * 64, hash_raw='6' * 64)
     self.state['manual'] = {'19.10': fixed}
     self.version = '19.11'

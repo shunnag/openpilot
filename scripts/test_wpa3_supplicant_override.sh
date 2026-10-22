@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 # Execute only the function extracted from the composed launcher, under strict bash.
 set -euo pipefail
+if [ "$#" = 0 ]; then
+  scratch=$(mktemp -d)
+  trap 'rm -rf "$scratch"' EXIT
+  sed -n '/^+function wpa3_supplicant_override {$/,/^+}$/p' "$(dirname "$0")/../patches/launcher-wpa3-v0112.patch" | sed 's/^+//' > "$scratch/launcher.sh"
+  set -- "$scratch/launcher.sh" "$scratch"
+fi
 work="$2/supplicant tests"
 mkdir -p "$work/stubs"
 sed -n '/^function wpa3_supplicant_override {$/,/^}$/p' "$1" > "$work/function.sh"

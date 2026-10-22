@@ -2,7 +2,8 @@
   "allocated_tags": [
     1,
     2,
-    3
+    3,
+    4
   ],
   "attempts": {},
   "device_tested": {
@@ -27,6 +28,17 @@
       "note": "session4_log_ja.md:482-492",
       "stock_boot_hash_raw": "b9c9b9261fca0cef9e6d9b198fa4b563767e6342afc7a61ab137b2b519260615",
       "stock_boot_url": "https://commadist.azureedge.net/agnosupdate/boot-b9c9b9261fca0cef9e6d9b198fa4b563767e6342afc7a61ab137b2b519260615.img.xz"
+    },
+    "agnos-20.1-wpa3.4": {
+      "at": "2026-10-23",
+      "by": "seed",
+      "devices": [
+        "mici"
+      ],
+      "kernel_commit": "4a6a2ab8e50fa4c6875d20b5f4392fef2afbe3a1",
+      "note": "agnos20_follow/device_test_1023_ja.md",
+      "stock_boot_hash_raw": "6171465bb58806a62cf24c1d415f0be7cc9a364f9fa996bf337bd1104267bdc4",
+      "stock_boot_url": "https://commadist.azureedge.net/agnosupdate/boot-6171465bb58806a62cf24c1d415f0be7cc9a364f9fa996bf337bd1104267bdc4.img.xz"
     }
   },
   "last_auto_publish_at": null,

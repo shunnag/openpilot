@@ -12,7 +12,8 @@ import compose
 import follow_state as fs
 
 
-def automatic_pin(state, version='19.10', number=4):
+def automatic_pin(state, version='19.10', number=None):
+  number = fs.allocate_tag(state) if number is None else number
   pin = deepcopy(state['manual']['19.9'])
   pin.pop('wpa_supplicant')
   pin['release_tag'] = f'agnos-{version}-wpa3.{number}'
@@ -57,11 +58,13 @@ class TestFollowState(unittest.TestCase):
 
   def test_seeds_and_reference_qualification(self):
     self.assertEqual(self.state['pins'], {})
-    self.assertEqual(self.state['status']['allocated_tags'], [1, 2, 3])
+    self.assertEqual(self.state['status']['allocated_tags'], [1, 2, 3, 4])
     self.assertEqual(set(self.state['policy']['allowed_branches']), set(fs.BRANCHES))
     self.assertNotIn('canary', fs.dumps(self.state['policy']))
     self.assertNotIn('soak', fs.dumps(self.state['policy']))
-    self.assertEqual(set(self.state['system_probe']), {pin['derived_from']['system_hash_raw'] for pin in self.state['manual'].values()})
+    withdrawn_system = '51d33446c2ebcbf040bd24aaf172be099a0634176cd16f2f6c542202b6df5db9'
+    self.assertEqual(set(self.state['system_probe']),
+                     {pin['derived_from']['system_hash_raw'] for pin in self.state['manual'].values()} | {withdrawn_system})
     self.state['policy']['wpa']['auto_publish'] = True
     with self.assertRaisesRegex(ValueError, 'ci_reproduced_reference'):
       fs.validate(self.state)
@@ -130,23 +133,23 @@ class TestFollowState(unittest.TestCase):
 
   def test_reservation_never_reuses_releases_reverts_or_abandoned_drafts(self):
     original = deepcopy(self.state)
-    self.assertEqual(fs.allocate_tag(self.state), 4)
+    self.assertEqual(fs.allocate_tag(self.state), 5)
     names = ['agnos-19.10-wpa3.8', 'agnos-19.11-wpa3.13', 'unrelated-v90']
     first = fs.reserve_tags(self.state, 2, names)
-    self.assertEqual(first['status']['allocated_tags'], [1, 2, 3, 14, 15])
+    self.assertEqual(first['status']['allocated_tags'], [1, 2, 3, 4, 14, 15])
     self.assertEqual(first['pins'], {})
     self.assertEqual(fs.allocate_tag(first), 16)
     second = fs.reserve_tags(first, 2)
     self.assertEqual(fs.allocate_tag(second), 18)  # Even after abandoning both reservations.
     state = self.with_auto()
-    self.assertEqual(fs.allocate_tag(state), 6)  # Includes the reserved revert.
+    self.assertEqual(fs.allocate_tag(state), 7)  # Includes the reserved revert.
     state['status']['allocated_tags'] += [24]
     self.assertEqual(fs.allocate_tag(state), 25)
     self.assertEqual(self.state, original)
 
   def test_reserve_before_pin_is_a_separate_transition(self):
     with self.assertRaisesRegex(ValueError, 'prior state commit'):
-      fs.apply(self.state, {'status': {'allocated_tags': [1, 2, 3, 4, 5]}, 'pins': {'19.10': self.auto}})
+      fs.apply(self.state, {'status': {'allocated_tags': [1, 2, 3, 4, 5, 6]}, 'pins': {'19.10': self.auto}})
     state = fs.reserve_tags(self.state, 2)
     new = fs.apply(state, {'pins': {'19.10': self.auto}})
     self.assertEqual(state['pins'], {})
@@ -288,6 +291,13 @@ class TestAutoValidation(unittest.TestCase):
   def setUp(self):
     self.state = fs.load()
     self.pin = automatic_pin(self.state)
+
+  def test_dotted_201_release_tag_and_version_are_valid(self):
+    pin = automatic_pin(self.state, '20.1', number=4)
+    self.assertEqual(pin['release_tag'], 'agnos-20.1-wpa3.4')
+    fs.match(fs.RELEASE, pin['release_tag'], 'release')
+    compose.validate_pin('20.1', pin, self.state['policy']['repository'])
+    fs.validate_union({}, {'20.1': pin}, self.state['policy']['repository'])
 
   def test_metadata_revert_and_withdrawal_schema(self):
     compose.validate_pin('19.10', self.pin)

@@ -1,0 +1,795 @@
+Subject: [PATCH] AGNOS 20 APN UI (nightly); modem runs in AGNOS
+
+Derived from patches/apn-auth-nightly-v0113.patch without modem.py hunks.
+
+diff --git a/openpilot/common/hardware/comma/apn_auth_store.py b/openpilot/common/hardware/comma/apn_auth_store.py
+new file mode 100644
+--- /dev/null
++++ b/openpilot/common/hardware/comma/apn_auth_store.py
+@@ -0,0 +1,64 @@
++"""Private, atomic storage for APN authentication settings."""
++import json
++import os
++import tempfile
++
++STORE_DIR = os.environ.get("APN_AUTH_STORE_DIR", "/data/apn_auth")
++STORE_PATH = STORE_DIR + "/settings.json"
++
++
++def read() -> tuple[str, str, str]:
++  try:
++    with open(STORE_PATH) as f:
++      settings = json.load(f)
++    values = tuple(settings.get(key, "") for key in ("auth", "user", "password"))
++    if all(isinstance(value, str) for value in values):
++      return values
++  except (OSError, ValueError, AttributeError, TypeError):
++    pass
++  return "", "", ""
++
++
++def write(auth=None, user=None, password=None):
++  values = dict(zip(("auth", "user", "password"), read(), strict=True))
++  for key, value in (("auth", auth), ("user", user), ("password", password)):
++    if value is not None:
++      if not isinstance(value, str):
++        raise TypeError("APN auth settings must be strings")
++      values[key] = value
++  os.makedirs(STORE_DIR, mode=0o700, exist_ok=True)
++  fd, temporary = tempfile.mkstemp(dir=STORE_DIR, prefix=".settings-")
++  try:
++    with os.fdopen(fd, "w") as f:
++      os.fchmod(f.fileno(), 0o600)
++      json.dump(values, f)
++      f.flush()
++      os.fsync(f.fileno())
++    os.replace(temporary, STORE_PATH)
++  finally:
++    try:
++      os.unlink(temporary)
++    except FileNotFoundError:
++      pass
++
++
++def clear():
++  try:
++    os.unlink(STORE_PATH)
++  except FileNotFoundError:
++    pass
++
++
++def mtime() -> float | None:
++  try:
++    return os.stat(STORE_PATH).st_mtime
++  except OSError:
++    return None
++
++
++def modem_inactive() -> bool:
++  try:
++    with open("/run/wpa3_modem_state") as f:
++      return f.read().startswith("inactive")
++  except OSError:
++    return False
+diff --git a/openpilot/selfdrive/ui/lib/modem_status.py b/openpilot/selfdrive/ui/lib/modem_status.py
+new file mode 100644
+--- /dev/null
++++ b/openpilot/selfdrive/ui/lib/modem_status.py
+@@ -0,0 +1,103 @@
++"""Photo-safe modem status formatting and an on-demand, one Hz reader."""
++import time
++from datetime import datetime
++
++from openpilot.common.hardware.comma import apn_auth_store
++
++EXIT_MEANINGS = {8: "connect script failed", 10: "negotiation failed", 16: "hangup", 19: "auth failed"}
++
++
++def _yes(value) -> str:
++  return "unknown" if value is None else "yes" if value else "no"
++
++
++def _uptime(seconds) -> str:
++  seconds = max(0, int(seconds or 0))
++  return f"{seconds // 3600}h{seconds // 60 % 60:02d}m{seconds % 60:02d}s"
++
++
++def _captured(text: str, seconds, prefix: str = "at ") -> str:
++  return text if seconds is None else f"{text} ({prefix}{int(seconds)}s)"
++
++
++def status_lines(state: dict, store: tuple[str, str, str], info: dict) -> list[tuple[str, str]]:
++  diag = state.get("diag", {})
++  reg, auth, ppp = (diag.get(section, {}) for section in ("reg", "auth", "ppp"))
++  apn, reattach, times = (diag.get(section, {}) for section in ("apn", "reattach", "times"))
++  mode, user, password = store
++  mode = mode if mode in ("none", "pap", "chap") else "invalid" if mode else "unmanaged"
++  readback = auth.get("readback", {})
++  verdict = "n/a" if readback.get("ok") is None else "ok" if readback["ok"] else "failed"
++  code = ppp.get("last_exit")
++  exit_text = "-" if code is None else f"pppd exit {code}"
++  if code in EXIT_MEANINGS:
++    exit_text += f" ({EXIT_MEANINGS[code]})"
++  ppp_text = _captured(f"{int(ppp.get('fails', 0))}/3; {exit_text}", ppp.get("last_exit_at"))
++  if ppp.get("ip_present") or state.get("state") == "CONNECTED" and state.get("connected"):
++    ppp_text = "up"
++    if code is not None:
++      retry = f"pppd exit {code}"
++      if code in EXIT_MEANINGS:
++        retry += f" {EXIT_MEANINGS[code]}"
++      if ppp.get("last_exit_at") is not None:
++        retry += f" at {int(ppp['last_exit_at'])}s"
++      ppp_text += f" (last retry: {retry})"
++  build = f"{info.get('branch', '-') or '-'} {str(info.get('commit', '-'))[:9]}  up {_uptime(info.get('uptime_s'))}"
++  lines = [
++    ("State", state.get("state", "modem not running / no state yet")),
++    ("Registration", _captured(f"{reg.get('creg', state.get('registration', 'unknown'))} / {reg.get('cgreg', 'unknown')}", reg.get("at"), "")),
++    ("Auth", _captured(f"{auth.get('mode', mode)} {auth.get('cmd', '-')} / readback {verdict}", auth.get("at"))),
++    ("PPP", ppp_text),
++    ("Data", _yes(ppp.get("ip_present", bool(state.get("connected"))))),
++    ("Build", build),
++    ("Clock", str(info.get("wall_clock") or "clock not set")),
++  ]
++  if not state:
++    return lines
++  ceer = diag.get("ceer", {})
++  reattach_text = f"left {int(reattach.get('left', 0))}, count {int(reattach.get('count', 0))}, {reattach.get('last_reason', '-') or '-'}"
++  lines += [
++    ("CEER (last)", _captured(ceer.get("text", "-"), ceer.get("at"))),
++    ("SIM", f"present {_yes(diag.get('sim'))}, comma SIM {_yes(diag.get('comma_sim'))}"),
++    ("MCC-MNC", str(diag.get("mcc_mnc", state.get("mcc_mnc", "")))[:5] or "-"),
++    ("APN setting", apn.get("setting") or "(network)"),
++    ("CID1 before", apn.get("cid1_before") or "(network)"),
++    ("Readback", f"proto {_yes(readback.get('protocol_ok'))}, user {_yes(readback.get('user_ok'))}, pass {_yes(readback.get('password_ok'))}"),
++    ("User / password", f"{len(user)} chars, @ {_yes('@' in user)} / set {_yes(bool(password))}"),
++    ("Re-registrations", _captured(reattach_text, reattach.get("last_at"))),
++    ("Roaming allowed", _yes(diag.get("roaming_allowed"))),
++    ("Modem fw", diag.get("fw", state.get("modem_version", "")) or "-"),
++    ("After change", f"{int(times['connected_after_change_s'])}s" if times.get("connected_after_change_s") is not None else "-"),
++  ]
++  if state.get("state") == "CONNECTED":
++    network = f"{state.get('network_type', '')} {state.get('operator', '')}".strip() or "-"
++    lines.append(("Network / signal", f"{network} / {round(state.get('signal_strength', 0))}%"))
++  if auth.get("warning"):
++    lines.append(("Auth warning", auth["warning"]))
++  lines.extend(("Event", event) for event in diag.get("events", [])[-6:])
++  return lines
++
++
++class ModemStatusReader:
++  def __init__(self):
++    from openpilot.common.params import Params
++    self._params = Params()
++    self._next_read = 0.0
++    self.lines: list[tuple[str, str]] = []
++
++  def _info(self, now: float) -> dict:
++    from openpilot.common.time_helpers import system_time_valid
++    return {"branch": self._params.get("GitBranch"), "commit": self._params.get("GitCommit") or "-",
++            "uptime_s": int(now), "wall_clock": datetime.now().strftime("%Y-%m-%d %H:%M:%S") if system_time_valid() else None}
++
++  def update(self) -> bool:
++    from openpilot.common.hardware import HARDWARE
++    now = time.monotonic()
++    if now < self._next_read:
++      return False
++    self._next_read = now + 1.0
++    lines = status_lines(HARDWARE.get_modem_state(), apn_auth_store.read(), self._info(now))
++    if lines == self.lines:
++      return False
++    self.lines = lines
++    return True
+diff --git a/openpilot/selfdrive/ui/mici/layouts/settings/network/modem_status.py b/openpilot/selfdrive/ui/mici/layouts/settings/network/modem_status.py
+new file mode 100644
+--- /dev/null
++++ b/openpilot/selfdrive/ui/mici/layouts/settings/network/modem_status.py
+@@ -0,0 +1,46 @@
++import pyray as rl
++
++from openpilot.selfdrive.ui.lib.modem_status import ModemStatusReader
++from openpilot.selfdrive.ui.ui_state import device
++from openpilot.system.ui.lib.application import FONT_SCALE, font_fallback, gui_app
++from openpilot.system.ui.widgets.scroller import NavRawScrollPanel
++
++
++class ModemStatusMici(NavRawScrollPanel):
++  def __init__(self):
++    super().__init__()
++    self._reader = ModemStatusReader()
++    self._rows: list[str] = []
++
++  def show_event(self):
++    super().show_event()
++    device.set_override_interactive_timeout(300)
++
++  def hide_event(self):
++    super().hide_event()
++    device.set_override_interactive_timeout(None)
++
++  def _update_state(self):
++    super()._update_state()
++    if gui_app.get_active_widget() is self and self._reader.update():
++      font = font_fallback(gui_app.font())
++      self._rows = []
++      for label, value in self._reader.lines:
++        words = f"{label}: {value}".split()
++        row = ""
++        for word in words:
++          candidate = (row + " " + word).strip()
++          width = rl.measure_text_ex(font, candidate, 26 * FONT_SCALE, 0).x  # noqa: TID251 -- Avoid the unbounded text cache.
++          if row and width > gui_app.width - 24:
++            self._rows.append(row)
++            row = word
++          else:
++            row = candidate
++        self._rows.append(row)
++
++  def _render(self, rect: rl.Rectangle):
++    offset = round(self._scroll_panel.update(rect, 24 + len(self._rows) * 34))
++    rl.begin_scissor_mode(int(rect.x), int(rect.y), int(rect.width), int(rect.height))
++    for i, text in enumerate(self._rows):
++      rl.draw_text_ex(gui_app.font(), text, rl.Vector2(rect.x + 12, rect.y + 24 + i * 34 + offset), 26, 0, rl.WHITE)
++    rl.end_scissor_mode()
+diff --git a/openpilot/selfdrive/ui/mici/layouts/settings/network/network_layout.py b/openpilot/selfdrive/ui/mici/layouts/settings/network/network_layout.py
+--- a/openpilot/selfdrive/ui/mici/layouts/settings/network/network_layout.py
++++ b/openpilot/selfdrive/ui/mici/layouts/settings/network/network_layout.py
+@@ -1,13 +1,42 @@
++import pyray as rl
++
++from collections.abc import Callable
++
++from openpilot.common.hardware.comma import apn_auth_store
++
+ from openpilot.selfdrive.ui.mici.layouts.settings.network import EsimNetworkButton, WifiNetworkButton
+ from openpilot.selfdrive.ui.mici.layouts.settings.network.esim_ui import EsimUI
+ from openpilot.selfdrive.ui.mici.layouts.settings.network.wifi_ui import WifiUIMici
+-from openpilot.selfdrive.ui.mici.widgets.button import BigButton, BigMultiToggle, BigParamControl, BigToggle
++from openpilot.selfdrive.ui.mici.widgets.button import BigButton, BigMultiToggle, BigParamControl, BigToggle, GreyBigButton
+ from openpilot.selfdrive.ui.mici.widgets.dialog import BigInputDialog
+ from openpilot.selfdrive.ui.ui_state import ui_state
+ from openpilot.system.ui.lib.application import gui_app
++from openpilot.system.ui.lib.multilang import tr
++from openpilot.system.ui.widgets.label import UnifiedLabel
+ from openpilot.system.ui.lib.cellular_manager import CellularManager
+ from openpilot.system.ui.lib.wifi_manager import WifiManager, Network, MeteredType
+ from openpilot.system.ui.widgets.scroller import NavScroller
++
++
++AUTH_FIELD_RULE = 'use 1-64 ascii letters, digits or symbols, without spaces, double quotes, backslashes or commas.'
++
++
++def _valid_auth_field(text: str) -> bool:
++  return 1 <= len(text) <= 64 and all(0x21 <= ord(c) <= 0x7e and c not in '"\\,' for c in text)
++
++
++class ApnCredentialsConfirmDialog(NavScroller):
++  def __init__(self, confirm_callback: Callable[[], None], message: str = "also delete the saved apn user name and password?"):
++    super().__init__()
++    no_btn = BigButton("no", "keep saved credentials")
++    no_btn.set_click_callback(self.dismiss)
++    yes_btn = BigButton("yes", "delete saved credentials")
++    yes_btn.set_click_callback(lambda: self.dismiss(confirm_callback))
++    self._scroller.add_widgets([
++      GreyBigButton("", message),
++      no_btn,
++      yes_btn,
++    ])
+ 
+ 
+ class NetworkLayoutMici(NavScroller):
+@@ -85,6 +114,21 @@
+     self._apn_btn = BigButton("apn settings", "edit",
+                               description="Set the access point name required by your cellular carrier. Leave blank for automatic configuration.")
+     self._apn_btn.set_click_callback(self._edit_apn)
++
++    self._apn_user_btn = BigButton("apn user name", "not set", description=AUTH_FIELD_RULE)
++    self._apn_user_btn.set_click_callback(self._edit_apn_user)
++    self._apn_password_btn = BigButton("apn password", "not set", description=AUTH_FIELD_RULE)
++    self._apn_password_btn.set_click_callback(self._edit_apn_password)
++    self._apn_auth_btn = BigMultiToggle("apn auth", ["off", "chap", "pap"], select_callback=self._set_apn_auth)
++    self._apn_inactive_note = UnifiedLabel(lambda: tr("APN auth off: stock modem service"), font_size=20, wrap_text=False)
++    self._apn_inactive_note.set_rect(rl.Rectangle(0, 0, 500, 50))
++    self._apn_inactive_note.set_visible(apn_auth_store.modem_inactive)
++    self._apn_delete_btn = BigButton("delete apn credentials", "delete")
++    self._apn_delete_btn.set_click_callback(self._delete_apn_credentials)
++    self._refresh_apn_auth()
++    self._modem_status = None
++    self._modem_status_btn = BigButton("modem status", "view")
++    self._modem_status_btn.set_click_callback(self._show_modem_status)
+ 
+     # ******** Cellular metered toggle ********
+     self._cellular_metered_btn = BigParamControl("cellular metered", "GsmMetered", description="Prevent large uploads over the cellular connection.")
+@@ -99,6 +143,12 @@
+       # /* Advanced settings
+       self._roaming_btn,
+       self._apn_btn,
++      self._apn_user_btn,
++      self._apn_password_btn,
++      self._apn_auth_btn,
++      self._apn_inactive_note,
++      self._apn_delete_btn,
++      self._modem_status_btn,
+       self._cellular_metered_btn,
+       # */
+     ])
+@@ -110,10 +160,15 @@
+     self._wifi_manager.set_ipv4_forward(show_cell_settings)
+     self._roaming_btn.set_visible(show_cell_settings)
+     self._apn_btn.set_visible(show_cell_settings)
++    self._apn_user_btn.set_visible(show_cell_settings)
++    self._apn_password_btn.set_visible(show_cell_settings)
++    self._apn_auth_btn.set_visible(show_cell_settings)
++    self._apn_delete_btn.set_visible(show_cell_settings and bool(self._apn_user or self._apn_has_password))
+     self._cellular_metered_btn.set_visible(show_cell_settings)
+ 
+   def show_event(self):
+     super().show_event()
++    self._refresh_apn_auth()
+     self._wifi_manager.set_active(True)
+ 
+     # Process wifi and esim callbacks while at any point in the nav stack
+@@ -134,10 +189,60 @@
+         ui_state.params.remove("GsmApn")
+       else:
+         ui_state.params.put("GsmApn", apn)
++      self._refresh_apn_auth()
+ 
+     current_apn = ui_state.params.get("GsmApn") or ""
+     dlg = BigInputDialog("enter APN...", current_apn, minimum_length=0, confirm_callback=update_apn)
+     gui_app.push_widget(dlg)
++
++  def _show_modem_status(self):
++    from openpilot.selfdrive.ui.mici.layouts.settings.network.modem_status import ModemStatusMici
++    if self._modem_status is None:
++      self._modem_status = ModemStatusMici()
++    gui_app.push_widget(self._modem_status)
++
++  def _refresh_apn_auth(self):
++    auth, self._apn_user, password = apn_auth_store.read()
++    self._apn_auth = auth if auth in ("chap", "pap") else "off"
++    self._apn_has_password = bool(password)
++    self._apn_auth_btn.set_value(self._apn_auth)
++    self._apn_user_btn.set_value("set" if self._apn_user else "not set")
++    self._apn_password_btn.set_value("set" if self._apn_has_password else "not set")
++
++  def _delete_apn_credentials(self):
++    def clear_credentials():
++      apn_auth_store.write("none", "", "")
++      self._refresh_apn_auth()
++
++    gui_app.push_widget(ApnCredentialsConfirmDialog(clear_credentials, message="delete the saved apn user name and password?"))
++
++  def _set_apn_auth(self, value: str):
++    # BigMultiToggle changes its value before calling us; compare with the cached setting.
++    if value == self._apn_auth:
++      return
++    apn_auth_store.write(auth="none" if value == "off" else value)
++    self._refresh_apn_auth()
++    if value == "off":
++      def clear_credentials():
++        apn_auth_store.write("none", "", "")
++        self._refresh_apn_auth()
++
++      gui_app.push_widget(ApnCredentialsConfirmDialog(clear_credentials))
++
++  def _edit_apn_user(self):
++    self._edit_apn_field("user", "enter user name...", self._apn_user)
++
++  def _edit_apn_password(self):
++    self._edit_apn_field("password", "enter password...", "")
++
++  def _edit_apn_field(self, key: str, hint: str, default_text: str):
++    def update(value: str):
++      if _valid_auth_field(value):
++        apn_auth_store.write(**{key: value})
++        self._refresh_apn_auth()
++
++    gui_app.push_widget(BigInputDialog(hint, default_text, minimum_length=1, confirm_callback=update,
++                                      text_validator=_valid_auth_field))
+ 
+   def _on_network_updated(self, networks: list[Network]):
+     # Update tethering state
+diff --git a/openpilot/selfdrive/ui/translations/app.pot b/openpilot/selfdrive/ui/translations/app.pot
+--- a/openpilot/selfdrive/ui/translations/app.pot
++++ b/openpilot/selfdrive/ui/translations/app.pot
+@@ -819,3 +819,54 @@
+ msgid "camera starting"
+ msgstr ""
+ 
++
++msgid "Enter APN user name"
++msgstr ""
++
++msgid "Enter APN password"
++msgstr ""
++
++msgid "APN User Name"
++msgstr ""
++
++msgid "APN Password"
++msgstr ""
++
++msgid "APN Authentication"
++msgstr ""
++
++msgid "Off"
++msgstr ""
++
++msgid "PAP"
++msgstr ""
++
++msgid "CHAP"
++msgstr ""
++
++msgid "Also delete the saved APN user name and password?"
++msgstr ""
++
++msgid "Yes"
++msgstr ""
++
++msgid "No"
++msgstr ""
++
++msgid "Use 1-64 ASCII letters, digits or symbols, without spaces, double quotes, backslashes or commas."
++msgstr ""
++
++msgid "Delete APN Credentials"
++msgstr ""
++
++msgid "DELETE"
++msgstr ""
++
++msgid "Delete the saved APN user name and password?"
++msgstr ""
++
++msgid "Modem Status"
++msgstr ""
++
++msgid "APN auth off: stock modem service"
++msgstr ""
+diff --git a/openpilot/selfdrive/ui/translations/app_ja.po b/openpilot/selfdrive/ui/translations/app_ja.po
+--- a/openpilot/selfdrive/ui/translations/app_ja.po
++++ b/openpilot/selfdrive/ui/translations/app_ja.po
+@@ -813,3 +813,54 @@
+ msgid "✓ SUBSCRIBED"
+ msgstr "✓ 登録済み"
+ 
++
++msgid "Enter APN user name"
++msgstr "APNユーザー名を入力"
++
++msgid "Enter APN password"
++msgstr "APNパスワードを入力"
++
++msgid "APN User Name"
++msgstr "APNユーザー名"
++
++msgid "APN Password"
++msgstr "APNパスワード"
++
++msgid "APN Authentication"
++msgstr "APNログイン方法"
++
++msgid "Off"
++msgstr "オフ"
++
++msgid "PAP"
++msgstr "PAP"
++
++msgid "CHAP"
++msgstr "CHAP"
++
++msgid "Also delete the saved APN user name and password?"
++msgstr "保存済みのAPNユーザー名とパスワードも削除しますか？"
++
++msgid "Yes"
++msgstr "はい"
++
++msgid "No"
++msgstr "いいえ"
++
++msgid "Use 1-64 ASCII letters, digits or symbols, without spaces, double quotes, backslashes or commas."
++msgstr "ASCIIのみ、1-64までで入力してください。スペース、ダブルクォート、バックスラッシュ、カンマは使用できません。"
++
++msgid "Delete APN Credentials"
++msgstr "APNログイン情報を削除"
++
++msgid "DELETE"
++msgstr "削除"
++
++msgid "Delete the saved APN user name and password?"
++msgstr "保存済みのAPNユーザー名とパスワードを削除しますか？"
++
++msgid "Modem Status"
++msgstr "モデムの状態"
++
++msgid "APN auth off: stock modem service"
++msgstr "通常のモデム使用中: APNログインはオフ"
+diff --git a/openpilot/system/ui/widgets/keyboard.py b/openpilot/system/ui/widgets/keyboard.py
+--- a/openpilot/system/ui/widgets/keyboard.py
++++ b/openpilot/system/ui/widgets/keyboard.py
+@@ -109,6 +109,10 @@
+ 
+   def set_text(self, text: str):
+     self._input_box.text = text
++
++  def set_password_mode(self, password_mode: bool):
++    self._password_mode = password_mode
++    self._input_box.set_password_mode(password_mode)
+ 
+   @property
+   def text(self):
+diff --git a/openpilot/system/ui/widgets/modem_status_dialog.py b/openpilot/system/ui/widgets/modem_status_dialog.py
+new file mode 100644
+--- /dev/null
++++ b/openpilot/system/ui/widgets/modem_status_dialog.py
+@@ -0,0 +1,86 @@
++import pyray as rl
++
++from openpilot.selfdrive.ui.lib.modem_status import ModemStatusReader
++from openpilot.selfdrive.ui.ui_state import device, ui_state
++from openpilot.system.ui.lib.application import FONT_SCALE, font_fallback, gui_app
++from openpilot.system.ui.lib.multilang import tr
++from openpilot.system.ui.widgets import Widget
++from openpilot.system.ui.widgets.button import Button, ButtonStyle
++
++LABEL_SIZE = 34
++VALUE_SIZE = 40
++ROW_PITCH = 60
++
++
++class ModemStatusDialog(Widget):
++  def __init__(self):
++    super().__init__()
++    self._reader = ModemStatusReader()
++    self._close_button = Button(tr("Close"), click_callback=gui_app.pop_widget, button_style=ButtonStyle.PRIMARY)
++    self._rows: list[tuple[str, str]] = []
++    self._title = ""
++    self._layout_key = None
++
++  def show_event(self):
++    super().show_event()
++    device.set_override_interactive_timeout(300)
++
++  def hide_event(self):
++    super().hide_event()
++    device.set_override_interactive_timeout(None)
++
++  def _update_state(self):
++    if gui_app.get_active_widget() is self:
++      if ui_state.started:
++        gui_app.pop_widget()
++        return
++      self._reader.update()
++
++  @staticmethod
++  def _truncate(font, text: str, font_size: int, max_width: float) -> str:
++    def width(value):
++      return rl.measure_text_ex(font, value, font_size * FONT_SCALE, 0).x  # noqa: TID251 -- Avoid the unbounded text cache.
++
++    if width(text) <= max_width:
++      return text
++    ellipsis = "..."
++    if width(ellipsis) > max_width:
++      return ""
++    left, right = 0, len(text)
++    while left < right:
++      mid = (left + right + 1) // 2
++      if width(text[:mid] + ellipsis) <= max_width:
++        left = mid
++      else:
++        right = mid - 1
++    return text[:left] + ellipsis
++
++  def _render(self, rect: rl.Rectangle):
++    font = font_fallback(gui_app.font())
++    content = rl.Rectangle(rect.x + 50, rect.y + 120, rect.width - 100, rect.height - 290)
++    column_gap = 60
++    column_width = (content.width - column_gap) / 2
++    label_width = 320
++    value_offset = label_width + 20
++    rows_per_column = max(1, int(content.height // ROW_PITCH))
++    layout_key = (id(self._reader.lines), content.width, content.height)
++    if self._layout_key != layout_key:
++      metadata = dict(self._reader.lines)
++      title = f"MODEM STATUS  {metadata.get('Build', '')}  {metadata.get('Clock', 'clock not set')}"
++      self._title = self._truncate(font, title, VALUE_SIZE, content.width)
++      self._rows = [
++        (self._truncate(font, label, LABEL_SIZE, label_width),
++         self._truncate(font, str(value), VALUE_SIZE, column_width - value_offset))
++        for label, value in self._reader.lines if label not in ("Build", "Clock")
++      ]
++      self._layout_key = layout_key
++    rl.draw_text_ex(font, self._title, rl.Vector2(content.x, rect.y + 35), VALUE_SIZE, 0, rl.WHITE)
++    rl.begin_scissor_mode(int(content.x), int(content.y), int(content.width), int(content.height))
++    for i, (label, value) in enumerate(self._rows):
++      column, row = divmod(i, rows_per_column)
++      x = content.x + column * (column_width + column_gap)
++      y = content.y + row * ROW_PITCH
++      rl.draw_text_ex(font, label, rl.Vector2(x, y + 4), LABEL_SIZE, 0, rl.GRAY)
++      rl.draw_text_ex(font, value, rl.Vector2(x + value_offset, y), VALUE_SIZE, 0, rl.WHITE)
++    rl.end_scissor_mode()
++    self._close_button.render(rl.Rectangle(rect.x + rect.width - 490, rect.y + rect.height - 170, 440, 120))
+diff --git a/openpilot/system/ui/widgets/network.py b/openpilot/system/ui/widgets/network.py
+--- a/openpilot/system/ui/widgets/network.py
++++ b/openpilot/system/ui/widgets/network.py
+@@ -3,15 +3,16 @@
+ from typing import cast
+ 
+ import pyray as rl
++from openpilot.common.hardware.comma import apn_auth_store
+ from openpilot.system.ui.lib.application import gui_app, TextAlignment
+ from openpilot.system.ui.lib.multilang import tr
+ from openpilot.system.ui.lib.scroll_panel import GuiScrollPanel
+ from openpilot.system.ui.lib.wifi_manager import WifiManager, SecurityType, Network, MeteredType, normalize_ssid
+ from openpilot.system.ui.widgets import DialogResult, Widget
+ from openpilot.system.ui.widgets.button import ButtonStyle, Button
+-from openpilot.system.ui.widgets.confirm_dialog import ConfirmDialog
++from openpilot.system.ui.widgets.confirm_dialog import ConfirmDialog, alert_dialog
+ from openpilot.system.ui.widgets.keyboard import Keyboard
+-from openpilot.system.ui.widgets.label import gui_label
++from openpilot.system.ui.widgets.label import gui_label, UnifiedLabel
+ from openpilot.system.ui.widgets.scroller_tici import Scroller
+ from openpilot.system.ui.widgets.list_view import ButtonAction, ListItem, MultipleButtonAction, ToggleAction, button_item, text_item
+ 
+@@ -27,6 +28,10 @@
+   "icons/wifi_strength_high.png",
+   "icons/wifi_strength_full.png",
+ ]
++
++
++def _valid_auth_field(text: str) -> bool:
++  return 1 <= len(text) <= 64 and all(0x21 <= ord(c) <= 0x7e and c not in '"\\,' for c in text)
+ 
+ 
+ class PanelType(IntEnum):
+@@ -91,6 +96,8 @@
+ 
+   def _set_current_panel(self, panel: PanelType):
+     self._current_panel = panel
++    if panel == PanelType.ADVANCED:
++      self._advanced_panel.show_event()
+ 
+ 
+ class AdvancedNetworkSettings(Widget):
+@@ -131,6 +138,24 @@
+     # APN setting
+     self._apn_btn = button_item(lambda: tr("APN Setting"), lambda: tr("EDIT"), callback=self._edit_apn)
+ 
++    self._apn_user_action = ButtonAction(lambda: tr("EDIT"))
++    self._apn_user_action.set_value(lambda: f"set ({len(self._apn_user)} chars)" if self._apn_user else "")
++    self._apn_user_btn = ListItem(lambda: tr("APN User Name"), action_item=self._apn_user_action, callback=self._edit_apn_user)
++    self._apn_password_action = ButtonAction(lambda: tr("EDIT"))
++    self._apn_password_action.set_value(lambda: "••••••" if self._apn_has_password else "")
++    self._apn_password_btn = ListItem(lambda: tr("APN Password"), action_item=self._apn_password_action, callback=self._edit_apn_password)
++    self._apn_auth_action = MultipleButtonAction([lambda: tr("Off"), lambda: tr("PAP"), lambda: tr("CHAP")], 180,
++                                               callback=self._set_apn_auth)
++    self._apn_auth_btn = ListItem(lambda: tr("APN Authentication"), action_item=self._apn_auth_action)
++    self._apn_inactive_note = UnifiedLabel(lambda: tr("APN auth off: stock modem service"), font_size=32, wrap_text=False)
++    self._apn_inactive_note.set_rect(rl.Rectangle(0, 0, 1800, 50))
++    self._apn_inactive_note.set_visible(apn_auth_store.modem_inactive)
++    self._apn_delete_btn = button_item(lambda: tr("Delete APN Credentials"), lambda: tr("DELETE"), callback=self._delete_apn_credentials)
++    self._refresh_apn_auth()
++    self._modem_status = None
++    self._modem_status_btn = button_item(lambda: tr("Modem Status"), lambda: tr("VIEW"),
++                                         callback=self._show_modem_status, enabled=ui_state.is_offroad)
++
+     # Wi-Fi metered toggle
+     self._wifi_metered_action = MultipleButtonAction([lambda: tr("default"), lambda: tr("metered"), lambda: tr("unmetered")], 255, 0,
+                                                      callback=self._toggle_wifi_metered)
+@@ -143,12 +168,82 @@
+       text_item(lambda: tr("IP Address"), lambda: self._wifi_manager.ipv4_address),
+       self._roaming_btn,
+       self._apn_btn,
++      self._apn_user_btn,
++      self._apn_password_btn,
++      self._apn_auth_btn,
++      self._apn_inactive_note,
++      self._apn_delete_btn,
++      self._modem_status_btn,
+       self._cellular_metered_btn,
+       wifi_metered_btn,
+       button_item(lambda: tr("Hidden Network"), lambda: tr("CONNECT"), callback=self._connect_to_hidden_network),
+     ]
+ 
+     self._scroller = Scroller(items, line_separator=True, spacing=0)
++
++  def show_event(self):
++    super().show_event()
++    self._refresh_apn_auth()
++
++  def _show_modem_status(self):
++    from openpilot.system.ui.widgets.modem_status_dialog import ModemStatusDialog
++    if self._modem_status is None:
++      self._modem_status = ModemStatusDialog()
++    gui_app.push_widget(self._modem_status)
++
++  def _refresh_apn_auth(self):
++    auth, self._apn_user, password = apn_auth_store.read()
++    self._apn_auth = auth if auth in ("pap", "chap") else "none"
++    self._apn_has_password = bool(password)
++    self._apn_auth_action.set_selected_button(("none", "pap", "chap").index(self._apn_auth))
++
++  def _delete_apn_credentials(self):
++    def clear_credentials(result: DialogResult):
++      if result == DialogResult.CONFIRM:
++        apn_auth_store.write("none", "", "")
++        self._refresh_apn_auth()
++
++    gui_app.push_widget(ConfirmDialog(tr("Delete the saved APN user name and password?"), tr("Yes"), tr("No"), callback=clear_credentials))
++
++  def _set_apn_auth(self, index: int):
++    auth = ("none", "pap", "chap")[index]
++    # MultipleButtonAction also calls back when the selected button is tapped again.
++    if auth == self._apn_auth:
++      return
++    apn_auth_store.write(auth=auth)
++    self._refresh_apn_auth()
++    if auth == "none":
++      def clear_credentials(result: DialogResult):
++        if result == DialogResult.CONFIRM:
++          apn_auth_store.write("none", "", "")
++          self._refresh_apn_auth()
++
++      gui_app.push_widget(ConfirmDialog(tr("Also delete the saved APN user name and password?"), tr("Yes"), tr("No"), callback=clear_credentials))
++
++  def _edit_apn_user(self):
++    self._edit_apn_field("user", tr("Enter APN user name"), False)
++
++  def _edit_apn_password(self):
++    self._edit_apn_field("password", tr("Enter APN password"), True)
++
++  def _edit_apn_field(self, key: str, title: str, password_mode: bool):
++    def update(result: DialogResult):
++      self._keyboard.set_password_mode(False)
++      if result != DialogResult.CONFIRM:
++        return
++      value = self._keyboard.text
++      if not _valid_auth_field(value):
++        gui_app.push_widget(alert_dialog(tr("Use 1-64 ASCII letters, digits or symbols, without spaces, double quotes, backslashes or commas.")))
++        return
++      apn_auth_store.write(**{key: value})
++      self._refresh_apn_auth()
++
++    self._keyboard.reset(min_text_size=1)
++    self._keyboard.set_password_mode(password_mode)
++    self._keyboard.set_title(title)
++    self._keyboard.set_text("" if password_mode else self._apn_user)
++    self._keyboard.set_callback(update)
++    gui_app.push_widget(self._keyboard)
+ 
+   def _on_network_updated(self, networks: list[Network]):
+     self._tethering_action.set_enabled(True)
+@@ -183,9 +278,11 @@
+         self._params.remove("GsmApn")
+       else:
+         self._params.put("GsmApn", apn, block=True)
++      self._refresh_apn_auth()
+ 
+     current_apn = self._params.get("GsmApn") or ""
+     self._keyboard.reset(min_text_size=0)
++    self._keyboard.set_password_mode(False)
+     self._keyboard.set_title(tr("Enter APN"), tr("leave blank for automatic configuration"))
+     self._keyboard.set_text(current_apn)
+     self._keyboard.set_callback(update_apn)
+@@ -226,6 +323,7 @@
+       gui_app.push_widget(self._keyboard)
+ 
+     self._keyboard.reset(min_text_size=1)
++    self._keyboard.set_password_mode(False)
+     self._keyboard.set_title(tr("Enter SSID"), "")
+     self._keyboard.set_callback(connect_hidden)
+     gui_app.push_widget(self._keyboard)
+@@ -253,6 +351,12 @@
+     self._wifi_manager.set_ipv4_forward(show_cell_settings)
+     self._roaming_btn.set_visible(show_cell_settings)
+     self._apn_btn.set_visible(show_cell_settings)
++    show_apn_auth_rows = not self._prime_state.is_full_prime()
++    self._apn_user_btn.set_visible(show_apn_auth_rows)
++    self._apn_password_btn.set_visible(show_apn_auth_rows)
++    self._apn_auth_btn.set_visible(show_apn_auth_rows)
++    self._modem_status_btn.set_visible(show_apn_auth_rows)
++    self._apn_delete_btn.set_visible(show_apn_auth_rows and bool(self._apn_user or self._apn_has_password))
+     self._cellular_metered_btn.set_visible(show_cell_settings)
+ 
+   def _render(self, _):

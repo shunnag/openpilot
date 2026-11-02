@@ -75,13 +75,17 @@ class TestAgnos20Compose(unittest.TestCase):
   v0112_variant = compose_fixture.TestCompose.v0112_variant
   apn_upstream = compose_fixture.TestCompose.apn_upstream
 
-  def modern_fixture(self, variant="nightly-v0113"):
+  def modern_fixture(self, variant="nightly-v0113", *, raylib_nb=False):
     upstream = self.apn_upstream(variant)
     with compose.temporary_index(self.repo, upstream) as (env, _):
       compose.put_blob(self.repo, env, "launch_env.sh", compose.blob(self.repo, upstream, "launch_env.sh").replace(b'"19.8"', b'"20.1"'))
       compose.git(self.repo, "update-index", "--index-info", data=b"0 " + b"0" * 40 + b"\topenpilot/common/hardware/comma/modem.py\n", env=env)
       # Both real nightly and release trees carry this marker.
       compose.put_blob(self.repo, env, "prebuilt", b"", mode="100644")
+      if raylib_nb:
+        for path in ("openpilot/system/ui/widgets/network.py", "openpilot/system/ui/widgets/keyboard.py"):
+          source = compose.git(self.repo, "show", ":" + path, env=env)
+          compose.put_blob(self.repo, env, path, source.replace(b"import pyray as rl", b"import raylib_nb as rl"))
       tree = compose.git(self.repo, "write-tree", env=env).decode().strip()
       upstream = compose.git(self.repo, "commit-tree", tree, data=b"AGNOS 20.1 fixture\n", env=self.identity).decode().strip()
     resolved = deepcopy(self.resolved)
@@ -96,7 +100,7 @@ class TestAgnos20Compose(unittest.TestCase):
     self.assertEqual(compose.select_apn_patch(self.repo, old), compose.APN_PATCHES[2])
     for family in ("nightly", "release"):
       upstream, resolved = self.modern_fixture()
-      for candidate in (p for paths in compose.APN_AGNOS20_PATCHES.values() for p in paths):
+      for candidate in (paths[0] for paths in compose.APN_AGNOS20_PATCHES.values()):
         with compose.temporary_index(self.repo, upstream) as (env, _):
           compose.git(self.repo, "apply", "--cached", "--check", str(candidate), env=env)
       selected = compose.select_apn_patch(self.repo, upstream, family)
@@ -261,7 +265,7 @@ class TestAgnos20Compose(unittest.TestCase):
 
   def test_ui_note_is_conditional_and_translated(self):
     upstream, resolved = self.modern_fixture()
-    for candidate in (p for paths in compose.APN_AGNOS20_PATCHES.values() for p in paths):
+    for candidate in (paths[0] for paths in compose.APN_AGNOS20_PATCHES.values()):
       with compose.temporary_index(self.repo, upstream) as (env, _):
         compose.git(self.repo, "apply", "--cached", str(candidate), env=env)
         source = compose.git(self.repo, "show", ":openpilot/common/hardware/comma/apn_auth_store.py", env=env)

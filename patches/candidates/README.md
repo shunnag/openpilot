@@ -6,7 +6,9 @@
 openpilot modem hunks, together with the pinned modem/launcher bundle. The
 publisher passes `--apn-family nightly|release` explicitly; both real families
 carry `prebuilt`, so it cannot distinguish them. Exactly one candidate in the
-chosen family must apply. A release-staging tree still using a 0.11.2 UI will
+chosen family must apply. The registered `apn-auth-nightly-agnos20-nb.patch` and
+`apn-auth-release-agnos20-nb.patch` forms support raylib_nb trees after #39193;
+the original forms retain pyray input identity. A release-staging tree using a 0.11.2 UI will
 HOLD at G5 until a matching release form exists; that hold is accepted.
 AGNOS < 20 retains its old registry, input hash and tree. The evidence and
 proposals below describe the historical preparation for the older registry;

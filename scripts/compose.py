@@ -30,8 +30,8 @@ APN_PATCHES = (
   ROOT / "patches/apn-auth-nightly-v0113.patch",
 )
 APN_AGNOS20_PATCHES = {
-  "nightly": (ROOT / "patches/apn-auth-nightly-agnos20.patch",),
-  "release": (ROOT / "patches/apn-auth-release-agnos20.patch",),
+  "nightly": (ROOT / "patches/apn-auth-nightly-agnos20.patch", ROOT / "patches/apn-auth-nightly-agnos20-nb.patch"),
+  "release": (ROOT / "patches/apn-auth-release-agnos20.patch", ROOT / "patches/apn-auth-release-agnos20-nb.patch"),
 }
 MODEM_LAUNCHER_PATCH = ROOT / "patches/launcher-modem-agnos20.patch"
 MODEM_PATH = "wpa3/modem.py"
@@ -42,6 +42,8 @@ MODEM_ALLOWED_IMPORTS = frozenset({
 # Preserve the pre-AGNOS-20 input identity, including the old composer digest.
 # Changing the composer must not trigger a rebuild of any AGNOS 19.9 tree.
 LEGACY_COMPOSE_SHA256 = "01da873d5ba539bbbeec1ecaccc6208f5c80ae41cc0f7f290bf6b92bcca7a156"
+# Preserve 4a387959c's AGNOS-20 identity unless a raylib_nb APN patch is selected.
+PYRAY_COMPOSE_SHA256 = "9c8211c33bdb984cfbc4c5bc5ba9cffe8b3c52e5a52e2948c4b66aada79ab41d"
 TETHER_ALLOWED = {"openpilot/system/ui/lib/tests/test_tethering_nat.py"}
 APN_ALLOWED = {
   "openpilot/common/hardware/comma/apn_auth_store.py",
@@ -392,11 +394,16 @@ def load_pin(repo, upstream, pin_file):
 
 def inputs_hash(upstream, resolved, launcher_patch, tether="off", apn="off", apn_patch=None, apn_family="nightly"):
   # Hash the entire resolved pin as canonical JSON, independent of file formatting.
+  compose_sha256 = LEGACY_COMPOSE_SHA256
+  if agnos20(resolved["version"]):
+    compose_sha256 = (hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+                      if apn == "auto" and apn_patch is not None and apn_patch.name.endswith("-agnos20-nb.patch")
+                      else PYRAY_COMPOSE_SHA256)
   inputs = {
     "upstream": upstream,
     "patches": {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in (launcher_patch, UI_PATCH)},
     "pin": resolved,
-    "compose.py": hashlib.sha256(Path(__file__).read_bytes()).hexdigest() if agnos20(resolved["version"]) else LEGACY_COMPOSE_SHA256,
+    "compose.py": compose_sha256,
   }
   if tether == "apply":
     inputs.update(tether=tether, tether_patch=hashlib.sha256(TETHER_PATCH.read_bytes()).hexdigest())

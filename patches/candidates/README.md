@@ -10,9 +10,10 @@ chosen family must apply. A release-staging tree still using a 0.11.2 UI will
 HOLD at G5 until a matching release form exists; that hold is accepted.
 AGNOS < 20 retains its old registry, input hash and tree. The evidence and
 proposals below describe the historical preparation for the older registry;
-this candidate remains unregistered. The current real pin is `20.1` /
-`agnos-20.1-wpa3.4`, with stock system `7300706856…`; see
+this candidate remains unregistered. The current real pin is `20.2` /
+`agnos-20.2-wpa3.5` / `wpa3.sae=5`, with stock system `8faed425…`; see
 [publication details](../../follow/PUBLISHING.md#agnos-20-apn-patch-registry-and-modem-pin).
+AGNOS 20.2's kernel only drops 3 latency tracers (comma #148).
 
 `apn-auth-release-v0113.patch` is an inactive preparation for the next
 release-staging update. It preserves every added and removed runtime line from

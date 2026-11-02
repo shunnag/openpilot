@@ -3,7 +3,8 @@
     1,
     2,
     3,
-    4
+    4,
+    5
   ],
   "attempts": {},
   "device_tested": {
@@ -39,6 +40,17 @@
       "note": "agnos20_follow/device_test_1023_ja.md",
       "stock_boot_hash_raw": "6171465bb58806a62cf24c1d415f0be7cc9a364f9fa996bf337bd1104267bdc4",
       "stock_boot_url": "https://commadist.azureedge.net/agnosupdate/boot-6171465bb58806a62cf24c1d415f0be7cc9a364f9fa996bf337bd1104267bdc4.img.xz"
+    },
+    "agnos-20.2-wpa3.5": {
+      "at": "2026-11-02",
+      "by": "seed",
+      "devices": [
+        "mici"
+      ],
+      "kernel_commit": "4278172f21ed564c22bf4eccc73d4eebd3c339cc",
+      "note": "agnos20_follow/device_test_1102_ja.md",
+      "stock_boot_hash_raw": "e5dd1f6f515c96b08571678ce00119a7682b72a12ccab02ecd780bf2a305c882",
+      "stock_boot_url": "https://commadist.azureedge.net/agnosupdate/boot-e5dd1f6f515c96b08571678ce00119a7682b72a12ccab02ecd780bf2a305c882.img.xz"
     }
   },
   "last_auto_publish_at": null,

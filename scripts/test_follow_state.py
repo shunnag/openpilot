@@ -58,7 +58,7 @@ class TestFollowState(unittest.TestCase):
 
   def test_seeds_and_reference_qualification(self):
     self.assertEqual(self.state['pins'], {})
-    self.assertEqual(self.state['status']['allocated_tags'], [1, 2, 3, 4])
+    self.assertEqual(self.state['status']['allocated_tags'], [1, 2, 3, 4, 5])
     self.assertEqual(set(self.state['policy']['allowed_branches']), set(fs.BRANCHES))
     self.assertNotIn('canary', fs.dumps(self.state['policy']))
     self.assertNotIn('soak', fs.dumps(self.state['policy']))
@@ -133,23 +133,23 @@ class TestFollowState(unittest.TestCase):
 
   def test_reservation_never_reuses_releases_reverts_or_abandoned_drafts(self):
     original = deepcopy(self.state)
-    self.assertEqual(fs.allocate_tag(self.state), 5)
+    self.assertEqual(fs.allocate_tag(self.state), 6)
     names = ['agnos-19.10-wpa3.8', 'agnos-19.11-wpa3.13', 'unrelated-v90']
     first = fs.reserve_tags(self.state, 2, names)
-    self.assertEqual(first['status']['allocated_tags'], [1, 2, 3, 4, 14, 15])
+    self.assertEqual(first['status']['allocated_tags'], [1, 2, 3, 4, 5, 14, 15])
     self.assertEqual(first['pins'], {})
     self.assertEqual(fs.allocate_tag(first), 16)
     second = fs.reserve_tags(first, 2)
     self.assertEqual(fs.allocate_tag(second), 18)  # Even after abandoning both reservations.
     state = self.with_auto()
-    self.assertEqual(fs.allocate_tag(state), 7)  # Includes the reserved revert.
+    self.assertEqual(fs.allocate_tag(state), 8)  # Includes the reserved revert.
     state['status']['allocated_tags'] += [24]
     self.assertEqual(fs.allocate_tag(state), 25)
     self.assertEqual(self.state, original)
 
   def test_reserve_before_pin_is_a_separate_transition(self):
     with self.assertRaisesRegex(ValueError, 'prior state commit'):
-      fs.apply(self.state, {'status': {'allocated_tags': [1, 2, 3, 4, 5, 6]}, 'pins': {'19.10': self.auto}})
+      fs.apply(self.state, {'status': {'allocated_tags': [1, 2, 3, 4, 5, 6, 7]}, 'pins': {'19.10': self.auto}})
     state = fs.reserve_tags(self.state, 2)
     new = fs.apply(state, {'pins': {'19.10': self.auto}})
     self.assertEqual(state['pins'], {})

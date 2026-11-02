@@ -26,5 +26,12 @@
     "kernel_modules_present": false,
     "probed_by": "seed: .autofollow_1001/wf_r_supplicant.md",
     "stock_wpa_sha256": "b0f1c8ee9bb32153faed468c68390db4691b252ffd6a90e6d3d7b49f4d106bdd"
+  },
+  "8faed425880ec5a7ca9f57ba6a783544ce19e0c7836f0e8c13abc5d2210b6258": {
+    "changelog_head": "wpa (2:2.10-21ubuntu0.4) noble; urgency=medium",
+    "dpkg_version": "2:2.10-21ubuntu0.4",
+    "kernel_modules_present": false,
+    "probed_by": "system_probe.py v1",
+    "stock_wpa_sha256": "b0f1c8ee9bb32153faed468c68390db4691b252ffd6a90e6d3d7b49f4d106bdd"
   }
 }

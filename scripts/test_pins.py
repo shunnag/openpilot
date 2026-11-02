@@ -82,7 +82,13 @@ class TestResolver(unittest.TestCase):
     self.assertEqual(self.calls, [])
 
   def test_repository_201_pin_cli_and_probe(self):
-    self.version = "20.1"
+    self.check_repository_pin_cli_and_probe("20.1")
+
+  def test_repository_202_pin_cli_and_probe(self):
+    self.check_repository_pin_cli_and_probe("20.2")
+
+  def check_repository_pin_cli_and_probe(self, version):
+    self.version = version
     self.pins = json.loads((compose.ROOT / "agnos/pins.json").read_text())
     self.manifest = None  # An exact pin must not enter derived resolution.
     self.assertNotIn("20", self.pins)
@@ -94,9 +100,9 @@ class TestResolver(unittest.TestCase):
       with patch("sys.argv", args), patch("pins.resolve_commit", return_value="upstream"), \
            patch("pins.fetch_boot", self.fetch), redirect_stdout(stdout), redirect_stderr(stderr):
         self.assertEqual(pins.main(), 0)
-      self.assertEqual(stdout.getvalue(), "PIN: OK: pinned 20.1\n")
+      self.assertEqual(stdout.getvalue(), f"PIN: OK: pinned {version}\n")
       self.assertEqual(json.loads(output.read_text()),
-                       {"mode": "pinned", "version": "20.1", "pin": self.pins["20.1"]})
+                       {"mode": "pinned", "version": version, "pin": self.pins[version]})
       self.assertIn("probed supplicant matches", stderr.getvalue())
       self.assertNotIn("has not been probed", stderr.getvalue())
     self.assertEqual(self.calls, [])

@@ -125,20 +125,29 @@ class TestAgnos20Compose(unittest.TestCase):
       self.assertNotIn(b"wpa3_modem_override", compose.blob(self.repo, off, "launch_chffrplus.sh"))
 
   def test_real_201_pin_g2_hashes_and_g8_probe(self):
-    upstream, _ = self.modern_fixture()
-    pin = json.loads((ROOT / "agnos/pins.json").read_text())["20.1"]
-    expected = {
+    self.check_real_pin_g2_hashes_and_g8_probe("20.1", {
       "boot": "6171465bb58806a62cf24c1d415f0be7cc9a364f9fa996bf337bd1104267bdc4",
       "system": "7300706856a09243c7667add29e88904b09b6d989a4159b766e16ef2ee3c81dd",
-    }
+    })
+
+  def test_real_202_pin_g2_hashes_and_g8_probe(self):
+    self.check_real_pin_g2_hashes_and_g8_probe("20.2", {
+      "boot": "e5dd1f6f515c96b08571678ce00119a7682b72a12ccab02ecd780bf2a305c882",
+      "system": "8faed425880ec5a7ca9f57ba6a783544ce19e0c7836f0e8c13abc5d2210b6258",
+    })
+
+  def check_real_pin_g2_hashes_and_g8_probe(self, version, expected):
+    upstream, _ = self.modern_fixture()
+    pin = json.loads((ROOT / "agnos/pins.json").read_text())[version]
+    launch = compose.blob(self.repo, upstream, "launch_env.sh").replace(b'"20.1"', f'"{version}"'.encode())
     manifest = json.loads(compose.blob(self.repo, upstream, compose.MANIFEST))
     for entry in manifest:
       if entry["name"] in expected:
         entry["hash_raw"] = expected[entry["name"]]
         self.assertEqual(pin["derived_from"][f'{entry["name"]}_hash_raw'], entry["hash_raw"])
-    upstream = self.variant_many({compose.MANIFEST: json.dumps(manifest).encode()}, upstream)
-    pin_file = self.work / "real-201-pin.json"
-    pin_file.write_text(json.dumps({"mode": "pinned", "version": "20.1", "pin": pin}))
+    upstream = self.variant_many({"launch_env.sh": launch, compose.MANIFEST: json.dumps(manifest).encode()}, upstream)
+    pin_file = self.work / f"real-{version}-pin.json"
+    pin_file.write_text(json.dumps({"mode": "pinned", "version": version, "pin": pin}))
     result = self.cli("gates.py", upstream, "--skip-download", pin_file=pin_file)
     self.assertIn("G2: OK: stock boot/system hashes match derived_from", result.stdout)
     self.assertIn("G8: WARN: probed stock wpa_supplicant and override agree", result.stdout)

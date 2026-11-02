@@ -115,8 +115,13 @@ and the draft's stock provenance. Tag 4 is seeded in allocated_tags and the
 `7300706856…` system has the supplied supplicant probe. The release asset is not
 yet available: offline checks use `--skip-download`; production URL/download
 checks are unchanged and must pass before publication.
+The real `20.2` entry uses `agnos-20.2-wpa3.5` / `wpa3.sae=5`,
+boot `8781946a19efae45a007c7de683f59a9964f57d603cf75a0fa4339a80090359e`
+and stock system `8faed425…`, with its supplied supplicant probe and tag 5 seeded in allocated_tags.
+AGNOS 20.2's kernel only drops 3 latency tracers (comma #148).
+The 20.2 release asset is not yet uploaded; the same offline and production checks apply.
 AGNOS 20 (`51d33446…`) was withdrawn upstream because it had no display.
-In follow mode `off`, same-boot AGNOS 20.x after 20.1 publishes as derived from the 20.1 pin; an unprobed system only warns at G8.
+In follow mode `off`, same-boot AGNOS 20.x after 20.2 publishes as derived from the 20.2 pin; an unprobed system only warns at G8.
 A stock boot kernel change holds publication until a new WPA3 kernel is built and pinned.
 
 Its optional `modem` object sits alongside `wpa_supplicant`:

@@ -32,6 +32,7 @@ AGNOS_FALLBACK = (b'  if not os.path.isfile(manifest_path):  # releases before t
                   b'    manifest_path = os.path.join(OVERLAY_MERGED, "system/hardware/tici/agnos.json")\n')
 OVERLAY_AGNOS_VERIFY = (b"          # releases before the openpilot/ move can't swap AGNOS on newer AGNOS, use ours\n"
                         b'          [ ! -L system/hardware/tici/agnos.json ] && /data/safe_staging/old_openpilot/openpilot/common/hardware/comma/agnos.py --verify system/hardware/tici/agnos.json && sudo reboot\n')
+SND_PERMISSIONS = b"  sudo chgrp audio /dev/snd/*C*\n  sudo chmod 660 /dev/snd/*C*\n"
 class TestCompose(unittest.TestCase):
   @classmethod
   def setUpClass(cls):
@@ -101,6 +102,14 @@ class TestCompose(unittest.TestCase):
       changes[path] = data.replace(anchor, anchor + addition)
     return self.variant_many(changes, upstream)
 
+  def snd_variant(self, upstream=None):
+    upstream = self.v0112_variant(upstream)
+    launcher = compose.blob(self.repo, upstream, "launch_chffrplus.sh")
+    anchor = b"  sudo chmod 660 /dev/adsprpc-smd /dev/ion /dev/kgsl-3d0\n"
+    self.assertEqual(launcher.count(anchor), 1)
+    self.assertNotIn(SND_PERMISSIONS, launcher)
+    return self.variant_many({"launch_chffrplus.sh": launcher.replace(anchor, anchor + SND_PERMISSIONS)}, upstream)
+
   def test_offline_gates(self):
     result = self.cli("gates.py", self.upstream, "--skip-download")
     for gate in ("G1", "G2", "G3", "G5", "G7"):
@@ -150,7 +159,7 @@ class TestCompose(unittest.TestCase):
 
   def test_launcher_patches_are_exclusive(self):
     release = self.variant("launch_chffrplus.sh", (RELEASE_REF / "launch_chffrplus.sh").read_bytes())
-    upstreams = (self.upstream, release, self.v0112_variant(), self.v0112_variant(release))
+    upstreams = (self.upstream, release, self.v0112_variant(), self.v0112_variant(release), self.snd_variant())
     self.assertEqual(len(compose.LAUNCHER_PATCHES), len(upstreams))
     for upstream, matching in zip(upstreams, compose.LAUNCHER_PATCHES):
       with self.subTest(patch=matching.name), compose.temporary_index(self.repo, upstream) as (env, _):
@@ -167,7 +176,7 @@ class TestCompose(unittest.TestCase):
 
   def test_v0112_launcher_selection_and_compose(self):
     release = self.variant("launch_chffrplus.sh", (RELEASE_REF / "launch_chffrplus.sh").read_bytes())
-    for old, matching in zip((self.upstream, release), compose.LAUNCHER_PATCHES[2:]):
+    for old, matching in zip((self.upstream, release), compose.LAUNCHER_PATCHES[2:4]):
       with self.subTest(patch=matching.name):
         upstream = self.v0112_variant(old)
         self.assertEqual(compose.select_launcher_patch(self.repo, upstream), matching)
@@ -186,6 +195,54 @@ class TestCompose(unittest.TestCase):
         cd = b'          cd "$DIR"\n' if b'          cd "$DIR"\n' in launcher else b'          cd $DIR\n'
         self.assertEqual(compose.blob(self.repo, commit, "launch_chffrplus.sh"), launcher.replace(cd, cd + OVERLAY_AGNOS_VERIFY))
         self.assertEqual(compose.blob(self.repo, commit, "launch_env.sh"), compose.blob(self.repo, previous, "launch_env.sh"))
+
+  def test_snd_launcher_selection_and_compose(self):
+    upstream = self.snd_variant()
+    matching = compose.LAUNCHER_PATCHES[4]
+    self.assertEqual(compose.select_launcher_patch(self.repo, upstream), matching)
+    result = self.cli("gates.py", upstream, "--skip-download")
+    self.assertIn(f"G3: OK: agnos.py blob matches and launcher patch {matching.name} applies", result.stdout)
+    commit, inputs = self.cli("compose.py", upstream).stdout.splitlines()
+    self.assertEqual(self.cli("compose.py", upstream, "--inputs-only").stdout.strip(), inputs)
+    message = compose.git(self.repo, "show", "-s", "--format=%B", commit).decode()
+    self.assertIn(f"WPA3-Pin: pinned 19.8\nWPA3-Launcher-Patch: {matching.name}\n", message)
+    previous = self.cli("compose.py", self.v0112_variant()).stdout.splitlines()[0]
+    launcher = compose.blob(self.repo, previous, "launch_chffrplus.sh")
+    anchor = b"  sudo chmod 660 /dev/adsprpc-smd /dev/ion /dev/kgsl-3d0\n"
+    self.assertEqual(launcher.count(anchor), 1)
+    self.assertEqual(compose.blob(self.repo, commit, "launch_chffrplus.sh"), launcher.replace(anchor, anchor + SND_PERMISSIONS))
+    for path in (UPDATED, "launch_env.sh"):
+      self.assertEqual(compose.blob(self.repo, commit, path), compose.blob(self.repo, previous, path))
+
+  def test_existing_launcher_identity_is_unchanged(self):
+    release = self.variant("launch_chffrplus.sh", (RELEASE_REF / "launch_chffrplus.sh").read_bytes())
+    upstreams = (self.upstream, release, self.v0112_variant(), self.v0112_variant(release))
+    # Captured from the unmodified 8010c379b composer.
+    expected = (
+      ("68d8f2056e5191b51a7a3b6e9192399a9684f773", "d19af22ebc824a6eedb668d7016a23f172143cff13dc0237964672403d6a35b5"),
+      ("5977496f1d07b5a186f3321799334ccaf05fce21", "8782608ab6c73e9c9a4ad4fe178db3173eeb123681c80ba84d50fd03f9d96f05"),
+      ("7d0f97f8d9e36beb88d60487f2c9c30e7a58f27e", "3876aa58fae2231e4720d8b87e26f31c55382878a58239b78c37ee92bc0834b9"),
+      ("91813a29e6999df91392cbe2e8edfe74d34bfbd2", "5d16d8867b5728a40c553b8c956d84248ce8797fd2b0e1253735a7cd8cfce4bf"),
+    )
+    for upstream, result in zip(upstreams, expected):
+      with self.subTest(upstream=upstream):
+        self.assertEqual(compose.compose(self.repo, upstream, self.resolved), result)
+
+  def test_snd_patch_preserves_v0112_changes(self):
+    previous, current = (p.read_bytes() for p in (compose.LAUNCHER_PATCHES[2], compose.LAUNCHER_PATCHES[4]))
+    self.assertEqual([line for line in previous.splitlines() if line.startswith((b"+", b"-"))],
+                     [line for line in current.splitlines() if line.startswith((b"+", b"-"))])
+    updated = b"diff --git a/" + UPDATED.encode()
+    self.assertEqual(previous.split(updated)[1], current.split(updated)[1])
+
+  def test_release_snd_launcher_fails_closed(self):
+    release = self.variant("launch_chffrplus.sh", (RELEASE_REF / "launch_chffrplus.sh").read_bytes())
+    upstream = self.snd_variant(release)
+    with self.assertRaisesRegex(ValueError, "no launcher patch applies"):
+      compose.select_launcher_patch(self.repo, upstream)
+    result = self.cli("gates.py", upstream, "--skip-download", check=False)
+    self.assertEqual(result.returncode, 1)
+    self.assertIn("G3: FAIL: no launcher patch applies", result.stderr)
 
   def test_v0112_upstream_fallback_precedes_stock_override(self):
     release = self.variant("launch_chffrplus.sh", (RELEASE_REF / "launch_chffrplus.sh").read_bytes())

@@ -22,6 +22,7 @@ AGNOS_PY = "openpilot/common/hardware/comma/agnos.py"
 LAUNCHER_PATCHES = (
   ROOT / "patches/launcher-wpa3.patch", ROOT / "patches/launcher-wpa3-release.patch",
   ROOT / "patches/launcher-wpa3-v0112.patch", ROOT / "patches/launcher-wpa3-release-v0112.patch",
+  ROOT / "patches/launcher-wpa3-snd.patch",
 )
 UI_PATCH = ROOT / "patches/ui-wpa3.patch"
 TETHER_PATCH = ROOT / "patches/tethering-nat.patch"
@@ -44,6 +45,8 @@ MODEM_ALLOWED_IMPORTS = frozenset({
 LEGACY_COMPOSE_SHA256 = "01da873d5ba539bbbeec1ecaccc6208f5c80ae41cc0f7f290bf6b92bcca7a156"
 # Preserve 4a387959c's AGNOS-20 identity unless a raylib_nb APN patch is selected.
 PYRAY_COMPOSE_SHA256 = "9c8211c33bdb984cfbc4c5bc5ba9cffe8b3c52e5a52e2948c4b66aada79ab41d"
+# Preserve 8010c379b's raylib_nb identity for launcher forms predating #39244.
+RAYLIB_NB_COMPOSE_SHA256 = "1b96625831a00de86615c0200a95bf5c78acc96ea7c8041c18f1309f51ed2eff"
 TETHER_ALLOWED = {"openpilot/system/ui/lib/tests/test_tethering_nat.py"}
 APN_ALLOWED = {
   "openpilot/common/hardware/comma/apn_auth_store.py",
@@ -396,9 +399,11 @@ def inputs_hash(upstream, resolved, launcher_patch, tether="off", apn="off", apn
   # Hash the entire resolved pin as canonical JSON, independent of file formatting.
   compose_sha256 = LEGACY_COMPOSE_SHA256
   if agnos20(resolved["version"]):
-    compose_sha256 = (hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
-                      if apn == "auto" and apn_patch is not None and apn_patch.name.endswith("-agnos20-nb.patch")
-                      else PYRAY_COMPOSE_SHA256)
+    compose_sha256 = PYRAY_COMPOSE_SHA256
+    if apn == "auto" and apn_patch is not None and apn_patch.name.endswith("-agnos20-nb.patch"):
+      compose_sha256 = RAYLIB_NB_COMPOSE_SHA256
+      if launcher_patch.name == "launcher-wpa3-snd.patch":
+        compose_sha256 = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
   inputs = {
     "upstream": upstream,
     "patches": {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in (launcher_patch, UI_PATCH)},

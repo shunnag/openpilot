@@ -23,6 +23,7 @@ class TestApnRaylibNb(unittest.TestCase):
   variant_many = fixture.TestAgnos20Compose.variant_many
   variant = fixture.TestAgnos20Compose.variant
   v0112_variant = fixture.TestAgnos20Compose.v0112_variant
+  snd_variant = fixture.TestAgnos20Compose.snd_variant
   apn_upstream = fixture.TestAgnos20Compose.apn_upstream
   modern_fixture = fixture.TestAgnos20Compose.modern_fixture
 
@@ -95,16 +96,37 @@ class TestApnRaylibNb(unittest.TestCase):
 
   def test_composer_digest_is_frozen_only_for_existing_paths(self):
     upstream, resolved = self.modern_fixture()
-    launcher = compose.select_launcher_patch(self.repo, upstream)
     old, nb = compose.APN_AGNOS20_PATCHES["nightly"]
-    before = [compose.inputs_hash(upstream, resolved, launcher, apn="auto", apn_patch=p) for p in (old, nb)]
-    with patch.object(compose, "__file__", str(compose.ROOT / "scripts/gates.py")):
-      after = [compose.inputs_hash(upstream, resolved, launcher, apn="auto", apn_patch=p) for p in (old, nb)]
-    self.assertEqual(before[0], after[0])
-    self.assertNotEqual(before[1], after[1])
+    for base, sensitive in ((upstream, False), (self.snd_variant(upstream), True)):
+      with self.subTest(snd=sensitive):
+        launcher = compose.select_launcher_patch(self.repo, base)
+        before = [compose.inputs_hash(base, resolved, launcher, apn="auto", apn_patch=p) for p in (old, nb)]
+        with patch.object(compose, "__file__", str(compose.ROOT / "scripts/gates.py")):
+          after = [compose.inputs_hash(base, resolved, launcher, apn="auto", apn_patch=p) for p in (old, nb)]
+        self.assertEqual(before[0], after[0])
+        self.assertEqual(before[1] != after[1], sensitive)
     # The constant is the actual unmodified 4a387959c composer SHA, not a candidate-list hash.
     self.assertEqual(compose.PYRAY_COMPOSE_SHA256, "9c8211c33bdb984cfbc4c5bc5ba9cffe8b3c52e5a52e2948c4b66aada79ab41d")
     self.assertNotEqual(compose.PYRAY_COMPOSE_SHA256, hashlib.sha256(compose.ROOT.joinpath("scripts/compose.py").read_bytes()).hexdigest())
+    self.assertEqual(compose.RAYLIB_NB_COMPOSE_SHA256, "1b96625831a00de86615c0200a95bf5c78acc96ea7c8041c18f1309f51ed2eff")
+
+  def test_nb_identity_is_unchanged_for_existing_launchers(self):
+    upstream, resolved = self.modern_fixture(raylib_nb=True)
+    release = self.variant_many({"launch_chffrplus.sh": (fixture.compose_fixture.RELEASE_REF / "launch_chffrplus.sh").read_bytes()}, upstream)
+    bases = (upstream, release, self.v0112_variant(upstream), self.v0112_variant(release))
+    # Captured from the unmodified 8010c379b composer.
+    for index, family, commit, inputs in (
+      (0, "nightly", "4784c931e4887687984a6068b702ae5cfa5f510f", "de8b6c4246ba49fbdd5795cd9b63975dfc57f19fcafc1a7904634a9336846b47"),
+      (0, "release", "09731bc8fc95471f19cd4ef5fb112ac3d88094a1", "5d3849aa9ca102bcf906b2a1067edce5b5f56b9f9760806e2bba9ac5efe47975"),
+      (1, "nightly", "800580173babadf456219c9e66017e64e9f6a801", "b9bd3c37e40df2556b7bc1ccd07a56a9d3ebc06d7333f08764dbd2993b5d17b0"),
+      (1, "release", "c91469acaa3e07fd056f1d793d76c30fbfc7e2f1", "7b435bf381ecb5711dc821a56a02f1e28f865d75f0ea68cd55473a1e516b4e52"),
+      (2, "nightly", "bd049767c471803260c774e3c0453ca7cc928625", "012a78ee759a1d781812a70b7bab806b32082494a8065bda986cc2aec2f28827"),
+      (2, "release", "bad281da1cb6c61d1b37f33eb6e927f499335107", "808b24a7b02e96315faf7ccd6062bdf5b6bd4fa1ced40b441740548f49d82d3e"),
+      (3, "nightly", "bdf74b05d1ac56498472f60f8c3c8682ed7a8ed7", "710f008fc02ff2bfa51022a2a438ec6065a745763c566c4bbd796ef1f7fbd3cc"),
+      (3, "release", "fb0413e9057127029a296036ab8df83f11d22709", "ad1dde8705539807b0f35f0e7c78581881caf20efd5960b62369cb97d9ac7e72"),
+    ):
+      with self.subTest(launcher=index, family=family):
+        self.assertEqual(compose.compose(self.repo, bases[index], resolved, "apply", "auto", family), (commit, inputs))
 
   def test_nb_patch_static_api_lint(self):
     for candidates in compose.APN_AGNOS20_PATCHES.values():

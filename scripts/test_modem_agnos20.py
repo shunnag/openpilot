@@ -73,6 +73,7 @@ class TestAgnos20Compose(unittest.TestCase):
   variant_many = compose_fixture.TestCompose.variant_many
   variant = compose_fixture.TestCompose.variant
   v0112_variant = compose_fixture.TestCompose.v0112_variant
+  snd_variant = compose_fixture.TestCompose.snd_variant
   apn_upstream = compose_fixture.TestCompose.apn_upstream
 
   def modern_fixture(self, variant="nightly-v0113", *, raylib_nb=False):
@@ -224,7 +225,9 @@ class TestAgnos20Compose(unittest.TestCase):
   def test_modem_patch_stacks_on_every_launcher_variant(self):
     upstream, resolved = self.modern_fixture()
     release = self.variant_many({"launch_chffrplus.sh": (compose_fixture.RELEASE_REF / "launch_chffrplus.sh").read_bytes()}, upstream)
-    for base, launcher in zip((upstream, release, self.v0112_variant(upstream), self.v0112_variant(release)), compose.LAUNCHER_PATCHES):
+    bases = (upstream, release, self.v0112_variant(upstream), self.v0112_variant(release), self.snd_variant(upstream))
+    self.assertEqual(len(bases), len(compose.LAUNCHER_PATCHES))
+    for base, launcher in zip(bases, compose.LAUNCHER_PATCHES):
       with self.subTest(launcher=launcher.name):
         self.assertEqual(compose.select_launcher_patch(self.repo, base), launcher)
         commit, _ = compose.compose(self.repo, base, resolved, apn="auto")

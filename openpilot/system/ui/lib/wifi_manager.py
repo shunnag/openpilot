@@ -1,4 +1,6 @@
 import atexit
+import os
+import socket
 import threading
 import time
 import uuid
@@ -19,7 +21,7 @@ from openpilot.common.swaglog import cloudlog
 from openpilot.system.ui.lib.networkmanager import (NM, NM_WIRELESS_IFACE, NM_802_11_AP_SEC_PAIR_WEP40,
                                                     NM_802_11_AP_SEC_PAIR_WEP104, NM_802_11_AP_SEC_GROUP_WEP40,
                                                     NM_802_11_AP_SEC_GROUP_WEP104, NM_802_11_AP_SEC_KEY_MGMT_PSK,
-                                                    NM_802_11_AP_SEC_KEY_MGMT_802_1X, NM_802_11_AP_FLAGS_NONE,
+                                                    NM_802_11_AP_SEC_KEY_MGMT_802_1X, NM_802_11_AP_SEC_KEY_MGMT_SAE, NM_802_11_AP_FLAGS_NONE,
                                                     NM_802_11_AP_FLAGS_PRIVACY, NM_802_11_AP_FLAGS_WPS,
                                                     NM_PATH, NM_IFACE, NM_ACCESS_POINT_IFACE, NM_SETTINGS_PATH,
                                                     NM_SETTINGS_IFACE, NM_CONNECTION_IFACE, NM_DEVICE_IFACE,
@@ -35,12 +37,45 @@ else:
     Params = None
 
 TETHERING_IP_ADDRESS = "192.168.43.1"
+TETHERING_SUBNET = "192.168.43.0/24"
+TETHERING_NAT_RULE = ["POSTROUTING", "-s", TETHERING_SUBNET, "!", "-d", TETHERING_SUBNET, "-j", "MASQUERADE",
+                      "-m", "comment", "--comment", "openpilot-tethering"]
 DEFAULT_TETHERING_PASSWORD = "swagswagcomma"
 SIGNAL_QUEUE_SIZE = 10
 SCAN_PERIOD_SECONDS = 5
 
 DEBUG = False
 _dbus_call_idx = 0
+_sae_supported: bool | None = None
+
+
+def _supports_sae() -> bool:
+  global _sae_supported
+  if _sae_supported is not None:
+    return _sae_supported
+
+  try:
+    with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as sock:
+      sock.settimeout(0.2)
+      sock.bind(f"\0openpilot-wpa-{os.getpid()}-{time.monotonic_ns()}")
+      sock.connect("/run/wpa_supplicant/wlan0")
+      sock.send(b"GET_CAPABILITY auth_alg")
+
+      while True:
+        out = sock.recv(8192).decode("utf-8", "replace").strip()
+        if out.startswith("<"):
+          continue
+        if not out or out.startswith("FAIL"):
+          return False
+        # Cache definitive replies only, so startup/socket failures can be retried.
+        _sae_supported = "SAE" in out.split()
+        return _sae_supported
+  except OSError:
+    return False
+
+
+def _sudo(*cmd: str, check: bool = True) -> subprocess.CompletedProcess:
+  return subprocess.run(["sudo", *cmd], check=check, capture_output=True, text=True)
 
 
 def normalize_ssid(ssid: str) -> str:
@@ -75,20 +110,25 @@ class MeteredType(IntEnum):
   NO = 2
 
 
-def get_security_type(flags: int, wpa_flags: int, rsn_flags: int) -> SecurityType:
+def get_security_type(flags: int, wpa_flags: int, rsn_flags: int, sae_supported: bool = False) -> SecurityType:
   wpa_props = wpa_flags | rsn_flags
 
   # obtained by looking at flags of networks in the office as reported by an Android phone
   supports_wpa = (NM_802_11_AP_SEC_PAIR_WEP40 | NM_802_11_AP_SEC_PAIR_WEP104 | NM_802_11_AP_SEC_GROUP_WEP40 |
                   NM_802_11_AP_SEC_GROUP_WEP104 | NM_802_11_AP_SEC_KEY_MGMT_PSK)
+  security_flags = supports_wpa | NM_802_11_AP_SEC_KEY_MGMT_802_1X | NM_802_11_AP_SEC_KEY_MGMT_SAE
 
-  if (flags == NM_802_11_AP_FLAGS_NONE) or ((flags & NM_802_11_AP_FLAGS_WPS) and not (wpa_props & supports_wpa)):
+  if (flags == NM_802_11_AP_FLAGS_NONE) or ((flags & NM_802_11_AP_FLAGS_WPS) and not (wpa_props & security_flags)):
     return SecurityType.OPEN
-  elif (flags & NM_802_11_AP_FLAGS_PRIVACY) and (wpa_props & supports_wpa) and not (wpa_props & NM_802_11_AP_SEC_KEY_MGMT_802_1X):
-    return SecurityType.WPA
-  else:
-    cloudlog.warning(f"Unsupported network! flags: {flags}, wpa_flags: {wpa_flags}, rsn_flags: {rsn_flags}")
-    return SecurityType.UNSUPPORTED
+  elif (flags & NM_802_11_AP_FLAGS_PRIVACY) and not (wpa_props & NM_802_11_AP_SEC_KEY_MGMT_802_1X):
+    if (rsn_flags & NM_802_11_AP_SEC_KEY_MGMT_SAE) and not (wpa_props & NM_802_11_AP_SEC_KEY_MGMT_PSK):
+      if sae_supported:
+        return SecurityType.WPA3
+    elif wpa_props & supports_wpa:
+      return SecurityType.WPA
+
+  cloudlog.warning(f"Unsupported network! flags: {flags}, wpa_flags: {wpa_flags}, rsn_flags: {rsn_flags}")
+  return SecurityType.UNSUPPORTED
 
 
 @dataclass(frozen=True)
@@ -99,10 +139,10 @@ class Network:
   is_tethering: bool
 
   @classmethod
-  def from_dbus(cls, ssid: str, aps: list["AccessPoint"], is_tethering: bool) -> "Network":
+  def from_dbus(cls, ssid: str, aps: list["AccessPoint"], is_tethering: bool, sae_supported: bool = False) -> "Network":
     # we only want to show the strongest AP for each Network/SSID
     strongest_ap = max(aps, key=lambda ap: ap.strength)
-    security_type = get_security_type(strongest_ap.flags, strongest_ap.wpa_flags, strongest_ap.rsn_flags)
+    security_type = get_security_type(strongest_ap.flags, strongest_ap.wpa_flags, strongest_ap.rsn_flags, sae_supported)
 
     return cls(
       ssid=ssid,
@@ -658,11 +698,17 @@ class WifiManager:
       }
 
       if password:
-        connection['802-11-wireless-security'] = {
-          'key-mgmt': ('s', 'wpa-psk'),
-          'auth-alg': ('s', 'open'),
-          'psk': ('s', password),
-        }
+        if not hidden and any(n.ssid == ssid and n.security_type == SecurityType.WPA3 for n in getattr(self, '_networks', [])):
+          connection['802-11-wireless-security'] = {
+            'key-mgmt': ('s', 'sae'),
+            'psk': ('s', password),
+          }
+        else:
+          connection['802-11-wireless-security'] = {
+            'key-mgmt': ('s', 'wpa-psk'),
+            'auth-alg': ('s', 'open'),
+            'psk': ('s', password),
+          }
 
       # Volatile connection auto-deletes on disconnect (wrong password, user switches networks)
       # Persisted to disk on ACTIVATED via Save()
@@ -805,12 +851,23 @@ class WifiManager:
       if active:
         self.activate_connection(self._tethering_ssid, block=True)
 
+        # NM's shared-mode NAT fails on AGNOS: its iptables is the nft variant and the kernel has no nf_tables.
+        try:
+          if _sudo("iptables-legacy", "-t", "nat", "-C", *TETHERING_NAT_RULE, check=False).returncode != 0:
+            _sudo("iptables-legacy", "-t", "nat", "-A", *TETHERING_NAT_RULE)
+        except (FileNotFoundError, subprocess.CalledProcessError, OSError):
+          cloudlog.exception("Failed to add tethering NAT rule")
+
         if not self._ipv4_forward:
           time.sleep(5)
           cloudlog.warning("net.ipv4.ip_forward = 0")
           subprocess.run(["sudo", "sysctl", "net.ipv4.ip_forward=0"], check=False)
       else:
         self._deactivate_connection(self._tethering_ssid)
+        try:
+          _sudo("iptables-legacy", "-t", "nat", "-D", *TETHERING_NAT_RULE, check=False)
+        except (FileNotFoundError, OSError):
+          cloudlog.exception("Failed to remove tethering NAT rule")
 
     threading.Thread(target=worker, daemon=True).start()
 
@@ -893,7 +950,8 @@ class WifiManager:
             # catch all for parsing errors
             cloudlog.exception(f"Failed to parse AP properties for {ap_path}")
 
-        self._networks = [Network.from_dbus(ssid, ap_list, ssid == self._tethering_ssid) for ssid, ap_list in aps.items()]
+        sae_supported = _supports_sae()
+        self._networks = [Network.from_dbus(ssid, ap_list, ssid == self._tethering_ssid, sae_supported) for ssid, ap_list in aps.items()]
         self._update_active_connection_info()
         self._enqueue_callbacks(self._networks_updated, self.networks)  # sorted
 

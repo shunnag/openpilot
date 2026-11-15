@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Offline regression coverage for following AGNOS 20.x from the 20.2 pin."""
+"""Offline regression coverage for following AGNOS 20.x from the 20.6 pin."""
 from contextlib import redirect_stderr, redirect_stdout
 from copy import deepcopy
 import hashlib
@@ -25,17 +25,17 @@ class TestAgnos20Follow(unittest.TestCase):
   def setUp(self):
     self.modern_upstream, _ = self.modern_fixture()
     self.state = fs.load()
-    self.real_pin = deepcopy(self.state["manual"]["20.2"])
+    self.real_pin = deepcopy(self.state["manual"]["20.6"])
     self.base = boot_image()
     self.system_hash = "9" * 64
     self.assertNotIn(self.system_hash, self.state["system_probe"])
     self.downloads, self.calls = {}, []
     self.agnos_py = pins.git_blob_id(compose.blob(self.repo, self.modern_upstream, compose.AGNOS_PY))
     # Substitute only stock provenance; keep the real release/WPA3 boot and
-    # userspace blocks. All four bases deliberately have equivalent boots.
+    # userspace blocks. All six bases deliberately have equivalent boots.
     for version in self.state["manual"]:
       self.set_base_stock(version, self.base)
-    self.future_upstream = self.follow_upstream("20.3", self.base)
+    self.future_upstream = self.follow_upstream("20.7", self.base)
 
   def set_base_stock(self, version, stock):
     url = f"https://example.invalid/agnos-{version}.img.xz"
@@ -74,31 +74,31 @@ class TestAgnos20Follow(unittest.TestCase):
       rc = pins.main()
     return rc, stdout.getvalue(), stderr.getvalue(), output
 
-  def test_203_same_boot_cli_derives_from_202_and_warns(self):
+  def test_207_same_boot_cli_derives_from_206_and_warns(self):
     original = deepcopy(self.state)
     rc, stdout, stderr, output = self.resolve_cli()
     self.assertEqual(rc, 0, stdout + stderr)
-    self.assertEqual(stdout, "PIN: OK: derived 20.3 from 20.2\n")
+    self.assertEqual(stdout, "PIN: OK: derived 20.7 from 20.6\n")
     self.assertEqual(stderr, "G8: WARN: system image has not been probed\n")
     resolved = json.loads(output.read_text())
     self.assertEqual({key: resolved[key] for key in ("mode", "version", "base")},
-                     {"mode": "derived", "version": "20.3", "base": "20.2"})
+                     {"mode": "derived", "version": "20.7", "base": "20.6"})
     pin = resolved["pin"]
-    self.assertEqual(pin["release_tag"], "agnos-20.2-wpa3.5")
-    self.assertEqual(pin["tag"], "wpa3.sae=5")
-    self.assertEqual(pin["boot"]["hash_raw"], "8781946a19efae45a007c7de683f59a9964f57d603cf75a0fa4339a80090359e")
+    self.assertEqual(pin["release_tag"], "agnos-20.6-wpa3.7")
+    self.assertEqual(pin["tag"], "wpa3.sae=7")
+    self.assertEqual(pin["boot"]["hash_raw"], "4fc5071b0c9050bed960f2e20438d3ada827f8f0ba907171b7dbeabfeda9978b")
     for key in ("boot", "modem", "wpa_supplicant"):
       self.assertEqual(pin[key], self.real_pin[key])
     self.assertEqual(pin["derived_from"], {
-      "boot_url": "https://example.invalid/upstream-20.3.img.xz",
+      "boot_url": "https://example.invalid/upstream-20.7.img.xz",
       "boot_hash_raw": hashlib.sha256(self.base).hexdigest(),
       "system_hash_raw": self.system_hash, "agnos_py_blob": self.agnos_py,
     })
     self.assertNotEqual(pin["derived_from"]["system_hash_raw"], self.real_pin["derived_from"]["system_hash_raw"])
-    self.assertEqual(self.calls, [pin["derived_from"]["boot_url"], self.state["manual"]["20.2"]["derived_from"]["boot_url"]])
+    self.assertEqual(self.calls, [pin["derived_from"]["boot_url"], self.state["manual"]["20.6"]["derived_from"]["boot_url"]])
     self.assertEqual(self.state, original)
 
-  def test_203_derived_compose_uses_agnos20_bundle_for_both_apn_families(self):
+  def test_207_derived_compose_uses_agnos20_bundle_for_both_apn_families(self):
     rc, stdout, stderr, pin_file = self.resolve_cli()
     self.assertEqual(rc, 0, stdout + stderr)
     resolved = json.loads(pin_file.read_text())
@@ -119,28 +119,32 @@ class TestAgnos20Follow(unittest.TestCase):
         commit, _ = self.cli("compose.py", upstream, "--apn", "auto", "--apn-family", family,
                              pin_file=pin_file).stdout.splitlines()
         launch = compose.blob(self.repo, commit, "launch_env.sh")
-        self.assertIn(b'AGNOS_VERSION="20.3"', launch)
+        self.assertIn(b'AGNOS_VERSION="20.7"', launch)
         self.assertEqual(compose.launch_values(launch),
-                         ("20.3", "wpa3.sae=5", self.real_pin["boot"]["hash_raw"], self.real_pin["wpa_supplicant"]["stock_sha256"]))
-        self.assertEqual(compose.blob(self.repo, commit, "wpa3/modem.py"), modem_fixture.MODEM.read_bytes())
+                         ("20.7", "wpa3.sae=7", self.real_pin["boot"]["hash_raw"], self.real_pin["wpa_supplicant"]["stock_sha256"]))
+        # The derived pin carries the 20.6 override rebuilt on stock 71b602d8.
+        self.assertEqual(self.real_pin["modem"]["path"], str(modem_fixture.MODEM_206.relative_to(compose.ROOT)))
+        self.assertEqual(compose.blob(self.repo, commit, "wpa3/modem.py"), modem_fixture.MODEM_206.read_bytes())
+        self.assertEqual(compose.modem_values(launch), (modem_fixture.STOCK_206_SHA256, modem_fixture.SERVICE_SHA256,
+                                                       self.real_pin["modem"]["sha256"]))
         compose.check_modem_bundle(self.repo, commit, resolved, required=True)
         with compose.temporary_index(self.repo, commit) as (env, _):
           compose.git(self.repo, "apply", "--cached", "--reverse", "--check", str(patch_file), env=env)
           compose.git(self.repo, "apply", "--cached", "--reverse", "--check", "--include=launch_chffrplus.sh",
                       str(compose.ROOT / "patches/launcher-modem-agnos20.patch"), env=env)
         message = compose.git(self.repo, "show", "-s", "--format=%B", commit).decode()
-        self.assertIn("WPA3-AGNOS: agnos-20.2-wpa3.5\nWPA3-Pin: derived 20.3 from 20.2\n", message)
+        self.assertIn("WPA3-AGNOS: agnos-20.6-wpa3.7\nWPA3-Pin: derived 20.7 from 20.6\n", message)
         self.assertIn(f"WPA3-APN-Patch: {patch_file.name} applied\n", message)
         manifest = json.loads(compose.blob(self.repo, commit, compose.MANIFEST))
         self.assertEqual(next(entry for entry in manifest if entry["name"] == "boot"), self.real_pin["boot"])
         self.assertEqual(next(entry for entry in manifest if entry["name"] == "system")["hash_raw"], self.system_hash)
 
-  def test_203_changed_stock_kernel_holds(self):
-    upstream = self.follow_upstream("20.3", mutate(self.base, PAGE + 12))
+  def test_207_changed_stock_kernel_holds(self):
+    upstream = self.follow_upstream("20.7", mutate(self.base, PAGE + 12))
     rc, stdout, stderr, output = self.resolve_cli(upstream=upstream)
     self.assertEqual(rc, 1, stdout + stderr)
     self.assertEqual(stdout, "")
-    self.assertIn("PIN: FAIL: kernel changed since 20.2, 20.1, 19.9, 19.8:", stderr)
+    self.assertIn("PIN: FAIL: kernel changed since 20.6, 20.5, 20.2, 20.1, 19.9, 19.8:", stderr)
     self.assertIn("outside build identity", stderr)
     self.assertNotIn("PIN: OK:", stderr)
     self.assertFalse(output.exists())
@@ -154,8 +158,10 @@ class TestAgnos20Follow(unittest.TestCase):
     self.set_base_stock("20.11", changed)
     upstream = self.follow_upstream("20.12", self.base)
     for expected, compared in (("20.10", ("20.11", "20.10")),
-                               ("20.2", ("20.11", "20.10", "20.2")),
-                               ("20.1", ("20.11", "20.10", "20.2", "20.1"))):
+                               ("20.6", ("20.11", "20.10", "20.6")),
+                               ("20.5", ("20.11", "20.10", "20.6", "20.5")),
+                               ("20.2", ("20.11", "20.10", "20.6", "20.5", "20.2")),
+                               ("20.1", ("20.11", "20.10", "20.6", "20.5", "20.2", "20.1"))):
       with self.subTest(base=expected):
         self.calls.clear()
         resolved = pins.resolve(lambda name: compose.blob(self.repo, upstream, name), self.state["manual"], self.fetch,
@@ -166,7 +172,7 @@ class TestAgnos20Follow(unittest.TestCase):
                          [self.state["manual"][version]["derived_from"]["boot_url"] for version in compared])
         self.set_base_stock(expected, changed)
 
-  def test_203_unprobed_system_is_pending_in_state_and_on(self):
+  def test_207_unprobed_system_is_pending_in_state_and_on(self):
     original = deepcopy(self.state)
     for mode in ("state", "on"):
       with self.subTest(mode=mode):

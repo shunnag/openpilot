@@ -1,4 +1,11 @@
 {
+  "193e949cd7a1f3b285ee6efbf7168686c77122d1f89966d9d911ad5afa7ad371": {
+    "changelog_head": "wpa (2:2.10-21ubuntu0.4) noble; urgency=medium",
+    "dpkg_version": "2:2.10-21ubuntu0.4",
+    "kernel_modules_present": false,
+    "probed_by": "system_probe.py v1",
+    "stock_wpa_sha256": "b0f1c8ee9bb32153faed468c68390db4691b252ffd6a90e6d3d7b49f4d106bdd"
+  },
   "20d7a522190ba8b6351364beca9702f40303651577d7c3f6c2c1cb6b34e5db6b": {
     "changelog_head": "wpa (2:2.10-21ubuntu0.4) noble; urgency=medium",
     "dpkg_version": "2:2.10-21ubuntu0.4",
@@ -28,6 +35,13 @@
     "stock_wpa_sha256": "b0f1c8ee9bb32153faed468c68390db4691b252ffd6a90e6d3d7b49f4d106bdd"
   },
   "8faed425880ec5a7ca9f57ba6a783544ce19e0c7836f0e8c13abc5d2210b6258": {
+    "changelog_head": "wpa (2:2.10-21ubuntu0.4) noble; urgency=medium",
+    "dpkg_version": "2:2.10-21ubuntu0.4",
+    "kernel_modules_present": false,
+    "probed_by": "system_probe.py v1",
+    "stock_wpa_sha256": "b0f1c8ee9bb32153faed468c68390db4691b252ffd6a90e6d3d7b49f4d106bdd"
+  },
+  "ec939431c59751372e34d669fce1b08494b391019534b5d7f690b87991ea159e": {
     "changelog_head": "wpa (2:2.10-21ubuntu0.4) noble; urgency=medium",
     "dpkg_version": "2:2.10-21ubuntu0.4",
     "kernel_modules_present": false,

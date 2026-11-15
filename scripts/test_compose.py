@@ -33,6 +33,7 @@ AGNOS_FALLBACK = (b'  if not os.path.isfile(manifest_path):  # releases before t
 OVERLAY_AGNOS_VERIFY = (b"          # releases before the openpilot/ move can't swap AGNOS on newer AGNOS, use ours\n"
                         b'          [ ! -L system/hardware/tici/agnos.json ] && /data/safe_staging/old_openpilot/openpilot/common/hardware/comma/agnos.py --verify system/hardware/tici/agnos.json && sudo reboot\n')
 SND_PERMISSIONS = b"  sudo chgrp audio /dev/snd/*C*\n  sudo chmod 660 /dev/snd/*C*\n"
+WORKER_DIFF = ROOT / "scripts/fixtures/openpilot-39339-wifi_manager.diff"
 class TestCompose(unittest.TestCase):
   @classmethod
   def setUpClass(cls):
@@ -109,6 +110,13 @@ class TestCompose(unittest.TestCase):
     self.assertEqual(launcher.count(anchor), 1)
     self.assertNotIn(SND_PERMISSIONS, launcher)
     return self.variant_many({"launch_chffrplus.sh": launcher.replace(anchor, anchor + SND_PERMISSIONS)}, upstream)
+
+  def worker_variant(self, upstream=None):
+    # Upstream #39339's wifi_manager.py change, verbatim: requests share one worker thread.
+    with compose.temporary_index(self.repo, upstream or self.upstream) as (env, _):
+      compose.git(self.repo, "apply", "--cached", str(WORKER_DIFF), env=env)
+      tree = compose.git(self.repo, "write-tree", env=env).decode().strip()
+      return compose.git(self.repo, "commit-tree", tree, data=b"Upstream worker thread\n", env=self.identity).decode().strip()
 
   def test_offline_gates(self):
     result = self.cli("gates.py", self.upstream, "--skip-download")
@@ -583,7 +591,7 @@ class TestCompose(unittest.TestCase):
     self.assertEqual(set(compose.git(self.repo, "diff-tree", "--no-commit-id", "-r", "--name-only", self.commit, commit).decode().splitlines()),
                      compose.TETHER_ALLOWED | {wifi})
     result = self.cli("gates.py", self.upstream, "--skip-download", *flags)
-    self.assertIn("G5: OK: tethering patch applies cleanly\n", result.stdout)
+    self.assertIn("G5: OK: tethering patch tethering-nat.patch applies cleanly\n", result.stdout)
     with compose.temporary_index(self.repo, self.upstream) as (env, _):
       compose.apply_ui(self.repo, env)
       before = compose.git(self.repo, "write-tree", env=env)
@@ -653,7 +661,7 @@ class TestCompose(unittest.TestCase):
           result = self.cli("gates.py", upstream, "--skip-download", *flags)
           self.assertIn(f"G5: OK: APN patch {matching.name} applies cleanly\n", result.stdout)
           if tether:
-            self.assertIn("G5: OK: tethering patch applies cleanly\n", result.stdout)
+            self.assertIn("G5: OK: tethering patch tethering-nat.patch applies cleanly\n", result.stdout)
 
   def test_apn_no_match_holds_compose_gates_and_inputs(self):
     upstream = self.apn_upstream()
@@ -824,7 +832,7 @@ class TestCompose(unittest.TestCase):
       compose.apply_ui(self.repo, env)
       tree = compose.git(self.repo, "write-tree", env=env).decode().strip()
       upstream = compose.git(self.repo, "commit-tree", tree, data=b"Upstream includes UI patch\n", env=self.identity).decode().strip()
-    self.assertIn("G5: OK: UI patch already applied", self.cli("gates.py", upstream, "--skip-download").stdout)
+    self.assertIn("G5: OK: UI patch ui-wpa3.patch already applied\n", self.cli("gates.py", upstream, "--skip-download").stdout)
     new_commit = self.cli("compose.py", upstream).stdout.splitlines()[0]
     self.assertEqual(compose.git(self.repo, "rev-parse", f"{new_commit}^{{tree}}"),
                      compose.git(self.repo, "rev-parse", f"{self.commit}^{{tree}}"))

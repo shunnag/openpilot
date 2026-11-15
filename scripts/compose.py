@@ -25,7 +25,12 @@ LAUNCHER_PATCHES = (
   ROOT / "patches/launcher-wpa3-snd.patch",
 )
 UI_PATCH = ROOT / "patches/ui-wpa3.patch"
+# The same WifiManager changes on #39339's shared request worker thread.
+UI_WORKER_PATCH = ROOT / "patches/ui-wpa3-worker.patch"
+UI_PATCHES = (UI_PATCH, UI_WORKER_PATCH)
 TETHER_PATCH = ROOT / "patches/tethering-nat.patch"
+# The same NAT rule changes for #39339's set_tethering_active (shared request worker, threading.Timer).
+TETHER_WORKER_PATCH = ROOT / "patches/tethering-nat-worker.patch"
 APN_PATCHES = (
   ROOT / "patches/apn-auth-release.patch", ROOT / "patches/apn-auth-nightly.patch",
   ROOT / "patches/apn-auth-nightly-v0113.patch",
@@ -47,6 +52,8 @@ LEGACY_COMPOSE_SHA256 = "01da873d5ba539bbbeec1ecaccc6208f5c80ae41cc0f7f290bf6b92
 PYRAY_COMPOSE_SHA256 = "9c8211c33bdb984cfbc4c5bc5ba9cffe8b3c52e5a52e2948c4b66aada79ab41d"
 # Preserve 8010c379b's raylib_nb identity for launcher forms predating #39244.
 RAYLIB_NB_COMPOSE_SHA256 = "1b96625831a00de86615c0200a95bf5c78acc96ea7c8041c18f1309f51ed2eff"
+# Preserve 5d8835bd7's snd + raylib_nb identity for trees predating #39339 (ui-wpa3.patch).
+SND_COMPOSE_SHA256 = "007dd6955da3037054ee86464a4b68554c0dc0ad7420b5b77004b2c325736161"
 TETHER_ALLOWED = {"openpilot/system/ui/lib/tests/test_tethering_nat.py"}
 APN_ALLOWED = {
   "openpilot/common/hardware/comma/apn_auth_store.py",
@@ -395,23 +402,32 @@ def load_pin(repo, upstream, pin_file):
   return resolved
 
 
-def inputs_hash(upstream, resolved, launcher_patch, tether="off", apn="off", apn_patch=None, apn_family="nightly"):
+def inputs_hash(upstream, resolved, launcher_patch, tether="off", apn="off", apn_patch=None, apn_family="nightly", ui_patch=UI_PATCH,
+                tether_patch=None):
   # Hash the entire resolved pin as canonical JSON, independent of file formatting.
+  if tether_patch is None:
+    tether_patch = TETHER_PATCH
   compose_sha256 = LEGACY_COMPOSE_SHA256
   if agnos20(resolved["version"]):
     compose_sha256 = PYRAY_COMPOSE_SHA256
     if apn == "auto" and apn_patch is not None and apn_patch.name.endswith("-agnos20-nb.patch"):
       compose_sha256 = RAYLIB_NB_COMPOSE_SHA256
       if launcher_patch.name == "launcher-wpa3-snd.patch":
-        compose_sha256 = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+        compose_sha256 = SND_COMPOSE_SHA256
+  if ui_patch.name != "ui-wpa3.patch" or (tether == "apply" and tether_patch.name != "tethering-nat.patch"):
+    # Only selections that did not exist before this composer hash the live file.
+    compose_sha256 = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
   inputs = {
     "upstream": upstream,
-    "patches": {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in (launcher_patch, UI_PATCH)},
+    "patches": {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in (launcher_patch, ui_patch)},
     "pin": resolved,
     "compose.py": compose_sha256,
   }
   if tether == "apply":
-    inputs.update(tether=tether, tether_patch=hashlib.sha256(TETHER_PATCH.read_bytes()).hexdigest())
+    inputs.update(tether=tether, tether_patch=hashlib.sha256(tether_patch.read_bytes()).hexdigest())
+    if tether_patch.name != "tethering-nat.patch":
+      # Only later forms name themselves; tethering-nat.patch keeps its original two keys.
+      inputs["tether_patch_name"] = tether_patch.name
   if apn == "auto":
     if apn_patch is None:
       raise ValueError("APN auto requires a selected patch")
@@ -458,28 +474,79 @@ def select_launcher_patch(repo, upstream):
   return matches[0]
 
 
+def select_ui_patch(repo, env):
+  # Exactly one UI form must fit the index, counting a form that is already applied.
+  found, diagnostics = [], []
+  for patch in UI_PATCHES:
+    try:
+      git(repo, "apply", "--cached", "--reverse", "--check", str(patch), env=env)
+    except subprocess.CalledProcessError:
+      pass
+    else:
+      found.append((patch, "already applied"))
+      diagnostics.append(f"{patch.name}: already applied")
+      continue
+    try:
+      git(repo, "apply", "--cached", "--check", "--whitespace=error", str(patch), env=env)
+    except subprocess.CalledProcessError as error:
+      diagnostics.append(f"{patch.name}: {error_text(error)}")
+    else:
+      found.append((patch, "applies cleanly"))
+      diagnostics.append(f"{patch.name}: applies cleanly")
+  if len(found) != 1:
+    reason = "no UI patch applies" if not found else "more than one UI patch applies"
+    raise ValueError(f"{reason}: {'; '.join(diagnostics)}")
+  return found[0]
+
+
 def apply_ui(repo, env, check=False):
-  try:
-    git(repo, "apply", "--cached", "--reverse", "--check", str(UI_PATCH), env=env)
-    return "already applied"
-  except subprocess.CalledProcessError:
-    args = ["apply", "--cached", "--whitespace=error"]
-    if check:
-      args.append("--check")
-    git(repo, *args, str(UI_PATCH), env=env)
-    return "applies cleanly" if check else "applied"
+  patch, state = select_ui_patch(repo, env)
+  if state == "already applied" or check:
+    return state
+  git(repo, "apply", "--cached", "--whitespace=error", str(patch), env=env)
+  return "applied"
+
+
+class NoTetherPatchApplies(subprocess.CalledProcessError):
+  # git apply --check failed for every form; still a CalledProcessError, as with the single form.
+  def __init__(self, diagnostics):
+    super().__init__(1, ["git", "apply", "--check"], stderr=f"no tethering patch applies: {'; '.join(diagnostics)}".encode())
+
+
+def select_tether_patch(repo, env):
+  # Looked up at call time, so a substituted TETHER_PATCH is the form that is checked and hashed.
+  found, already_upstream, diagnostics = [], [], []
+  for patch in (TETHER_PATCH, TETHER_WORKER_PATCH):
+    try:
+      git(repo, "apply", "--cached", "--reverse", "--check", str(patch), env=env)
+    except subprocess.CalledProcessError:
+      pass
+    else:
+      already_upstream.append(patch)
+      diagnostics.append(f"{patch.name}: already upstream")
+      continue
+    try:
+      git(repo, "apply", "--cached", "--check", "--whitespace=error", str(patch), env=env)
+    except subprocess.CalledProcessError as error:
+      diagnostics.append(f"{patch.name}: {error_text(error)}")
+    else:
+      found.append(patch)
+      diagnostics.append(f"{patch.name}: applies cleanly")
+  if already_upstream:
+    raise ValueError(f"tethering patch already upstream; human review required: {'; '.join(diagnostics)}")
+  if len(found) > 1:
+    raise ValueError(f"more than one tethering patch applies: {'; '.join(diagnostics)}")
+  if not found:
+    raise NoTetherPatchApplies(diagnostics)
+  return found[0]
 
 
 def apply_tether(repo, env, check=False):
-  try:
-    git(repo, "apply", "--cached", "--reverse", "--check", str(TETHER_PATCH), env=env)
-  except subprocess.CalledProcessError:
-    args = ["apply", "--cached", "--whitespace=error"]
-    if check:
-      args.append("--check")
-    git(repo, *args, str(TETHER_PATCH), env=env)
-    return "applies cleanly" if check else "applied"
-  raise ValueError("tethering patch already upstream; human review required")
+  patch = select_tether_patch(repo, env)
+  if check:
+    return "applies cleanly"
+  git(repo, "apply", "--cached", "--whitespace=error", str(patch), env=env)
+  return "applied"
 
 
 def select_apn_patch(repo, upstream, apn_family="nightly"):
@@ -519,11 +586,14 @@ def select_apn_patch(repo, upstream, apn_family="nightly"):
 
 def compose_inputs(repo, upstream, resolved, tether="off", apn="off", apn_family="nightly"):
   launcher_patch = select_launcher_patch(repo, upstream)
-  apn_patch = None
+  apn_patch = tether_patch = None
+  with temporary_index(repo, upstream) as (env, _):
+    ui_patch = select_ui_patch(repo, env)[0]
   if tether == "apply" or apn == "auto":
     with temporary_index(repo, upstream) as (env, _):
       apply_ui(repo, env)
       if tether == "apply":
+        tether_patch = select_tether_patch(repo, env)
         apply_tether(repo, env)
       if apn == "auto":
         apn_patch = select_apn_patch(repo, git(repo, "write-tree", env=env).decode().strip(), apn_family)
@@ -535,7 +605,7 @@ def compose_inputs(repo, upstream, resolved, tether="off", apn="off", apn_family
         check_modem_bundle(repo, git(repo, "write-tree", env=env).decode().strip(), resolved, required=apn == "auto")
   elif agnos20(resolved["version"]):
     check_modem_bundle(repo, upstream, resolved)
-  return inputs_hash(upstream, resolved, launcher_patch, tether, apn, apn_patch, apn_family)
+  return inputs_hash(upstream, resolved, launcher_patch, tether, apn, apn_patch, apn_family, ui_patch, tether_patch)
 
 
 def put_blob(repo, env, path, data, mode=None):
@@ -674,13 +744,15 @@ def compose(repo, upstream, resolved, tether="off", apn="off", apn_family="night
     if workflows:
       removals = b"".join(b"0 " + b"0" * len(upstream) + b"\t" + path + b"\0" for path in workflows.split(b"\0") if path)
       git(repo, "update-index", "-z", "--index-info", data=removals, env=env)
+    ui_patch = select_ui_patch(repo, env)[0]
     apply_ui(repo, env)
+    tether_patch = select_tether_patch(repo, env) if tether == "apply" else None
     tether_result = apply_tether(repo, env) if tether == "apply" else "off"
     apn_patch = None
     if apn == "auto":
       apn_patch = select_apn_patch(repo, git(repo, "write-tree", env=env).decode().strip(), apn_family)
       git(repo, "apply", "--cached", "--whitespace=error", str(apn_patch), env=env)
-    inputs = inputs_hash(upstream, resolved, launcher_patch, tether, apn, apn_patch, apn_family)
+    inputs = inputs_hash(upstream, resolved, launcher_patch, tether, apn, apn_patch, apn_family, ui_patch, tether_patch)
     tree = git(repo, "write-tree", env=env).decode().strip()
     post_checks(repo, upstream, tree, resolved, scratch, tether_result, "applied" if apn_patch else "off")
 

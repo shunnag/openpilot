@@ -87,6 +87,12 @@ class TestResolver(unittest.TestCase):
   def test_repository_202_pin_cli_and_probe(self):
     self.check_repository_pin_cli_and_probe("20.2")
 
+  def test_repository_205_pin_cli_and_probe(self):
+    self.check_repository_pin_cli_and_probe("20.5")
+
+  def test_repository_206_pin_cli_and_probe(self):
+    self.check_repository_pin_cli_and_probe("20.6")
+
   def check_repository_pin_cli_and_probe(self, version):
     self.version = version
     self.pins = json.loads((compose.ROOT / "agnos/pins.json").read_text())

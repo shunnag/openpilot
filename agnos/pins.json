@@ -118,5 +118,71 @@
       "stock_sha256": "c4ceaa996ede974fee9ce4c23dfdf8f5f37345d357c8c0ca0144b9539beea2bf",
       "service_sha256": "371ce23460b7d13a365fb78e27202fbf43c95762a6d9d6b1003f0edd26924dc4"
     }
+  },
+  "20.5": {
+    "release_tag": "agnos-20.5-wpa3.6",
+    "tag": "wpa3.sae=6",
+    "derived_from": {
+      "boot_hash_raw": "b457040d21dbce63938a4ba7c9adc87a5de1486cf26f46a0a780032be28a0b6e",
+      "boot_url": "https://commadist.azureedge.net/agnosupdate/boot-b457040d21dbce63938a4ba7c9adc87a5de1486cf26f46a0a780032be28a0b6e.img.xz",
+      "system_hash_raw": "193e949cd7a1f3b285ee6efbf7168686c77122d1f89966d9d911ad5afa7ad371",
+      "agnos_py_blob": "de0fb24551b38b26a916d7e6c06b1d0b6c05a2c4"
+    },
+    "boot": {
+      "name": "boot",
+      "url": "https://github.com/shunnag/openpilot/releases/download/agnos-20.5-wpa3.6/boot-1e06f202cb8fb12c20017660476978ed1b75aa8b74b5bcb384e645093c24bfc3.img.xz",
+      "hash": "1e06f202cb8fb12c20017660476978ed1b75aa8b74b5bcb384e645093c24bfc3",
+      "hash_raw": "1e06f202cb8fb12c20017660476978ed1b75aa8b74b5bcb384e645093c24bfc3",
+      "size": 46897152,
+      "sparse": false,
+      "full_check": true,
+      "has_ab": true,
+      "ondevice_hash": "f61bf99e18c3e57797f444b61b400b32f58b2787b35281c518cbfcc7870d4859"
+    },
+    "wpa_supplicant": {
+      "path": "userspace/wpa_supplicant",
+      "sha256": "139be31dde5f000d99af5f2692b792989bb3d6cbe332d662b2ddf822de89fd93",
+      "copyright": "userspace/wpa_supplicant.copyright",
+      "stock_sha256": "b0f1c8ee9bb32153faed468c68390db4691b252ffd6a90e6d3d7b49f4d106bdd"
+    },
+    "modem": {
+      "path": "userspace/modem/agnos-20.5/modem.py",
+      "sha256": "49a0241678dc8da0ee6bd7d4b34879cd6abf9d1ae9d6a5694865d67fc6154c3a",
+      "stock_sha256": "9e35f0d5ea0f3a2d40bfc22881dbe34ca78f29130865daf9bed67568cc29e325",
+      "service_sha256": "371ce23460b7d13a365fb78e27202fbf43c95762a6d9d6b1003f0edd26924dc4"
+    }
+  },
+  "20.6": {
+    "release_tag": "agnos-20.6-wpa3.7",
+    "tag": "wpa3.sae=7",
+    "derived_from": {
+      "boot_hash_raw": "2388598cda7c5c09a44b8f2683ff473d7ce8096a545a1c4ea2ff1cff65456c5a",
+      "boot_url": "https://commadist.azureedge.net/agnosupdate/boot-2388598cda7c5c09a44b8f2683ff473d7ce8096a545a1c4ea2ff1cff65456c5a.img.xz",
+      "system_hash_raw": "ec939431c59751372e34d669fce1b08494b391019534b5d7f690b87991ea159e",
+      "agnos_py_blob": "de0fb24551b38b26a916d7e6c06b1d0b6c05a2c4"
+    },
+    "boot": {
+      "name": "boot",
+      "url": "https://github.com/shunnag/openpilot/releases/download/agnos-20.6-wpa3.7/boot-4fc5071b0c9050bed960f2e20438d3ada827f8f0ba907171b7dbeabfeda9978b.img.xz",
+      "hash": "4fc5071b0c9050bed960f2e20438d3ada827f8f0ba907171b7dbeabfeda9978b",
+      "hash_raw": "4fc5071b0c9050bed960f2e20438d3ada827f8f0ba907171b7dbeabfeda9978b",
+      "size": 46897152,
+      "sparse": false,
+      "full_check": true,
+      "has_ab": true,
+      "ondevice_hash": "c474f272bc5e0423cedd4ce964c2cd879dcdf6f8a4dc686dec3ef260874d29fa"
+    },
+    "wpa_supplicant": {
+      "path": "userspace/wpa_supplicant",
+      "sha256": "139be31dde5f000d99af5f2692b792989bb3d6cbe332d662b2ddf822de89fd93",
+      "copyright": "userspace/wpa_supplicant.copyright",
+      "stock_sha256": "b0f1c8ee9bb32153faed468c68390db4691b252ffd6a90e6d3d7b49f4d106bdd"
+    },
+    "modem": {
+      "path": "userspace/modem/agnos-20.6/modem.py",
+      "sha256": "9a1f52fc6bdfdbcbb11335531d7088e48f9e75980acb19bd97471ed64ba4af3c",
+      "stock_sha256": "71b602d872b978781add8d50894f4904fbca757058f9cfeb505f7a9000add5b4",
+      "service_sha256": "371ce23460b7d13a365fb78e27202fbf43c95762a6d9d6b1003f0edd26924dc4"
+    }
   }
 }

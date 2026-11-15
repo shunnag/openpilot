@@ -12,8 +12,16 @@ the original forms retain pyray input identity. A release-staging tree using a 0
 HOLD at G5 until a matching release form exists; that hold is accepted.
 AGNOS < 20 retains its old registry, input hash and tree. The evidence and
 proposals below describe the historical preparation for the older registry;
-this candidate remains unregistered. The current real pin is `20.2` /
-`agnos-20.2-wpa3.5` / `wpa3.sae=5`, with stock system `8faed425…`; see
+this candidate remains unregistered. The newest real pin is `20.6` /
+`agnos-20.6-wpa3.7` / `wpa3.sae=7`, with stock boot `2388598c…` and system
+`ec939431…`; its image was device-tested on one comma four on 2026-11-15, on a
+tree composed from comma's `nightly-chestnut` with
+`apn-auth-nightly-agnos20-nb.patch`, but APN authentication (CHAP/PAP) was not
+tested on 20.6. The previous real pin `20.5` /
+`agnos-20.5-wpa3.6` / `wpa3.sae=6`, with stock system `193e949c…`, is not
+device-tested and its release is not uploaded, so a 20.5 tree holds at G4. The pin before it, `20.2` /
+`agnos-20.2-wpa3.5` / `wpa3.sae=5`, with stock system `8faed425…`, is
+device-tested; see
 [publication details](../../follow/PUBLISHING.md#agnos-20-apn-patch-registry-and-modem-pin).
 AGNOS 20.2's kernel only drops 3 latency tracers (comma #148).
 
@@ -261,7 +269,7 @@ means the candidate needs review. Repeat if upstream moves during validation.
 
 ## Isolation and input hashing
 
-`compose.py` names `LAUNCHER_PATCHES`, `UI_PATCH`, `TETHER_PATCH` and `APN_PATCHES`
+`compose.py` names `LAUNCHER_PATCHES`, `UI_PATCHES`, `TETHER_PATCH` and `APN_PATCHES`
 explicitly. Its selectors iterate those tuples; neither it nor `gates.py`
 enumerates `patches/` with a glob, directory walk or recursive scan. G5 calls the
 same imported selector. No candidate path is referenced by either script.

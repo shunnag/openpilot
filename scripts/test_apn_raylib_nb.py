@@ -24,6 +24,7 @@ class TestApnRaylibNb(unittest.TestCase):
   variant = fixture.TestAgnos20Compose.variant
   v0112_variant = fixture.TestAgnos20Compose.v0112_variant
   snd_variant = fixture.TestAgnos20Compose.snd_variant
+  worker_variant = fixture.compose_fixture.TestCompose.worker_variant
   apn_upstream = fixture.TestAgnos20Compose.apn_upstream
   modern_fixture = fixture.TestAgnos20Compose.modern_fixture
 
@@ -97,18 +98,49 @@ class TestApnRaylibNb(unittest.TestCase):
   def test_composer_digest_is_frozen_only_for_existing_paths(self):
     upstream, resolved = self.modern_fixture()
     old, nb = compose.APN_AGNOS20_PATCHES["nightly"]
-    for base, sensitive in ((upstream, False), (self.snd_variant(upstream), True)):
-      with self.subTest(snd=sensitive):
+    snd = self.snd_variant(upstream)
+    # Since ui-wpa3-worker.patch, snd + raylib_nb trees with ui-wpa3.patch are frozen at 5d8835bd7 too;
+    # only the worker UI form hashes the live composer, for every APN form.
+    for base, ui_patch, sensitive in ((upstream, compose.UI_PATCH, False), (snd, compose.UI_PATCH, False),
+                                      (self.worker_variant(snd), compose.UI_WORKER_PATCH, True)):
+      with self.subTest(base=base, ui=ui_patch.name):
         launcher = compose.select_launcher_patch(self.repo, base)
-        before = [compose.inputs_hash(base, resolved, launcher, apn="auto", apn_patch=p) for p in (old, nb)]
+        with compose.temporary_index(self.repo, base) as (env, _):
+          self.assertEqual(compose.select_ui_patch(self.repo, env)[0], ui_patch)
+        before = [compose.inputs_hash(base, resolved, launcher, apn="auto", apn_patch=p, ui_patch=ui_patch) for p in (old, nb)]
         with patch.object(compose, "__file__", str(compose.ROOT / "scripts/gates.py")):
-          after = [compose.inputs_hash(base, resolved, launcher, apn="auto", apn_patch=p) for p in (old, nb)]
-        self.assertEqual(before[0], after[0])
+          after = [compose.inputs_hash(base, resolved, launcher, apn="auto", apn_patch=p, ui_patch=ui_patch) for p in (old, nb)]
+        self.assertEqual(before[0] != after[0], sensitive)
         self.assertEqual(before[1] != after[1], sensitive)
     # The constant is the actual unmodified 4a387959c composer SHA, not a candidate-list hash.
     self.assertEqual(compose.PYRAY_COMPOSE_SHA256, "9c8211c33bdb984cfbc4c5bc5ba9cffe8b3c52e5a52e2948c4b66aada79ab41d")
     self.assertNotEqual(compose.PYRAY_COMPOSE_SHA256, hashlib.sha256(compose.ROOT.joinpath("scripts/compose.py").read_bytes()).hexdigest())
     self.assertEqual(compose.RAYLIB_NB_COMPOSE_SHA256, "1b96625831a00de86615c0200a95bf5c78acc96ea7c8041c18f1309f51ed2eff")
+    # git show 5d8835bd7:scripts/compose.py | shasum -a 256
+    self.assertEqual(compose.SND_COMPOSE_SHA256, "007dd6955da3037054ee86464a4b68554c0dc0ad7420b5b77004b2c325736161")
+    self.assertNotEqual(compose.SND_COMPOSE_SHA256, hashlib.sha256(compose.ROOT.joinpath("scripts/compose.py").read_bytes()).hexdigest())
+
+  def test_snd_nb_identity_is_unchanged_for_the_old_ui_form(self):
+    # Captured by executing the unmodified 6853d5bab composer (compose.py 007dd695), before ui-wpa3-worker.patch.
+    nb, resolved = self.modern_fixture(raylib_nb=True)
+    pyray, _ = self.modern_fixture()
+    for upstream, family, tether, apn, commit, inputs, tree in (
+      (nb, "nightly", "apply", "auto", "fbd28dfb7ce6d3a7afa98c2aadbd526ea7e2e902", "2644c4408e10f97cca775f998ea9fe7b87c07714d14c26a988ff84ed68156712", "7de663cff9156fab2e43d181a2cb544cb7cbe8c1"),
+      (nb, "nightly", "off", "auto", "4238085bb0522a6fab035ae012c504b2e78d4aa9", "c6d7fdd8e5ff9bfd2cb48c71fa9f23707ec89d297ec96f141965a909d5f141fc", "b4323e2d88568452e3c868cb7694b5cefda757b2"),
+      (nb, "nightly", "off", "off", "6da2c0e33a2fa0a8bb5f5f1065096f0d5d77f945", "271841b7181461c7c7bdbd16b006e5848e28e0fe8722492726fe72578a4991e3", "03380c5c5989e8bb39e38ebb006de32bec8d05fd"),
+      (nb, "release", "apply", "auto", "e1f112a7ab8124bb567abb8e8e04db95c720e521", "bde67555402f0e311016d76d3454aa49d978975fadab240de57546b780eb57db", "71ec7221063c3d75e0a14c819b2bbe5d837f1ee4"),
+      (nb, "release", "off", "auto", "5cb1610b8cdb7048940dada1dc636f9e579f0830", "087e072880e6a3b6fe22a937757989f5c16f06dbd5842858d89f7303418ef39c", "0036ca6c6f96513a3e2f981d57ca27ff1fbb46e9"),
+      (nb, "release", "off", "off", "6d908ca43d69b26e68a697126ba350d77161c4d5", "4e70a2b5badddb48151a2989f0383f60121717f0f813b6134fd5a6fc237ab70a", "03380c5c5989e8bb39e38ebb006de32bec8d05fd"),
+      (pyray, "nightly", "apply", "auto", "8699a30ede72fe4cce37f3f96898d7042345cc50", "03f206bb3cc5ed1d3adf51e311d135a26a8de682d7b101b461a64cd15a9133f1", "47a7bdbe1ed76b1b12d688f6f9e1e613fe242e29"),
+      (pyray, "nightly", "off", "off", "bbc30fc495ee4fe66395fdb900ed1dfc758804e2", "40ccbc6f79da008af5acf4436c8ffd4915648051796001f35d4ecd5d4138a3d9", "97558aed367ed36927832a34a4402b6b14b06e50"),
+      (pyray, "release", "apply", "auto", "b25c5008402fc7cea95545f52f8802774ec489e5", "8027b0846f7e2ac6a8e8fafb2dea845a62e17781de17781599ee4e085b676a45", "278ed294ed7ceb287e8c917c620718723017357a"),
+      (pyray, "release", "off", "off", "30daf840346d6e38f328cf38f7cdb491dfc2fde6", "50750e1cee0840024eba66371ffb49908cc4f6b10104f03919080e29a22b1f9f", "97558aed367ed36927832a34a4402b6b14b06e50"),
+    ):
+      base = self.snd_variant(upstream)
+      with self.subTest(upstream=upstream, family=family, tether=tether, apn=apn):
+        self.assertEqual(compose.compose(self.repo, base, resolved, tether, apn, family), (commit, inputs))
+        self.assertEqual(compose.compose_inputs(self.repo, base, resolved, tether, apn, family), inputs)
+        self.assertEqual(compose.git(self.repo, "rev-parse", commit + "^{tree}").decode().strip(), tree)
 
   def test_nb_identity_is_unchanged_for_existing_launchers(self):
     upstream, resolved = self.modern_fixture(raylib_nb=True)

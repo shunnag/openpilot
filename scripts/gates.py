@@ -8,7 +8,7 @@ import sys
 
 from boot_download import fetch_boot
 from compose import AGNOS_PY, MANIFEST, apply_tether, apply_ui, blob, error_text, git, launch_values, load_pin, resolve_commit, select_apn_patch, select_launcher_patch, supplicant_files, temporary_index
-from compose import agnos20, apply_modem_bundle, check_modem_bundle
+from compose import agnos20, apply_modem_bundle, check_modem_bundle, select_tether_patch, select_ui_patch
 from follow_state import load, mode_value, resolve_supplicant
 
 
@@ -85,11 +85,13 @@ def run_gates(repo, upstream, pin_file, skip_download=False, published=None, fol
           print("G4: OK: downloaded xz boot image matches raw hash and size", flush=True)
 
       gate = "G5"
+      ui_patch = select_ui_patch(repo, env)[0]
       ui_result = apply_ui(repo, env)
-      print(f"G5: OK: UI patch {'applies cleanly' if ui_result == 'applied' else ui_result}", flush=True)
+      print(f"G5: OK: UI patch {ui_patch.name} {'applies cleanly' if ui_result == 'applied' else ui_result}", flush=True)
       if tether == "apply":
+        tether_patch = select_tether_patch(repo, env)
         apply_tether(repo, env)
-        print("G5: OK: tethering patch applies cleanly", flush=True)
+        print(f"G5: OK: tethering patch {tether_patch.name} applies cleanly", flush=True)
       if apn == "auto":
         apn_patch = select_apn_patch(repo, git(repo, "write-tree", env=env).decode().strip(), apn_family)
         print(f"G5: OK: APN patch {apn_patch.name} applies cleanly", flush=True)

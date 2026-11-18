@@ -19,7 +19,8 @@ class TestResolver(unittest.TestCase):
   def setUp(self):
     self.base, self.stock = identity_pair()
     self.base_url = "https://example.invalid/base.img.xz"
-    self.stock_url = "https://example.invalid/upstream.img.xz"
+    # Upstream manifest URLs must name a stock boot image on commadist (boot_download.check_boot_url).
+    self.stock_url = "https://commadist.azureedge.net/agnosupdate/boot-" + "5" * 64 + ".img.xz"
     self.agnos_py = pins.git_blob_id(b"agnos.py\n")
     pin = deepcopy(json.loads((compose.ROOT / "agnos/pins.json").read_text())["19.8"])
     pin["derived_from"].update(boot_url=self.base_url, boot_hash_raw=hashlib.sha256(self.base).hexdigest(),
@@ -231,6 +232,27 @@ class TestResolver(unittest.TestCase):
       with self.subTest(key=key), patch.dict(target, {key: "0" * 64}):
         with self.assertRaisesRegex(ValueError, "boot download failed: .*mismatch"):
           self.resolve()
+
+  def test_untrusted_upstream_boot_url_holds_before_any_request(self):
+    for url in ("http://commadist.azureedge.net/agnosupdate/boot-" + "5" * 64 + ".img.xz",
+                "https://192.168.1.1/agnosupdate/boot-" + "5" * 64 + ".img.xz",
+                "https://commadist.azureedge.net/agnosupdate/boot-" + "5" * 64 + ".img.xz?next=http://10.0.0.1",
+                "https://github.com/shunnag/openpilot/releases/download/t/boot-" + "5" * 64 + ".img.xz"):
+      with self.subTest(url=url), patch.dict(self.manifest[0], {"url": url}):
+        self.calls.clear()
+        with self.assertRaisesRegex(ValueError, "upstream AGNOS 19.9 boot URL refused"):
+          self.resolve()
+        self.assertEqual(self.calls, [])
+    with tempfile.TemporaryDirectory() as directory:
+      self.version = "20.7"  # not pinned in agnos/pins.json, so the CLI reads the upstream manifest
+      self.manifest[0]["url"] = "https://192.168.1.1/boot.img.xz"
+      args = ["pins.py", "--repo", "unused.git", "--upstream", "upstream", "--out", str(Path(directory) / "pin.json")]
+      stderr = io.StringIO()
+      with patch("sys.argv", args), patch("pins.resolve_commit", return_value="upstream"), \
+           patch("pins.fetch_boot", self.fetch), redirect_stdout(io.StringIO()), redirect_stderr(stderr):
+        self.assertEqual(pins.main(), 1)
+      self.assertIn("PIN: FAIL: upstream AGNOS 20.7 boot URL refused", stderr.getvalue())
+      self.assertEqual(self.calls, [])
 
   def test_download_failure_holds(self):
     with self.assertRaisesRegex(ValueError, "upstream AGNOS 19.9 boot download failed: unavailable"):

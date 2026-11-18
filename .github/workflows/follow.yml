@@ -41,12 +41,7 @@
           "default": ""
         }
       }
-    },
-    "schedule": [
-      {
-        "cron": "17 10 * * *"
-      }
-    ]
+    }
   },
   "permissions": {},
   "env": {

@@ -2,6 +2,7 @@
 import json
 import os
 from pathlib import Path
+import socket
 import subprocess
 import sys
 import tempfile
@@ -47,6 +48,11 @@ class TestIssues(unittest.TestCase):
         labels = [args[i + 1] for i, arg in enumerate(args) if arg == "--label"]
         numbers = json.loads(os.environ["FAKE_GH_ISSUES"]).get(" ".join(sorted(labels)), [])
         print(json.dumps([{"number": number} for number in numbers]))
+      if args[:2] == ["api", "--include"]:
+        print("HTTP/2.0 200 OK\\r")
+        if os.environ.get("FAKE_GH_EXPIRY"):
+          print("Github-Authentication-Token-Expiration: " + os.environ["FAKE_GH_EXPIRY"] + "\\r")
+        print("Content-Type: application/json; charset=utf-8\\r\\n\\r\\n{}")
       '''))
     fake.chmod(0o755)
     self.env = {
@@ -138,6 +144,146 @@ class TestIssues(unittest.TestCase):
         calls = self.run_issues("hold", "nightly", "--reason", "fallback", "--log", str(log))
         create, = [call for call in calls if call[:2] == ["issue", "create"]]
         self.assertEqual(flag_values(create, "--title"), [f"nightly hold [nightly]: {reason}"])
+
+
+class TestLocalRunnerIssues(unittest.TestCase):
+  setUp = TestIssues.setUp
+
+  def run_local(self, *args, listed=None, env=None, code=0):
+    self.log.write_text("")
+    self.bodies.write_text("")
+    environment = {**self.env, "WPA3_LOCAL_RUN": "1", "WPA3_LOCAL_RUN_ID": "2026-11-18T01:02:03Z",
+                   "FAKE_GH_ISSUES": json.dumps({" ".join(sorted(k)): v for k, v in (listed or {}).items()}), **(env or {})}
+    environment.pop("GITHUB_RUN_ID")
+    result = subprocess.run([sys.executable, str(ROOT / "scripts/issues.py"), *args],
+                            env={k: v for k, v in environment.items() if v is not None}, text=True, capture_output=True)
+    self.assertEqual(result.returncode, code, result.stdout + result.stderr)
+    self.stdout = result.stdout
+    return [json.loads(line) for line in self.log.read_text().splitlines()]
+
+  def bodies_sent(self):
+    return [json.loads(line) for line in self.bodies.read_text().splitlines()]
+
+  def test_local_run_reference_and_host_details_stay_off_github(self):
+    home = "/Users/localperson"
+    temp = home + "/wpa3-nightly/runner/runs/run.Ab12/temp"
+    host = socket.gethostname()
+    log = self.work / "nightly.log"
+    log.write_text(f"Initialized empty Git repository in {temp}/nightly/check.git/\n"
+                   f"G5: FAIL: patch does not apply in {home}/scratch for localperson@{host}\n"
+                   "Upstream: https://github.com/example/openpilot\n")
+    calls = self.run_local("hold", "--branch", "nightly", "--log", str(log), "--upstream", "a" * 40,
+                           env={"HOME": home, "RUNNER_TEMP": temp, "USER": "localperson", "LOGNAME": "localperson"})
+    create, = [call for call in calls if call[:2] == ["issue", "create"]]
+    title, = flag_values(create, "--title")
+    body, = self.bodies_sent()
+    for text in (title, body):
+      self.assertNotIn("/Users/localperson", text)
+      self.assertNotIn("localperson", text)
+      if len(host) >= 3:
+        self.assertNotIn(host, text)
+    self.assertIn("Run: local run 2026-11-18T01:02:03Z", body)
+    self.assertNotIn("actions/runs", body)
+    self.assertIn("<run>/nightly/check.git", body)
+    self.assertIn("github.com/example/openpilot", body)
+    self.assertTrue(title.startswith("nightly hold [nightly]: G5: FAIL: patch does not apply in <home>/scratch"))
+    calls = self.run_local("hold", "--branch", "nightly", "--close", "--upstream", "a" * 40,
+                           listed={("nightly-hold", "branch:nightly"): [5]})
+    close, = [call for call in calls if call[:2] == ["issue", "close"]]
+    self.assertIn("local run 2026-11-18T01:02:03Z", flag_values(close, "--comment")[0])
+
+  def test_local_run_redacts_work_export_and_temporary_paths_outside_home(self):
+    paths = {"WPA3_WORK_ROOT": "/srv/wpa3-nightly/work/runner", "WPA3_EXPORT_DIR": "/opt/wpa3-exports/20261118T010203Z-abc",
+             "TMPDIR": "/var/tmp/wpa3-run/tmp", "RUNNER_TEMP": "/srv/wpa3-nightly/work/runner/runs/run.Q1/temp"}
+    log = self.work / "runner.log"
+    log.write_text("".join(f"{name}: {value}/file\n" for name, value in paths.items()) +
+                   "Initialized empty Git repository in /srv/wpa3-nightly/work/runner/runs/run.Q1/temp/wpa3.git/\n")
+    self.run_local("local-runner", "--reason", "runner stopped (137)", "--log", str(log), env=paths)
+    body, = self.bodies_sent()
+    for value in paths.values():
+      self.assertNotIn(value, body)
+    self.assertNotIn("/srv/wpa3-nightly", body)
+    for name, placeholder in (("WPA3_WORK_ROOT", "<work>"), ("WPA3_EXPORT_DIR", "<export>"), ("TMPDIR", "<tmp>"), ("RUNNER_TEMP", "<run>")):
+      self.assertIn(f"{name}: {placeholder}/file", body)
+    self.assertIn("<run>/wpa3.git/", body)
+
+  def test_local_run_redacts_before_slicing_and_masks_tokens_and_addresses(self):
+    work = "/srv/wpa3-nightly/work/runner"
+    lines = ("dial tcp 192.168.1.10:443: i/o timeout\n"
+             "read tcp 10.0.0.5:54321->140.82.112.3:443: read: connection reset by peer\n"
+             "Received disconnect from 198.51.100.7 port 22\n"
+             "AGNOS 20.6, version 1.2.3.4, tag 19.10\n"
+             "token ghp_" + "a" * 36 + " and github_pat_" + "B1_" * 27 + " and tok-secret-value-123\n")
+    tail = work[3:] + "/file\n" + lines
+    # The last 45000 characters start inside the work root path.
+    log = self.work / "runner.log"
+    log.write_text("A" * 100 + work[:3] + tail + "B" * (45000 - len(tail)))
+    self.run_local("local-runner", "--reason", "runner stopped (137)", "--log", str(log),
+                   env={"WPA3_WORK_ROOT": work, "GH_TOKEN": "tok-secret-value-123"})
+    body, = self.bodies_sent()
+    for secret in ("wpa3-nightly", "ghp_", "github_pat_", "tok-secret-value-123", "192.168.1.10", "10.0.0.5",
+                   "140.82.112.3", "198.51.100.7"):
+      self.assertNotIn(secret, body)
+    self.assertIn("<work>/file", body)
+    self.assertIn("dial tcp <ip>:443", body)
+    self.assertIn("read tcp <ip>:54321-><ip>:443", body)
+    self.assertIn("from <ip> port 22", body)
+    self.assertIn("token <token> and <token> and <token>", body)
+    self.assertIn("AGNOS 20.6, version 1.2.3.4, tag 19.10", body)
+
+  def test_local_runner_failure_issue_opens_updates_and_closes(self):
+    labels = ["local-runner", "local:failure"]
+    log = self.work / "runner.log"
+    log.write_text("LOCAL: FAIL: time limit reached after 5400 seconds\n")
+    calls = self.run_local("local-runner", "--reason", "time limit reached after 5400 seconds", "--log", str(log))
+    self.assertEqual(flag_values([c for c in calls if c[:2] == ["issue", "list"]][0], "--label"), labels)
+    self.assertEqual([call[2] for call in calls if call[:2] == ["label", "create"]], labels)
+    create, = [call for call in calls if call[:2] == ["issue", "create"]]
+    self.assertEqual(flag_values(create, "--label"), labels)
+    self.assertEqual(flag_values(create, "--title"), ["local-runner [failure]: time limit reached after 5400 seconds"])
+    body, = self.bodies_sent()
+    self.assertIn("Run: local run 2026-11-18T01:02:03Z", body)
+    self.assertIn("LOCAL: FAIL: time limit", body)
+    calls = self.run_local("local-runner", "--reason", "follow.yml dispatch for pending branches failed",
+                           listed={tuple(labels): [8, 7]})
+    self.assertEqual([call[:3] for call in calls if call[:2] in (["issue", "edit"], ["issue", "close"])],
+                     [["issue", "edit", "7"], ["issue", "close", "8"]])
+    calls = self.run_local("local-runner", "--close", listed={tuple(labels): [7], ("local-runner", "local:token-expiry"): [9]})
+    close, = [call for call in calls if call[:2] == ["issue", "close"]]
+    self.assertEqual(close[2], "7")
+    self.assertIn("completed a run without failures", flag_values(close, "--comment")[0])
+    self.run_local("local-runner", "--reason", "x", env={"WPA3_LOCAL_RUN": None}, code=1)
+    self.assertEqual(self.log.read_text(), "")
+    self.run_local("hold", "--branch", "nightly", "--token-check", code=2)
+
+  def test_token_expiry_warns_only_within_14_days(self):
+    labels = ("local-runner", "local:token-expiry")
+    now = "2026-11-18T00:00:00Z"
+    for expiry, warned in (("2026-11-25 00:00:00 UTC", True), ("2026-12-02 00:00:00 UTC", True),
+                           ("2026-12-02 00:01:00 UTC", False), ("2026-11-30 09:00:00 +0900", True),
+                           ("2027-01-31 00:00:00 UTC", False), (None, False)):
+      with self.subTest(expiry=expiry):
+        calls = self.run_local("local-runner", "--token-check", "--now", now, listed={labels: [9]},
+                               env={"FAKE_GH_EXPIRY": expiry, "GH_TOKEN": "ghp_tokenvalue"})
+        api, = [call for call in calls if call[0] == "api"]
+        self.assertEqual(api, ["api", "--include", "rate_limit"])
+        self.assertNotIn("ghp_tokenvalue", json.dumps(calls) + self.stdout)
+        self.assertEqual(flag_values([c for c in calls if c[:2] == ["issue", "list"]][0], "--label"), list(labels))
+        edits = [call for call in calls if call[:2] == ["issue", "edit"]]
+        closes = [call for call in calls if call[:2] == ["issue", "close"]]
+        if warned:
+          self.assertEqual([call[2] for call in edits], ["9"])
+          title, = flag_values(edits[0], "--title")
+          self.assertTrue(title.startswith("local-runner [token-expiry]: runner token expires 2026-1"), title)
+          colors = {flag_values(c, "--color")[0] for c in calls if c[:2] == ["label", "create"]}
+          self.assertEqual(colors, {"FBCA04"})
+          self.assertEqual(closes, [])
+        else:
+          self.assertEqual(edits, [])
+          self.assertEqual([call[2] for call in closes], ["9"])
+          self.assertIn("token expiry: " + ("none" if expiry is None else expiry[:10]), self.stdout)
+    calls = self.run_local("local-runner", "--token-check", "--now", now, env={"FAKE_GH_EXPIRY": "2026-11-20 00:00:00 UTC"})
+    self.assertEqual(len([call for call in calls if call[:2] == ["issue", "create"]]), 1)
 
 
 class TestNightlyWorkflow(unittest.TestCase):

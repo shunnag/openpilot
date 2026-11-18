@@ -2,9 +2,6 @@ name: Nightly WPA3
 run-name: "Nightly WPA3 (follow mode: ${{ vars.WPA3_FOLLOW_MODE || 'off' }})"
 
 on:
-  schedule:
-    - cron: '7 11 * * *'
-    - cron: '43 12 * * *'
   workflow_dispatch:
     inputs:
       upstream:

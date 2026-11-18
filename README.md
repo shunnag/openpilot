@@ -5,9 +5,9 @@ openpilot + WPA3
 
 **個人利用向けの非公式 fork です。自動ビルドのカーネルと wpa_supplicant は、実機テストなしで公開します。** CI の確認は、実機で起動・動作することを保証しません。実機で確認した履歴は、comma four 1 台での AGNOS 19.8（`wpa3.sae=2`）、AGNOS 19.9（`wpa3.sae=3`）、AGNOS 20.1（`wpa3.sae=4`）、AGNOS 20.2 と 20.3（`wpa3.sae=5`）、AGNOS 20.6（`wpa3.sae=7`。comma の `nightly-chestnut` から組んだツリーで、20.3 からランチャーで更新。ファイルはパソコンから USB 経由で渡しました。`updated.py` での更新は未確認）、`nightly-chestnut` での 19.8 → 19.9 の移行、`nightly` での `updated.py` による 20.2 → 20.3 の更新だけです。モデムの APN の変更（[What's changed](#whats-changed) の 5）とテザリングの修正（6）は、同じ comma four と SoftBank の SIM 1 枚で実機確認しました。SoftBank は APN の認証情報を確かめないため、パスワードが拒否される場合はまだ見ていません。今後の自動ビルドや、ほかの端末を確認したものではありません。**comma 3X では、WPA3 カーネルを一度も起動していません。** 自動ビルドのカーネルが起動しない場合、ブートローダーは前のカーネルに戻るはずですが、これを確認したのも comma four 1 台だけです。fork は最大 3 回試したあと、新しい AGNOS 用の comma のカーネルを入れます。その間に約 20 回再起動することがあり、起動中に止まった場合は電源を入れ直す必要があります。復旧にはパソコンと [flash.comma.ai](https://flash.comma.ai) が必要になることがあります。これらのビルドは comma のレビューもテストも受けていません。**問題を comma に報告しないでください。**
 
-**`release-mici-staging` and `release-tizi-staging` have NOT been tested on any device. Nobody has run them yet.** They are comma's openpilot 0.11.2 release-staging (AGNOS 19.9) with a WPA3 boot image for AGNOS 19.9 (`wpa3.sae=3`). The nightly branches have moved on to AGNOS 20.3. That boot image was device-tested only on one comma four running `nightly-chestnut`. The release launcher with it is untested. **No WPA3 kernel has ever booted on a comma 3X.** (On the comma four, the bootloader picked the right device tree from the WPA3 boot image, which suggests it selects by board ID rather than by position; this was not checked on a comma 3X.) If it fails on your device, you may need a computer and [flash.comma.ai](https://flash.comma.ai) to recover it. comma has not reviewed or tested these builds. Do not report problems with them to comma.
+**`release-mici-staging` and `release-tizi-staging` have NOT been tested on any device. Nobody has run them yet.** They are comma's release-staging branches with the WPA3 boot image pinned for their AGNOS version, which can be older than the one the nightly branches use. Boot images were device-tested only on one comma four with nightly trees (see the history above). The release launcher with them is untested. **No WPA3 kernel has ever booted on a comma 3X.** (On the comma four, the bootloader picked the right device tree from the WPA3 boot image, which suggests it selects by board ID rather than by position; this was not checked on a comma 3X.) If it fails on your device, you may need a computer and [flash.comma.ai](https://flash.comma.ai) to recover it. comma has not reviewed or tested these builds. Do not report problems with them to comma.
 
-**`release-mici-staging` と `release-tizi-staging` は、どの実機でもテストしていません。まだ誰も動かしたことがありません。** これらは comma の openpilot 0.11.2 の release-staging（AGNOS 19.9）に、AGNOS 19.9 用の WPA3 boot イメージ（`wpa3.sae=3`）を組み合わせたものです。nightly はすでに AGNOS 20.3 に進んでいます。この boot イメージを実機で確認したのは、`nightly-chestnut` を動かした comma four 1 台だけです。release 用のランチャーとの組み合わせは未確認です。**comma 3X では、WPA3 カーネルを一度も起動していません。**（comma four では、ブートローダーが WPA3 boot イメージから正しいデバイスツリーを選んでいたため、並び順ではなくボード ID で選んでいると考えられます。comma 3X では確かめていません。）端末で動かなかった場合、復旧にはパソコンと [flash.comma.ai](https://flash.comma.ai) が必要になることがあります。これらのビルドは comma のレビューもテストも受けていません。問題があっても comma に報告しないでください。
+**`release-mici-staging` と `release-tizi-staging` は、どの実機でもテストしていません。まだ誰も動かしたことがありません。** これらは comma の release-staging のブランチに、その AGNOS のバージョン用に pin した WPA3 boot イメージを組み合わせたものです。その AGNOS のバージョンは、nightly のブランチより古いことがあります。boot イメージを実機で確認したのは、comma four 1 台と nightly 系のツリーの組み合わせだけです（上の履歴を参照）。release 用のランチャーとの組み合わせは未確認です。**comma 3X では、WPA3 カーネルを一度も起動していません。**（comma four では、ブートローダーが WPA3 boot イメージから正しいデバイスツリーを選んでいたため、並び順ではなくボード ID で選んでいると考えられます。comma 3X では確かめていません。）端末で動かなかった場合、復旧にはパソコンと [flash.comma.ai](https://flash.comma.ai) が必要になることがあります。これらのビルドは comma のレビューもテストも受けていません。問題があっても comma に報告しないでください。
 
 This fork adds WPA3 (SAE) Wi-Fi support to openpilot on the comma four, plus modem APN changes (CHAP/PAP authentication and an APN fix from an open comma PR) and a tethering fix. Every night, it rebuilds four prebuilt branches from comma's branches of the same name: two nightly branches and two UNTESTED release-staging branches. This `wpa3-ci` branch holds the workflows, scripts and patches that build them.
 
@@ -123,13 +123,13 @@ An auto-built wpa_supplicant is used only if the stock binary matches; on failur
 Nightly builds
 ------
 
-The **Nightly WPA3** workflow runs every day at 11:07 UTC (20:07 JST), with a catch-up run at 12:43 UTC (21:43 JST). The catch-up normally finishes after the cheap per-branch marker checks because the first run left matching evaluation markers. It still publishes when upstream or the follow mode changed between the two runs. One job processes all four branches sequentially in one shared bare repository, reusing common Git objects. Each branch runs independently; a held or failed branch does not stop the others, but makes the job fail.
+The nightly runs every day from a scheduled job on the owner's own computer (see [Where the nightly runs](#where-the-nightly-runs)), normally twice: a main run and a catch-up run later the same day. The catch-up normally finishes after the cheap per-branch marker checks because the first run left matching evaluation markers. It still publishes when upstream or the follow mode changed between the two runs. One run processes all four branches sequentially in one shared bare repository, reusing common Git objects. Each branch runs independently; a held or failed branch does not stop the others, but makes the run fail. A manual **Nightly WPA3** run on GitHub Actions does the same work.
 
 Before fetching full upstream contents, a run on `refs/heads/wpa3-ci` can skip a branch whose evaluation marker at `refs/wpa3-evaluated/<branch>` matches the checked-out `wpa3-ci` HEAD, follow mode, upstream SHA and current published fork commit. The marker is written only after a full latest-upstream evaluation publishes successfully or confirms identical inputs, and closes resolved issues successfully. Changes to `wpa3-ci`, the follow mode, upstream or the published fork commit trigger a full evaluation and republication when needed. A held branch gets no new marker, and a rollback changes the fork commit so the old marker no longer matches; the next run evaluates fully. Run history and issue state are not skip evidence. Otherwise, `scripts/pins.py` first resolves the pin in a temporary blobless repository; pending branches stop before the full fetch. After the full fetch, the pin must be byte-identical, and the existing exact `WPA3-Inputs` check still skips unchanged inputs. Manual `force` runs bypass both skips; withdrawal uses the published upstream and always fetches the published fork with its parent.
 
 comma's branches are squashed orphan commits, so each build is a new commit on top of theirs, and nothing is merged. Builds are deterministic: the same inputs always produce the same commit SHA. Unchanged branches keep their published commits.
 
-**Nightly WPA3** ワークフローは、毎日 11:07 UTC（20:07 JST）に実行されます。取りこぼしに備えて 12:43 UTC（21:43 JST）にも実行されます。通常は最初の実行が残した評価マーカーが一致するため、負荷の小さいブランチごとのマーカー確認だけで終了します。2 回の実行の間に upstream や follow モードが変わっていれば、公開も行います。1 つのジョブが、共通の bare リポジトリで Git オブジェクトを使い回しながら、4 ブランチを順に処理します。各ブランチは独立して実行し、保留や失敗があっても残りを続けますが、ジョブ全体は失敗になります。
+nightly は、所有者のパソコンで定期実行するジョブから毎日実行します（[Where the nightly runs](#where-the-nightly-runs) を参照）。通常は 1 日 2 回で、取りこぼしに備えて同じ日のあとの時間にもう一度実行します。2 回目は通常、最初の実行が残した評価マーカーが一致するため、負荷の小さいブランチごとのマーカー確認だけで終了します。2 回の実行の間に upstream や follow モードが変わっていれば、公開も行います。1 回の実行で、共通の bare リポジトリで Git オブジェクトを使い回しながら、4 ブランチを順に処理します。各ブランチは独立して実行し、保留や失敗があっても残りを続けますが、実行全体は失敗になります。GitHub Actions で **Nightly WPA3** を手動で実行しても、同じ処理をします。
 
 upstream 全体を取得する前に、`refs/heads/wpa3-ci` の実行では、`refs/wpa3-evaluated/<branch>` の評価マーカーが、チェックアウトした `wpa3-ci` の HEAD、follow モード、upstream の SHA、公開中の fork のコミットとすべて一致すれば、そのブランチの処理を省略します。マーカーは、最新 upstream を完全に評価して公開に成功するか、入力が同じだと確認し、解決済み issue を閉じる処理にも成功したあとだけ記録します。`wpa3-ci`、follow モード、upstream、公開中の fork のコミットが変われば、完全に再評価し、必要なら再公開します。保留したブランチには新しいマーカーを記録せず、ロールバックでは fork のコミットが変わって古いマーカーと一致しなくなるため、次の実行で完全に評価します。実行履歴や issue の状態は、省略の根拠にしません。それ以外は、まず一時的な blobless リポジトリで `scripts/pins.py` が pin を決め、pending なら全体の取得前に止めます。全体を取得したあとも pin がバイト単位で一致することを確認し、従来の厳密な `WPA3-Inputs` の比較でも同じ入力なら省略します。手動の `force` は両方の省略を無効にします。取り下げでは公開中の upstream を使い、公開中の fork とその親を必ず取得します。
 
@@ -158,6 +158,54 @@ After publishing, the workflow checks that installer.comma.ai serves an installe
 確認に失敗したブランチは公開せず、前回のビルドのままにします。ワークフローは、`nightly-hold` と `branch:<branch>` のラベルを付けた issue をブランチごとに 1 件作成または更新し、次に公開できたときに閉じます。
 
 公開後は、installer.comma.ai がそのブランチ用のインストーラーを返すかを確認します。失敗した場合は `nightly-smoke` の issue を作りますが、公開した新しいビルドはそのまま残します。
+
+
+Where the nightly runs
+------
+
+GitHub has twice paused Actions on this fork because of the scale of its Actions usage; GitHub limits Actions on forks. So the nightly now runs from a scheduled job (cron or launchd) on the owner's own computer instead of scheduled GitHub Actions. The job starts a copy of `scripts/local_nightly_launcher.sh` kept outside the repository. Each time, the launcher fetches `wpa3-ci` from GitHub, exports exactly that commit and runs `scripts/local_nightly.sh` from the export, never from a working copy. That script does the same work as **Nightly WPA3**: `scripts/publish_branch.sh` for the four branches in order, with the same checks, issues and evaluation markers, then one follow request if any branch is pending. It reads the `WPA3_FOLLOW_MODE` repository variable and publishes nothing if it can't read it. Only one run goes at a time, and each run stops after 90 minutes. The token comes from a private file and reaches `git` and `gh` only through the environment; the runner does not change any git settings. A failure outside the branch checks, or a token that expires within 14 days, opens a `local-runner` issue. The failure issue closes after the next run without failures. If the computer is off or offline, nothing runs and nothing is reported, and the branches stay as they are.
+
+GitHub Actions still runs **Nightly WPA3** by hand (`upstream`, `force`), **Roll back WPA3 nightly**, **Kernel and wpa_supplicant follow** (started by a pending nightly or by hand) and **WPA3 follow admin**. No workflow has a schedule. A manual **Nightly WPA3** run does not wait for a local run, so don't start one while the other is running.
+
+**To pause** publishing for all four branches, run **Roll back WPA3 nightly**, or run `gh workflow disable nightly.yml --repo shunnag/openpilot`. The local runner reads this state before it starts, and `publish_branch.sh` reads it again once for each branch before that branch publishes or records anything, so a disabled **Nightly WPA3** stops the local runner as well. To resume, run `gh workflow enable nightly.yml --repo shunnag/openpilot`. If the state can't be read, nothing is published. The owner can also turn off the scheduled job. **Do not run Roll back WPA3 nightly while a local run is in progress:** the Actions queue that keeps rollback and nightly apart does not cover the local runner.
+
+**If Actions is unavailable**, roll a branch back by hand. Pause first, so that the next run does not publish the newer build again: disable the two workflows if the API still works, or else turn off the scheduled job. Then restore `<branch>-lastgood` with a lease. If `GOOD` is empty, there is nothing to restore.
+
+```sh
+B=nightly   # or nightly-chestnut, release-mici-staging, release-tizi-staging
+URL=https://github.com/shunnag/openpilot.git
+gh workflow disable follow.yml --repo shunnag/openpilot
+gh workflow disable nightly.yml --repo shunnag/openpilot
+F=$(git ls-remote "$URL" "refs/heads/$B" | awk '{print $1}')
+GOOD=$(git ls-remote "$URL" "refs/heads/$B-lastgood" | awk '{print $1}')
+git init --bare rollback.git
+git -C rollback.git fetch --depth=1 --no-tags "$URL" "$GOOD"
+git -C rollback.git push --force-with-lease="refs/heads/$B:$F" "$URL" "$GOOD:refs/heads/$B"
+```
+
+To set up the runner, make a folder of its own outside the repository, owned by the user whose scheduler (crontab or launchd agent) runs the job, with mode 700. Copy `scripts/local_nightly_launcher.sh` into it and put `local_nightly.conf` next to it with mode 600 (the keys are listed at the top of the launcher). `WORK_ROOT` must be a folder inside this folder. Keep the token in a file with mode 600, in a mode 700 folder of the same user, for example this one. The launcher refuses to run if any of these is open to other users, has an ACL or is reached through a symlink. It also refuses when a folder above the launcher or token folder belongs to someone other than root or you, or can be written by other users, and, on macOS, when the volume ignores ownership. Then add a cron entry that runs the copy by its absolute path. The launcher logs its own SHA-256, so an old copy is easy to spot; copy it again when it changes. Logs and exports older than 14 days are removed.
+
+The token is a fine-grained personal access token for this repository only, with these repository permissions. With `WPA3_FOLLOW_MODE` at `off` or `dryrun` no branch becomes pending, so Actions can stay read-only; if a follow request is needed and fails, the run opens a `local-runner` issue that says so.
+
+| Permission | Access | Used for | 用途 |
+|---|---|---|---|
+| Metadata | read-only | required for every fine-grained token | すべての fine-grained トークンに必要 |
+| Contents | read and write | push the four branches, `<branch>-lastgood` and the evaluation markers; read the markers | 4 つのブランチ、`<branch>-lastgood`、評価マーカーの push と、マーカーの読み取り |
+| Issues | read and write | the `nightly-hold`, `nightly-pending`, `nightly-smoke`, `revoke-blocked` and `local-runner` issues and their labels | `nightly-hold`、`nightly-pending`、`nightly-smoke`、`revoke-blocked`、`local-runner` の issue とラベル |
+| Actions | read-only; read and write only for follow mode `state` or `on` | read whether **Nightly WPA3** is enabled (the pause switch); write: start **Kernel and wpa_supplicant follow** for pending branches | **Nightly WPA3** が有効かどうか（公開の停止）の読み取り。書き込みは pending のブランチに follow を起動するときだけ |
+| Variables | read-only | read `WPA3_FOLLOW_MODE` | `WPA3_FOLLOW_MODE` の読み取り |
+
+GitHub は、Actions の利用規模を理由に、この fork の Actions を 2 回止めました。GitHub は fork での Actions の利用を制限しています。そこで nightly は、GitHub Actions の定期実行ではなく、所有者のパソコンで定期実行するジョブ（cron または launchd）から動かすことにしました。このジョブは、リポジトリの外に置いた `scripts/local_nightly_launcher.sh` のコピーを起動します。ランチャーは毎回 GitHub から `wpa3-ci` を取得し、そのコミットだけを書き出して、書き出したものから `scripts/local_nightly.sh` を実行します。作業用のチェックアウトからは実行しません。このスクリプトの処理は **Nightly WPA3** と同じです。4 つのブランチに順に `scripts/publish_branch.sh` を実行し、確認、issue、評価マーカーも同じです。pending のブランチがあれば、最後に follow を 1 回だけ要求します。`WPA3_FOLLOW_MODE` はリポジトリ変数から読み、読めなければ何も公開しません。同時に動くのは 1 回分だけで、各実行は 90 分で止めます。トークンは他人が読めないファイルから読み、環境変数だけで `git` と `gh` に渡します。git の設定は変えません。ブランチの確認以外での失敗や、14 日以内に期限が切れるトークンは、`local-runner` の issue で知らせます。失敗の issue は、次に失敗なく終わった実行で閉じます。パソコンの電源が切れていたり、オフラインだったりすると、何も実行せず、何も報告しません。ブランチはそのまま残ります。
+
+GitHub Actions で今も動くのは、手動の **Nightly WPA3**（`upstream`、`force`）、**Roll back WPA3 nightly**、**Kernel and wpa_supplicant follow**（pending の nightly か手動で起動）、**WPA3 follow admin** です。定期実行するワークフローはありません。手動の **Nightly WPA3** は、パソコンでの実行が終わるのを待たないので、片方が動いている間はもう片方を始めないでください。
+
+**公開を止めるには**、**Roll back WPA3 nightly** を実行するか、`gh workflow disable nightly.yml --repo shunnag/openpilot` を実行します。パソコンでの実行は開始時にこの状態を読み、さらに `publish_branch.sh` がブランチごとに、公開や記録の前に 1 回読み直します。そのため、**Nightly WPA3** を無効にすれば、パソコンでの実行も止まります。再開するには `gh workflow enable nightly.yml --repo shunnag/openpilot` を実行します。状態を読めない場合は、何も公開しません。所有者が定期実行のジョブを止めることもできます。**パソコンでの実行中は、Roll back WPA3 nightly を実行しないでください。** ロールバックと nightly を順番に動かす Actions の仕組みは、パソコンでの実行には効きません。
+
+**Actions が使えない場合**は、手作業でブランチを戻します。次の実行で新しいビルドがまた公開されないよう、先に公開を止めます。API が使えれば 2 つのワークフローを無効にし、使えなければ定期実行のジョブを止めます。そのあと、上のコマンドで `<branch>-lastgood` を lease 付きで戻します。`GOOD` が空なら、戻せるビルドはありません。
+
+実行環境を準備するには、リポジトリの外に専用のフォルダーを作ります。所有者は cron または launchd でジョブを動かすユーザーにし、モードは 700 にします。そこに `scripts/local_nightly_launcher.sh` をコピーし、隣に `local_nightly.conf` をモード 600 で置きます（項目はランチャーの先頭に書いてあります）。`WORK_ROOT` は、このフォルダーの中のフォルダーにします。トークンは、同じユーザーのモード 700 のフォルダー（このフォルダーでもかまいません）に、モード 600 のファイルで置きます。どれかがほかのユーザーに開いていたり、ACL があったり、シンボリックリンク経由だったりすると、ランチャーは実行しません。ランチャーやトークンのフォルダーより上のフォルダーが root か自分以外の持ち物だったり、ほかのユーザーが書き込めたりする場合や、macOS でボリュームが所有者を無視する設定の場合も実行しません。最後に、コピーを絶対パスで実行する cron の項目を登録します。ランチャーは自分の SHA-256 をログに書くので、古いコピーはすぐに分かります。ランチャーが変わったら、コピーし直してください。14 日より古いログと書き出したものは削除します。
+
+トークンは、このリポジトリだけを対象にした fine-grained personal access token にし、上の表の権限を許可します。`WPA3_FOLLOW_MODE` が `off` か `dryrun` なら pending のブランチはできないので、Actions は読み取りだけでかまいません。follow の要求が必要になって失敗した場合は、そのことを `local-runner` の issue で知らせます。
 
 
 AGNOS updates
@@ -199,13 +247,13 @@ Maintenance
 
 * **New boot images:** a replacement boot image needs a new command line tag (e.g. `wpa3.sae=2`), a new release tag and a new pin. The launcher only checks the tag, so a tag must always mean exactly one boot image. `pins.py` rejects pins that break this, and G6 compares against the published build.
 * **Orphan commits:** publishing assumes comma's branches are orphan commits. If that changes, the nightly is held.
-* **Scheduled runs:** GitHub may disable scheduled workflows after 60 days without repository activity. If the nightly stops, re-enable **Nightly WPA3** from the Actions tab.
-* **Setting up a fork:** upload the boot image to the release named in `agnos/pins.json`, make `wpa3-ci` the default branch (scheduled workflows only run there), enable Actions and Issues, then run **Nightly WPA3** manually. A manual run builds all four branches. `force` rebuilds even if the inputs haven't changed, but it doesn't skip any checks.
+* **Scheduled runs:** no workflow has a schedule; the nightly runs from the owner's computer (see [Where the nightly runs](#where-the-nightly-runs)). If the nightly stops, look for a `local-runner` issue, check the runner's log and check that **Nightly WPA3** is enabled. A manual **Nightly WPA3** run still works.
+* **Setting up a fork:** upload the boot image to the release named in `agnos/pins.json`, make `wpa3-ci` the default branch, enable Actions and Issues, then run **Nightly WPA3** manually. A manual run builds all four branches. `force` rebuilds even if the inputs haven't changed, but it doesn't skip any checks. For daily runs, set up the local runner (see [Where the nightly runs](#where-the-nightly-runs)).
 
 * **boot イメージの差し替え:** 新しい boot イメージには、新しいコマンドラインのタグ（例: `wpa3.sae=2`）、新しいリリースタグ、新しい pin が必要です。ランチャーはタグしか見ないため、1 つのタグは必ず 1 つの boot イメージを指すようにします。これに反する pin は `pins.py` が受け付けず、G6 は公開中のビルドとも照らし合わせます。
 * **親なしのコミット:** 公開の仕組みは、comma のブランチが親なしのコミットであることを前提にしています。この前提が崩れた場合は、公開を止めます。
-* **定期実行:** GitHub は、60 日間活動のないリポジトリの定期実行を止めることがあります。nightly が止まった場合は、Actions の画面から **Nightly WPA3** を有効に戻してください。
-* **fork の準備:** `agnos/pins.json` に書かれたリリースに boot イメージをアップロードし、`wpa3-ci` を既定のブランチにします（定期実行は既定のブランチでしか動きません）。Actions と Issues を有効にしてから、**Nightly WPA3** を手動で実行します。手動実行でも 4 つすべてのブランチを作ります。`force` を付けると入力が変わっていなくても作り直しますが、確認は省略しません。
+* **定期実行:** 定期実行するワークフローはありません。nightly は所有者のパソコンから実行します（[Where the nightly runs](#where-the-nightly-runs) を参照）。nightly が止まった場合は、`local-runner` の issue、実行環境のログ、**Nightly WPA3** が有効かどうかを確認してください。手動の **Nightly WPA3** は今も使えます。
+* **fork の準備:** `agnos/pins.json` に書かれたリリースに boot イメージをアップロードし、`wpa3-ci` を既定のブランチにします。Actions と Issues を有効にしてから、**Nightly WPA3** を手動で実行します。手動実行でも 4 つすべてのブランチを作ります。`force` を付けると入力が変わっていなくても作り直しますが、確認は省略しません。毎日の実行には、パソコンでの実行環境を準備します（[Where the nightly runs](#where-the-nightly-runs) を参照）。
 
 
 Automatic kernel builds
@@ -231,7 +279,7 @@ The global limit is one automatic kernel per 7 days and at most 3 untested kerne
 Rolling back
 ------
 
-Run **Roll back WPA3 nightly** and pick a branch. It restores `<branch>-lastgood`, the previous build, with a lease, then disables **Nightly WPA3**. This pauses publishing for **all four** branches. A branch, including each release-staging branch, has no `<branch>-lastgood` until its second build; in that case, nothing is changed. To resume, run `gh workflow enable nightly.yml --repo shunnag/openpilot`, or re-enable it from the Actions tab.
+Run **Roll back WPA3 nightly** and pick a branch. It restores `<branch>-lastgood`, the previous build, with a lease, then disables **Nightly WPA3**. This pauses publishing for **all four** branches, including the runs on the owner's computer. If Actions is unavailable, see [Where the nightly runs](#where-the-nightly-runs) for the same steps by hand. A branch, including each release-staging branch, has no `<branch>-lastgood` until its second build; in that case, nothing is changed. To resume, run `gh workflow enable nightly.yml --repo shunnag/openpilot`, or re-enable it from the Actions tab.
 
 Prefer **follow-admin → revoke** with the release tag and a reason for an automatic kernel. It pauses automatic kernels, marks the release WITHDRAWN and dispatches nightly with `upstream=published`. Each affected branch composes its already-published upstream with comma's kernel for the same AGNOS version and the reserved revert tag. This does not downgrade AGNOS. A bad release does not replace `-lastgood`. No issue label triggers withdrawal. Offline devices need another network or [flash.comma.ai](https://flash.comma.ai). **Roll back WPA3 nightly** also disables follow; restoring `-lastgood` may restore another untested kernel or downgrade AGNOS, which has not been tested.
 
@@ -239,7 +287,7 @@ Prefer **follow-admin → revoke** with the release tag and a reason for an auto
 
 To go back to comma's openpilot, reinstall it from comma's URL. **The WPA3 kernel stays** until comma's next AGNOS version bump, because openpilot only reflashes AGNOS when the version changes. To remove it right away, reflash AGNOS from [flash.comma.ai](https://flash.comma.ai).
 
-**Roll back WPA3 nightly** を実行し、戻すブランチを選びます。そのブランチの 1 つ前のビルド（`<branch>-lastgood`）を lease 付きで戻したあと、**Nightly WPA3** を無効にします。これで **4 つすべてのブランチ** の公開が止まります。release-staging の各ブランチも、2 回目のビルドまでは `<branch>-lastgood` がないため、その場合は何も変更しません。再開するには `gh workflow enable nightly.yml --repo shunnag/openpilot` を実行するか、Actions の画面から有効に戻してください。
+**Roll back WPA3 nightly** を実行し、戻すブランチを選びます。そのブランチの 1 つ前のビルド（`<branch>-lastgood`）を lease 付きで戻したあと、**Nightly WPA3** を無効にします。これで、所有者のパソコンでの実行も含め、**4 つすべてのブランチ** の公開が止まります。Actions が使えない場合に手作業で行う手順は、[Where the nightly runs](#where-the-nightly-runs) を参照してください。release-staging の各ブランチも、2 回目のビルドまでは `<branch>-lastgood` がないため、その場合は何も変更しません。再開するには `gh workflow enable nightly.yml --repo shunnag/openpilot` を実行するか、Actions の画面から有効に戻してください。
 
 comma の openpilot に戻すには、comma の URL から入れ直します。openpilot はバージョンが変わったときにしか AGNOS を書き直さないため、**WPA3 カーネルは** comma が次に AGNOS のバージョンを上げるまで **残ります**。すぐに消したい場合は、[flash.comma.ai](https://flash.comma.ai) で AGNOS を書き直してください。
 
@@ -284,11 +332,11 @@ AGNOS 20 以上では、`--apn auto` は pyray 用の `apn-auth-*-agnos20.patch`
 Automatic follow state
 ------
 
-Bot state commits land on `wpa3-ci`. Use `git pull --rebase` before pushing; never force-push this branch. Commit at least every 60 days if upstream goes quiet, and check that scheduled workflows remain enabled. Before enabling automatic publication, the owner should post and pin an announcement for all four branches with the start date and the instructions above for returning to comma's openpilot.
+Bot state commits land on `wpa3-ci`. Use `git pull --rebase` before pushing; never force-push this branch. No workflow has a schedule, so GitHub's 60-day pause of scheduled workflows does not apply. Before enabling automatic publication, the owner should post and pin an announcement for all four branches with the start date and the instructions above for returning to comma's openpilot.
 
 The owner can run **follow-admin** with an action, target and note: `revoke` withdraws an automatic release and pauses publishing; `mark-tested` records the release's tested device (`mici` = comma four, `tizi` = comma 3X); `approve` publishes a risk-hold draft after verification, recording `device_tested=yes|no`; `unpause` clears the pause and its issue mirror; `retry` clears a stock-hash attempt and requests follow. Approval cannot bypass integrity failures. Changing the mode is the owner's separate repository-variable operation. Turning automatic follow off is a brake; it does not undo a kernel. Withdrawn pins still resolve to their stock revert in every mode.
 
-bot の状態コミットは `wpa3-ci` に入ります。push 前に `git pull --rebase` を行い、このブランチを force-push しないでください。upstream が静かな場合も少なくとも 60 日ごとにコミットし、定期実行が有効か確認してください。自動公開を有効にする前に、所有者が開始日と上記の comma への戻し方を含む、4 ブランチ向けの告知 issue を投稿・固定してください。
+bot の状態コミットは `wpa3-ci` に入ります。push 前に `git pull --rebase` を行い、このブランチを force-push しないでください。定期実行するワークフローはないため、GitHub が 60 日で定期実行を止める決まりは関係しません。自動公開を有効にする前に、所有者が開始日と上記の comma への戻し方を含む、4 ブランチ向けの告知 issue を投稿・固定してください。
 
 所有者は **follow-admin** で操作、対象、メモを指定できます。`revoke` は自動リリースを取り下げて公開を停止し、`mark-tested` は確認した実機（`mici` = comma four、`tizi` = comma 3X）を記録します。`approve` はリスクで停止した draft を再検証して公開し、`device_tested=yes|no` を記録します。`unpause` は停止状態と対応する issue を解除し、`retry` は stock ハッシュの試行記録を消して follow を要求します。承認で整合性の失敗を迂回することはできません。モード変更は別途、所有者がリポジトリ変数を操作します。自動 follow の無効化は停止操作で、カーネルを元に戻す操作ではありません。取り下げた pin は、どのモードでも純正への復帰イメージを選びます。
 

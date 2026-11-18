@@ -9,7 +9,7 @@ from pathlib import Path
 import re
 import sys
 
-from boot_download import fetch_boot
+from boot_download import check_boot_url, fetch_boot
 from compose import AGNOS_PY, MANIFEST, ROOT, blob, error_text, launch_values, pin_description, resolve_commit, validate_pin
 from follow_state import FollowNeeded, follow_exit, load, merged_pins, mode_value, resolve_supplicant, validate
 from kernel_equiv import equivalent, has_rsnxe, native_sae
@@ -72,6 +72,11 @@ def resolve(reader, pins, fetch, *, state=None, mode="off", branch=None, now=Non
 
   manifest = json.loads(reader(MANIFEST))
   boot = partition(manifest, "boot")
+  # The manifest is upstream data: name only comma's own boot image before any request.
+  try:
+    check_boot_url(boot["url"], stock=True)
+  except ValueError as error:
+    raise ValueError(f"upstream AGNOS {version} {error}") from error
   stock = download(fetch, f"upstream AGNOS {version}", boot["url"], boot["hash_raw"], boot["size"])
   # A revoke must not wait on an unrelated newer base's expired stock URL.
   # Within each group keep the existing numeric descending preference.

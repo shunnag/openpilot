@@ -512,7 +512,8 @@ class TestBuildBoundary(unittest.TestCase):
     # JSON is a strict subset of YAML 1.2. Keeping this workflow in that subset
     # lets stdlib tests parse the *structure*, including every job permission.
     workflow = json.loads((ROOT / '.github/workflows/follow.yml').read_text())
-    self.assertEqual(set(workflow['on']), {'workflow_dispatch', 'schedule'})
+    # Follow starts from the nightly's pending dispatch or by hand; no schedule.
+    self.assertEqual(set(workflow['on']), {'workflow_dispatch'})
     self.assertEqual(workflow['permissions'], {})
     jobs = workflow['jobs']
     self.assertEqual(set(jobs), {'detect', 'kernel-build', 'publish', 'probe', 'wpa-classify', 'wpa-build', 'wpa-test', 'report'})

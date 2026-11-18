@@ -3,7 +3,8 @@
 set -eu -o pipefail
 
 : "${BRANCH:?}" "${RUNNER_TEMP:?}" "${GH_REPO:?}" "${WPA3_FOLLOW_MODE:?}"
-[[ "$BRANCH" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]*$ ]]
+# bash 3.2 (macOS) does not apply errexit to [[ ]]; every guard exits explicitly.
+[[ "$BRANCH" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]*$ ]] || exit 1
 BARE_REPO="${BARE_REPO:-$RUNNER_TEMP/wpa3.git}"
 BRANCH_TEMP="$RUNNER_TEMP/$BRANCH"
 mkdir -p "$BRANCH_TEMP"
@@ -70,7 +71,7 @@ record_evaluated() {
   if [ "$UPSTREAM_SOURCE" = latest ]; then
     REASON='evaluation marker failed'
     EVALUATED=$(python3 scripts/nightly_skip.py create --repo "$BARE_REPO" --branch "$BRANCH" --head "$WPA3_CI_HEAD" --mode "$MODE" --upstream "$UPSTREAM" --fork "$1" 2>> "$NIGHTLY_LOG")
-    [[ "$EVALUATED" =~ ^[0-9a-f]{40}$ ]]
+    [[ "$EVALUATED" =~ ^[0-9a-f]{40}$ ]] || exit 1
     write git -C "$BARE_REPO" push --force origin "$EVALUATED:refs/wpa3-evaluated/$BRANCH" 2>&1 | tee -a "$NIGHTLY_LOG"
   fi
 }
@@ -80,7 +81,7 @@ if [ "${DRY_RUN:-0}" = 1 ] && [ "${DRY_HEAD+x}" = x ]; then
 else
   export WPA3_CI_HEAD="${WPA3_CI_HEAD:-$(git rev-parse HEAD)}"
 fi
-[[ "$WPA3_CI_HEAD" =~ ^[0-9a-f]{40}$ ]]
+[[ "$WPA3_CI_HEAD" =~ ^[0-9a-f]{40}$ ]] || exit 1
 
 case "$BRANCH" in
   nightly) TETHER=apply; APN=auto; APN_FAMILY=nightly ;;
@@ -94,8 +95,8 @@ esac
 REMOTE_REFS=$(git ls-remote "https://github.com/$GH_REPO.git" "refs/heads/$BRANCH" "refs/wpa3-evaluated/$BRANCH")
 FORK=$(printf '%s\n' "$REMOTE_REFS" | awk -v ref="refs/heads/$BRANCH" '$2 == ref {print $1}')
 MARKER=$(printf '%s\n' "$REMOTE_REFS" | awk -v ref="refs/wpa3-evaluated/$BRANCH" '$2 == ref {print $1}')
-[[ -z "$FORK" || "$FORK" =~ ^[0-9a-f]{40}$ ]]
-[[ -z "$MARKER" || "$MARKER" =~ ^[0-9a-f]{40}$ ]]
+[[ -z "$FORK" || "$FORK" =~ ^[0-9a-f]{40}$ ]] || exit 1
+[[ -z "$MARKER" || "$MARKER" =~ ^[0-9a-f]{40}$ ]] || exit 1
 echo "Current fork: ${FORK:-absent}" | tee -a "$NIGHTLY_LOG"
 if [ "$UPSTREAM_SOURCE" = published ]; then
   if [ -z "$FORK" ]; then
@@ -110,8 +111,9 @@ if [ "$UPSTREAM_SOURCE" = published ]; then
     exit 0
   fi
 else
-  U=$(git ls-remote https://github.com/commaai/openpilot "refs/heads/$BRANCH" | awk '{print $1}')
-  [[ "$U" =~ ^[0-9a-f]{40}$ ]]
+  # ls-remote also lists refs that merely end in refs/heads/$BRANCH; select the exact one.
+  U=$(git ls-remote https://github.com/commaai/openpilot "refs/heads/$BRANCH" | awk -v ref="refs/heads/$BRANCH" '$2 == ref {print $1}')
+  [[ "$U" =~ ^[0-9a-f]{40}$ ]] || exit 1
   UPSTREAM="$U"
   if [ "$FORCE" != true ] && [ -n "$FORK" ] && [ "${GITHUB_REF:-}" = refs/heads/wpa3-ci ]; then
     SKIP=$(python3 scripts/nightly_skip.py check --upstream "$U" --published "$FORK" --marker "$MARKER")
@@ -216,7 +218,8 @@ if [ -n "$FORK" ]; then
   PUBLISHED_ARGS=(--published "$FORK")
 fi
 if [ "$UPSTREAM_SOURCE" = published ]; then PUBLISHED_ARGS+=(--revoke); fi
-python3 scripts/gates.py --repo "$BARE_REPO" --upstream "$UPSTREAM" --pin-file "$PIN_FILE" --tether "$TETHER" --apn "$APN" --apn-family "$APN_FAMILY" "${PUBLISHED_ARGS[@]}" 2>&1 | tee -a "$NIGHTLY_LOG"
+# bash 3.2 (macOS) treats an empty "${a[@]}" as unbound under set -u; bash 5 expands both forms alike.
+python3 scripts/gates.py --repo "$BARE_REPO" --upstream "$UPSTREAM" --pin-file "$PIN_FILE" --tether "$TETHER" --apn "$APN" --apn-family "$APN_FAMILY" ${PUBLISHED_ARGS[@]+"${PUBLISHED_ARGS[@]}"} 2>&1 | tee -a "$NIGHTLY_LOG"
 
 REASON='compose failed'
 {
@@ -224,9 +227,19 @@ REASON='compose failed'
 } 2>&1 | tee -a "$NIGHTLY_LOG"
 # read works with macOS bash 3.2 as well as the runner's bash 5.
 IFS= read -r NEW < "$BRANCH_TEMP/composed.txt"
-[[ "$NEW" =~ ^[0-9a-f]{40}$ ]]
+[[ "$NEW" =~ ^[0-9a-f]{40}$ ]] || exit 1
 
 require_active_nightly
+if [ "$NEW" != "$FORK" ]; then
+  # The lease protects the branch, but not -lastgood: stop before both pushes if
+  # anything outside this run moved the branch since it was read above.
+  REASON='published branch moved during this run'
+  CURRENT=$(git ls-remote "https://github.com/$GH_REPO.git" "refs/heads/$BRANCH" | awk -v ref="refs/heads/$BRANCH" '$2 == ref {print $1}') || exit 1
+  if [ "$CURRENT" != "$FORK" ]; then
+    echo "::error::refs/heads/$BRANCH is now ${CURRENT:-absent}, not ${FORK:-absent}; nothing was pushed." | tee -a "$NIGHTLY_LOG"
+    exit 1
+  fi
+fi
 REASON='publish failed'
 PUBLISHED=false
 if [ "$NEW" = "$FORK" ]; then

@@ -15,6 +15,11 @@ import pins
 import test_modem_agnos20 as modem_fixture
 
 
+
+def upstream_url(version):
+  # Upstream manifest URLs must name a stock boot image on commadist (boot_download.check_boot_url).
+  return f"https://commadist.azureedge.net/agnosupdate/boot-{hashlib.sha256(version.encode()).hexdigest()}.img.xz"
+
 class TestAgnos20Follow(unittest.TestCase):
   setUpClass = classmethod(modem_fixture.TestAgnos20Compose.setUpClass.__func__)
   cli = classmethod(modem_fixture.TestAgnos20Compose.cli.__func__)
@@ -44,7 +49,7 @@ class TestAgnos20Follow(unittest.TestCase):
       boot_url=url, boot_hash_raw=hashlib.sha256(stock).hexdigest(), agnos_py_blob=self.agnos_py)
 
   def follow_upstream(self, version, stock):
-    url = f"https://example.invalid/upstream-{version}.img.xz"
+    url = upstream_url(version)
     self.downloads[url] = stock
     manifest = json.loads(compose.blob(self.repo, self.modern_upstream, compose.MANIFEST))
     for entry in manifest:
@@ -90,7 +95,7 @@ class TestAgnos20Follow(unittest.TestCase):
     for key in ("boot", "modem", "wpa_supplicant"):
       self.assertEqual(pin[key], self.real_pin[key])
     self.assertEqual(pin["derived_from"], {
-      "boot_url": "https://example.invalid/upstream-20.7.img.xz",
+      "boot_url": upstream_url("20.7"),
       "boot_hash_raw": hashlib.sha256(self.base).hexdigest(),
       "system_hash_raw": self.system_hash, "agnos_py_blob": self.agnos_py,
     })
@@ -168,7 +173,7 @@ class TestAgnos20Follow(unittest.TestCase):
                                 state=self.state, mode="off", branch="nightly")
         self.assertEqual((resolved["mode"], resolved["version"], resolved["base"]), ("derived", "20.12", expected))
         self.assertIsNone(resolved["pin"].get("withdrawn"))
-        self.assertEqual(self.calls, ["https://example.invalid/upstream-20.12.img.xz"] +
+        self.assertEqual(self.calls, [upstream_url("20.12")] +
                          [self.state["manual"][version]["derived_from"]["boot_url"] for version in compared])
         self.set_base_stock(expected, changed)
 

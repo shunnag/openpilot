@@ -42,12 +42,19 @@ if tool == 'git':
   if args[:2] == ['rev-parse', 'HEAD']:
     print(os.environ.get('CHECKOUT_HEAD', 'f' * 40))
   elif args[0] == 'ls-remote':
+    # A lone branch query is the re-read just before pushing.
+    recheck = len(args) == 3 and 'commaai' not in args[1]
     for ref in args[2:]:
       sha = (u if 'commaai' in args[1] else
-             os.environ.get('MARKER_SHA', 'd' * 40) if ref.startswith('refs/wpa3-evaluated/') else
+             (__import__('hashlib').sha1(ref.encode()).hexdigest() if os.environ.get('MARKER_PER_BRANCH') else
+              os.environ.get('MARKER_SHA', 'd' * 40)) if ref.startswith('refs/wpa3-evaluated/') else
+             os.environ.get('RECHECK_FORK_SHA', os.environ.get('FORK_SHA', f)) if recheck else
              os.environ.get('FORK_SHA', f))
       if sha:
         print(sha + '\t' + ref)
+      if os.environ.get('EXTRA_REFS'):
+        # ls-remote tail-matches: a ref named x/refs/heads/<branch> is listed too.
+        print('e' * 40 + '\trefs/heads/x/' + ref)
   elif args[:2] == ['init', '--bare']:
     Path(args[2]).mkdir(parents=True, exist_ok=True)
   elif args[0] == '-C':
@@ -90,7 +97,8 @@ elif tool == 'python3':
   elif script == 'scripts/pins.py':
     blobless = value('--repo').endswith('/check.git')
     fail('pin' if blobless else 'full-pin')
-    if os.environ.get('PENDING') == '1' and blobless:
+    pending = os.environ.get('PENDING') == '1' or os.environ.get('PENDING_BRANCH') == os.environ['BRANCH']
+    if pending and blobless:
       print('PIN: FOLLOW: kernel ' + 'd' * 64 + ' waiting for follow')
       sys.exit(3)
     pin = {'mode': 'pinned', 'version': '19.9'}
@@ -369,6 +377,55 @@ class PublishBranchTests(unittest.TestCase):
     create, = self.marker_creates()
     self.assertEqual(create[create.index('--head') + 1], '7' * 40)
 
+  def test_first_publish_without_fork_runs_gates_without_published(self):
+    # macOS bash 3.2 treats an empty "${PUBLISHED_ARGS[@]}" as unbound under set -u.
+    result = self.run_branch(FORK_SHA='')
+    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+    self.assertIn('Current fork: absent', result.stdout)
+    self.assertEqual((self.work / 'nightly/result').read_text(), 'success\n')
+    gates, = [row for row in self.calls('python3') if row[1] == 'scripts/gates.py']
+    self.assertNotIn('--published', gates)
+    lease, = [row for row in self.calls('git') if any(arg.startswith('--force-with-lease=') for arg in row)]
+    self.assertIn('--force-with-lease=refs/heads/nightly:', lease)
+    self.assertFalse(any('-lastgood' in arg for row in self.calls('git') for arg in row))
+
+  def test_guards_fail_closed_under_macos_bash(self):
+    # bash 3.2 ignores errexit for [[ ]]; each guard must exit by itself.
+    shell = '/bin/bash' if Path('/bin/bash').exists() else 'bash'
+    for scenario in ({'UPSTREAM_SHA': ''}, {'UPSTREAM_SHA': 'not-a-sha'}, {'FORK_SHA': 'nothex'},
+                     {'MARKER_SHA': 'z' * 40}, {'NEW_SHA': 'garbage'}, {'WPA3_CI_HEAD': 'f' * 39}, {'BRANCH': '-bad'}):
+      with self.subTest(scenario=scenario):
+        self.log.write_text('')
+        env = {key: value for key, value in {**self.env, **scenario}.items() if value is not None}
+        result = subprocess.run([shell, '-eu', '-o', 'pipefail', 'scripts/publish_branch.sh'], cwd=ROOT, env=env,
+                                capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse(any('push' in row for row in self.calls('git')))
+        if 'NEW_SHA' not in scenario:
+          self.assertFalse(any(row[1] == 'scripts/gates.py' for row in self.calls('python3')))
+        issues = [row for row in self.calls('python3') if row[1] == 'scripts/issues.py']
+        self.assertTrue(all(row[2] == 'hold' and '--close' not in row for row in issues), issues)
+
+  def test_ls_remote_reads_select_the_exact_ref(self):
+    result = self.run_branch(EXTRA_REFS='1')
+    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+    self.assertEqual((self.work / 'nightly/result').read_text(), 'success\n')
+    self.assertIn('Upstream: ' + 'a' * 40, result.stdout)
+    lease, = [row for row in self.calls('git') if any(arg.startswith('--force-with-lease=') for arg in row)]
+    self.assertIn('--force-with-lease=refs/heads/nightly:' + 'b' * 40, lease)
+
+  def test_branch_moved_before_push_holds_without_touching_lastgood(self):
+    result = self.run_branch(RECHECK_FORK_SHA='e' * 40)
+    self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+    self.assertIn('nothing was pushed', result.stdout)
+    self.assertFalse(any('push' in row for row in self.calls('git')))
+    hold, = [row for row in self.calls('python3') if row[1:3] == ['scripts/issues.py', 'hold']]
+    self.assertEqual(hold[hold.index('--reason') + 1], 'published branch moved during this run')
+    rows = self.calls()
+    recheck, = [row for row in rows if row[:2] == ['git', 'ls-remote'] and len(row) == 4 and 'commaai' not in row[2]]
+    state, = self.workflow_state_reads()
+    self.assertLess(rows.index(state), rows.index(recheck))
+
   def test_lastgood_failure_cannot_publish_or_overwrite_backup(self):
     result = self.run_branch(FAIL_STAGE='lastgood')
     self.assertEqual(result.returncode, 17, result.stdout + result.stderr)
@@ -453,9 +510,11 @@ class PublishBranchTests(unittest.TestCase):
     self.assertEqual(result.stdout.count('::group::'), 4)
     self.assertEqual(result.stdout.count('::endgroup::'), 4)
 
-  def test_both_crons_reach_checkout_and_branch_checks_without_job_skip(self):
-    self.assertIn("- cron: '7 11 * * *'", WORKFLOW)
-    self.assertIn("- cron: '43 12 * * *'", WORKFLOW)
+  def test_dispatch_only_reaches_checkout_and_branch_checks_without_job_skip(self):
+    # The nightly schedule runs off Actions (scripts/local_nightly.sh); Actions keeps manual dispatch.
+    self.assertNotIn('schedule', WORKFLOW)
+    self.assertNotIn('cron:', WORKFLOW)
+    self.assertIn('\non:\n  workflow_dispatch:\n    inputs:\n      upstream:\n', WORKFLOW)
     self.assertNotIn('steps.schedule', WORKFLOW)
     self.assertNotIn('id: schedule', WORKFLOW)
     self.assertNotIn('Skip catch-up', WORKFLOW)

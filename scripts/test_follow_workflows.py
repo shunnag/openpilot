@@ -2,6 +2,7 @@
 import json
 from pathlib import Path
 import re
+import textwrap
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -114,6 +115,32 @@ class WorkflowPolicyTests(unittest.TestCase):
         cleanup = job['steps'][-1]
         self.assertEqual(cleanup['if'], 'always()')
         self.assertEqual(cleanup['env']['ADMIN_ACTION'], 'restore-nightly')
+
+  def test_no_scheduled_workflows_and_nightly_dispatch_inputs_unchanged(self):
+    # Scheduled runs moved to scripts/local_nightly.sh on the owner's machine.
+    for path in sorted((ROOT / '.github/workflows').glob('*.yml')):
+      with self.subTest(workflow=path.name):
+        text = path.read_text()
+        self.assertNotIn('schedule', text)
+        self.assertNotIn('cron', text)
+        self.assertIn('workflow_dispatch', text)
+    nightly = (ROOT / '.github/workflows/nightly.yml').read_text()
+    self.assertIn(textwrap.dedent('''\
+      on:
+        workflow_dispatch:
+          inputs:
+            upstream:
+              description: Compose latest upstream or the published upstream for withdrawal
+              type: choice
+              options: [latest, published]
+              default: latest
+            force:
+              description: Run gates and compose even if inputs are unchanged
+              type: boolean
+              default: false
+
+      permissions: {}
+      '''), nightly)
 
   def test_rollback_disables_follow_before_branch_restore(self):
     workflow = (ROOT / '.github/workflows/rollback.yml').read_text()

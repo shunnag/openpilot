@@ -15,6 +15,7 @@ import types
 import unittest
 from unittest.mock import Mock, call, patch
 import urllib.error
+import urllib.request
 
 import compose
 import gates
@@ -24,6 +25,9 @@ import pins
 
 ROOT = compose.ROOT
 REF = ROOT / "ref/nightly-chestnut"
+# boot_download.check_boot_url accepts only stock commadist or GitHub release boot image URLs.
+NEW_STOCK_URL = "https://commadist.azureedge.net/agnosupdate/boot-" + "4" * 64 + ".img.xz"
+BOOT_URL = "https://commadist.azureedge.net/agnosupdate/boot-" + "6" * 64 + ".img.xz"
 RELEASE_REF = ROOT / "ref/release-staging"
 UPDATED = "openpilot/system/updated/updated.py"
 MANIFEST_LINK = "openpilot/system/hardware/comma/agnos.json"
@@ -117,6 +121,17 @@ class TestCompose(unittest.TestCase):
       compose.git(self.repo, "apply", "--cached", str(WORKER_DIFF), env=env)
       tree = compose.git(self.repo, "write-tree", env=env).decode().strip()
       return compose.git(self.repo, "commit-tree", tree, data=b"Upstream worker thread\n", env=self.identity).decode().strip()
+
+  def test_g4_holds_on_an_untrusted_boot_url_before_any_request(self):
+    resolved = json.loads(self.pin_file.read_text())
+    resolved["pin"]["boot"]["url"] = "https://192.168.1.1/boot-" + resolved["pin"]["boot"]["hash_raw"] + ".img.xz"
+    pin_file = self.work / "pin-untrusted-url.json"
+    pin_file.write_text(json.dumps(resolved))
+    result = self.cli("gates.py", self.upstream, check=False, pin_file=pin_file)
+    self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+    self.assertIn("G3: OK:", result.stdout)
+    self.assertIn("G4: FAIL: boot URL refused", result.stderr)
+    self.assertNotIn("G5:", result.stdout)
 
   def test_offline_gates(self):
     result = self.cli("gates.py", self.upstream, "--skip-download")
@@ -889,7 +904,7 @@ class TestCompose(unittest.TestCase):
     entries = json.loads(compose.blob(self.repo, self.upstream, compose.MANIFEST))
     for entry in entries:
       if entry["name"] == "boot":
-        entry.update(url="https://example.invalid/new.img.xz", hash_raw=hashlib.sha256(new_stock).hexdigest(), size=len(new_stock))
+        entry.update(url=NEW_STOCK_URL, hash_raw=hashlib.sha256(new_stock).hexdigest(), size=len(new_stock))
       if entry["name"] == "system":
         entry["hash_raw"] = "9" * 64
     changes = {
@@ -905,7 +920,7 @@ class TestCompose(unittest.TestCase):
     base_pin["derived_from"]["boot_url"] = "https://example.invalid/base.img.xz"
 
     def fake_fetch(url, digest, size):
-      data = {"https://example.invalid/base.img.xz": base_stock, "https://example.invalid/new.img.xz": new_stock}[url]
+      data = {"https://example.invalid/base.img.xz": base_stock, NEW_STOCK_URL: new_stock}[url]
       self.assertEqual(hashlib.sha256(data).hexdigest(), digest)
       if size is not None:
         self.assertEqual(len(data), size)
@@ -1272,14 +1287,14 @@ class TestG8(unittest.TestCase):
 class TestBootDownload(unittest.TestCase):
   def test_streamed_xz_hash_size_and_corruption(self):
     raw = b"synthetic boot\0" * 100000
-    boot = {"url": "https://example.invalid/boot.img.xz", "hash_raw": hashlib.sha256(raw).hexdigest(), "size": len(raw)}
+    boot = {"url": BOOT_URL, "hash_raw": hashlib.sha256(raw).hexdigest(), "size": len(raw)}
     compressed = lzma.compress(raw)
-    with patch("boot_download.urllib.request.urlopen", return_value=io.BytesIO(compressed)):
+    with patch("boot_download.urlopen", return_value=io.BytesIO(compressed)):
       gates.check_download(boot)
     for data, changed in ((compressed, {"hash_raw": "0" * 64}), (compressed, {"size": len(raw) - 1}),
                           (compressed, {"size": len(raw) + 1}), (compressed[:-10], {})):
       with self.subTest(changed=changed, compressed_size=len(data)):
-        with patch("boot_download.urllib.request.urlopen", return_value=io.BytesIO(data)) as opener, patch("boot_download.time.sleep") as sleep:
+        with patch("boot_download.urlopen", return_value=io.BytesIO(data)) as opener, patch("boot_download.time.sleep") as sleep:
           with self.assertRaises((ValueError, EOFError, lzma.LZMAError)):
             gates.check_download({**boot, **changed})
           opener.assert_called_once()
@@ -1288,22 +1303,22 @@ class TestBootDownload(unittest.TestCase):
   def test_network_errors_retry_with_backoff(self):
     raw = b"boot" * 10000
     digest = hashlib.sha256(raw).hexdigest()
-    url = "https://example.invalid/boot.img.xz"
+    url = BOOT_URL
     errors = (urllib.error.URLError("CDN unavailable"), TimeoutError("read timeout"), ConnectionResetError("reset"),
               urllib.error.HTTPError(url, 503, "unavailable", {}, None), urllib.error.HTTPError(url, 429, "slow down", {}, None))
     for error in errors:
       with self.subTest(error=error):
-        with patch("boot_download.urllib.request.urlopen", side_effect=[error, error, io.BytesIO(lzma.compress(raw))]) as opener:
+        with patch("boot_download.urlopen", side_effect=[error, error, io.BytesIO(lzma.compress(raw))]) as opener:
           with patch("boot_download.time.sleep") as sleep:
             self.assertEqual(boot_download.fetch_boot(url, digest, len(raw)), raw)
             self.assertEqual(opener.call_count, 3)
             self.assertEqual(sleep.call_args_list, [call(5), call(15)])
-    with patch("boot_download.urllib.request.urlopen", side_effect=errors[0]) as opener, patch("boot_download.time.sleep") as sleep:
+    with patch("boot_download.urlopen", side_effect=errors[0]) as opener, patch("boot_download.time.sleep") as sleep:
       with self.assertRaises(urllib.error.URLError):
         boot_download.fetch_boot(url, digest, len(raw))
       self.assertEqual(opener.call_count, 3)
       self.assertEqual(sleep.call_args_list, [call(5), call(15)])
-    with patch("boot_download.urllib.request.urlopen", side_effect=urllib.error.HTTPError(url, 404, "missing", {}, None)) as opener:
+    with patch("boot_download.urlopen", side_effect=urllib.error.HTTPError(url, 404, "missing", {}, None)) as opener:
       with patch("boot_download.time.sleep") as sleep:
         with self.assertRaises(urllib.error.HTTPError):
           boot_download.fetch_boot(url, digest, len(raw))
@@ -1320,31 +1335,78 @@ class TestBootDownload(unittest.TestCase):
           raise ConnectionResetError("interrupted body")
         return super().read(len(compressed) // 2)
 
-    with patch("boot_download.urllib.request.urlopen", side_effect=[BrokenStream(compressed), io.BytesIO(compressed)]) as opener:
+    with patch("boot_download.urlopen", side_effect=[BrokenStream(compressed), io.BytesIO(compressed)]) as opener:
       with patch("boot_download.time.sleep") as sleep:
-        self.assertEqual(boot_download.fetch_boot("https://example.invalid/boot.img.xz", hashlib.sha256(raw).hexdigest(), len(raw)), raw)
+        self.assertEqual(boot_download.fetch_boot(BOOT_URL, hashlib.sha256(raw).hexdigest(), len(raw)), raw)
         self.assertEqual(opener.call_count, 2)
         sleep.assert_called_once_with(5)
 
   def test_unknown_size_hash_and_cap(self):
     raw = b"raw boot bytes" * 100
     digest = hashlib.sha256(raw).hexdigest()
-    url = "https://example.invalid/boot.img.xz"
-    with patch("boot_download.urllib.request.urlopen", return_value=io.BytesIO(lzma.compress(raw))):
+    url = BOOT_URL
+    with patch("boot_download.urlopen", return_value=io.BytesIO(lzma.compress(raw))):
       self.assertEqual(boot_download.fetch_boot(url, digest, None), raw)
-    with patch("boot_download.urllib.request.urlopen", return_value=io.BytesIO(lzma.compress(raw))):
+    with patch("boot_download.urlopen", return_value=io.BytesIO(lzma.compress(raw))):
       with self.assertRaisesRegex(ValueError, "mismatch"):
         boot_download.fetch_boot(url, "0" * 64, None)
     with patch("boot_download.MAX_BOOT_SIZE", len(raw) - 1):
-      with patch("boot_download.urllib.request.urlopen", return_value=io.BytesIO(lzma.compress(raw))):
+      with patch("boot_download.urlopen", return_value=io.BytesIO(lzma.compress(raw))):
         with self.assertRaisesRegex(ValueError, "exceeds"):
           boot_download.fetch_boot(url, digest, None)
     for digest, size in (("", None), ("0" * 64, 0), ("0" * 64, boot_download.MAX_BOOT_SIZE + 1)):
-      with patch("boot_download.urllib.request.urlopen") as opener:
+      with patch("boot_download.urlopen") as opener:
         with self.assertRaises(ValueError):
           boot_download.fetch_boot(url, digest, size)
         opener.assert_not_called()
 
+  def test_size_errors_name_the_type_but_never_the_upstream_value(self):
+    for size in ("9" * 40, 10 ** 12, -5, 1.5):
+      with self.subTest(size=size), patch("boot_download.urlopen") as opener:
+        with self.assertRaises(ValueError) as caught:
+          boot_download.fetch_boot(BOOT_URL, "6" * 64, size)
+        self.assertNotIn(str(size), str(caught.exception))
+        self.assertIn(f"of type {type(size).__name__}", str(caught.exception))
+        opener.assert_not_called()
+
+  def test_untrusted_urls_and_redirects_are_refused_before_any_request(self):
+    raw = b"boot" * 1000
+    digest = hashlib.sha256(raw).hexdigest()
+    release = "https://github.com/shunnag/openpilot/releases/download/agnos-20.6-wpa3.7/boot-" + digest + ".img.xz"
+    for url in ("http://commadist.azureedge.net/agnosupdate/boot-" + digest + ".img.xz",
+                "https://10.0.0.1/agnosupdate/boot-" + digest + ".img.xz",
+                "https://user@commadist.azureedge.net/agnosupdate/boot-" + digest + ".img.xz",
+                "https://commadist.azureedge.net:8443/agnosupdate/boot-" + digest + ".img.xz",
+                "https://commadist.azureedge.net/agnosupdate/boot-" + digest + ".img.xz?x",
+                "https://commadist.azureedge.net/agnosupdate/boot-" + digest + ".img.xz#x",
+                "https://commadist.azureedge.net/other/boot-" + digest + ".img.xz",
+                "https://github.com/shunnag/openpilot/raw/main/boot-" + digest + ".img.xz"):
+      with self.subTest(url=url):
+        with patch("boot_download.urlopen") as opener, patch("boot_download.time.sleep") as sleep:
+          with self.assertRaisesRegex(ValueError, "boot URL refused"):
+            gates.check_download({"url": url, "hash_raw": digest, "size": len(raw)})
+          opener.assert_not_called()
+          sleep.assert_not_called()
+    with patch("boot_download.urlopen", return_value=io.BytesIO(lzma.compress(raw))) as opener:
+      self.assertEqual(boot_download.fetch_boot(release, digest, len(raw)), raw)
+    with self.assertRaisesRegex(ValueError, "boot URL refused"):
+      boot_download.check_boot_url(release, stock=True)
+    handler = boot_download.BootRedirects()
+    for origin, target, allowed in ((release, "https://release-assets.githubusercontent.com/asset?sig=1", True),
+                                    (release, "https://objects.githubusercontent.com/asset", True),
+                                    (release, "https://192.168.1.1/asset", False),
+                                    (release, "http://release-assets.githubusercontent.com/asset", False),
+                                    (BOOT_URL, "https://commadist.azureedge.net/agnosupdate/other.img.xz", True),
+                                    (BOOT_URL, "https://release-assets.githubusercontent.com/asset", False)):
+      with self.subTest(origin=origin, target=target):
+        request = urllib.request.Request(origin)
+        if allowed:
+          self.assertEqual(handler.redirect_request(request, io.BytesIO(), 302, "Found", {}, target).full_url, target)
+        else:
+          with self.assertRaisesRegex(ValueError, "refused a redirect"):
+            handler.redirect_request(request, io.BytesIO(), 302, "Found", {}, target)
+    self.assertIsInstance(next(h for h in boot_download.OPENER.handlers if isinstance(h, urllib.request.HTTPRedirectHandler)),
+                          boot_download.BootRedirects)
 
 if __name__ == "__main__":
   unittest.main()

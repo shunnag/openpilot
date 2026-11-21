@@ -56,14 +56,14 @@
   },
   {
     "name": "boot",
-    "url": "https://commadist.azureedge.net/agnosupdate/boot-2388598cda7c5c09a44b8f2683ff473d7ce8096a545a1c4ea2ff1cff65456c5a.img.xz",
-    "hash": "2388598cda7c5c09a44b8f2683ff473d7ce8096a545a1c4ea2ff1cff65456c5a",
-    "hash_raw": "2388598cda7c5c09a44b8f2683ff473d7ce8096a545a1c4ea2ff1cff65456c5a",
+    "url": "https://github.com/shunnag/openpilot/releases/download/agnos-20.6-wpa3.7/boot-4fc5071b0c9050bed960f2e20438d3ada827f8f0ba907171b7dbeabfeda9978b.img.xz",
+    "hash": "4fc5071b0c9050bed960f2e20438d3ada827f8f0ba907171b7dbeabfeda9978b",
+    "hash_raw": "4fc5071b0c9050bed960f2e20438d3ada827f8f0ba907171b7dbeabfeda9978b",
     "size": 46897152,
     "sparse": false,
     "full_check": true,
     "has_ab": true,
-    "ondevice_hash": "3519123cc1ec417e56ed2bdd449094e6e6e38ecb610ea4452dd44d5bdce5604c"
+    "ondevice_hash": "c474f272bc5e0423cedd4ce964c2cd879dcdf6f8a4dc686dec3ef260874d29fa"
   },
   {
     "name": "system",

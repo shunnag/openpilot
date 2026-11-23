@@ -9,6 +9,27 @@ from unittest.mock import patch
 
 import compose
 import test_modem_agnos20 as fixture
+from test_ui_worker import plus_minus
+
+JA_PO = "openpilot/selfdrive/ui/translations/app_ja.po"
+# comma's 0.11.3 release (52b2b6265, 2026-11-20) appends these four entries, verbatim, after "✓ SUBSCRIBED".
+EXPMODE_JA_TAIL = (
+  '#: openpilot/selfdrive/ui/layouts/settings/toggles.py\n'
+  'msgid "Enable the openpilot longitudinal control (alpha) toggle to allow Experimental mode."\n'
+  'msgstr "openpilot縦制御（アルファ）のトグルを有効にすると実験モードが使用できます。"\n'
+  '\n'
+  '#: openpilot/selfdrive/ui/layouts/settings/toggles.py\n'
+  'msgid "Experimental Mode"\n'
+  'msgstr "実験モード"\n'
+  '\n'
+  '#: openpilot/selfdrive/ui/layouts/settings/toggles.py\n'
+  'msgid "Experimental mode is currently unavailable on this car since the car\'s stock ACC is used for longitudinal control."\n'
+  'msgstr "この車では縦制御に純正ACCを使用するため、現在実験モードは利用できません。"\n'
+  '\n'
+  '#: openpilot/selfdrive/ui/layouts/settings/toggles.py\n'
+  'msgid "openpilot longitudinal control may come in a future update."\n'
+  'msgstr "openpilotの縦制御は将来のアップデートで提供される可能性があります。"\n'
+).encode()
 
 
 def tuple_positions(added):
@@ -33,6 +54,15 @@ class TestApnRaylibNb(unittest.TestCase):
       compose.apply_ui(self.repo, env)
       compose.apply_tether(self.repo, env)
       return compose.git(self.repo, "write-tree", env=env).decode().strip()
+
+  def expmode_variant(self, upstream):
+    # The release catalog's new end: the four entries follow the old last entry and its blank line.
+    data = compose.blob(self.repo, upstream, JA_PO)
+    self.assertTrue(data.endswith('msgid "✓ SUBSCRIBED"\nmsgstr "✓ 登録済み"\n\n'.encode()))
+    return self.variant_many({JA_PO: data + EXPMODE_JA_TAIL}, upstream)
+
+  def changed(self, upstream, commit):
+    return set(compose.git(self.repo, "diff-tree", "--no-commit-id", "-r", "--name-only", upstream, commit).decode().splitlines())
 
   def test_exactly_one_candidate_per_family_and_binding(self):
     for nb in (False, True):
@@ -99,19 +129,22 @@ class TestApnRaylibNb(unittest.TestCase):
     upstream, resolved = self.modern_fixture()
     old, nb = compose.APN_AGNOS20_PATCHES["nightly"]
     snd = self.snd_variant(upstream)
-    # Since ui-wpa3-worker.patch, snd + raylib_nb trees with ui-wpa3.patch are frozen at 5d8835bd7 too;
-    # only the worker UI form hashes the live composer, for every APN form.
-    for base, ui_patch, sensitive in ((upstream, compose.UI_PATCH, False), (snd, compose.UI_PATCH, False),
-                                      (self.worker_variant(snd), compose.UI_WORKER_PATCH, True)):
-      with self.subTest(base=base, ui=ui_patch.name):
+    worker = self.worker_variant(snd)
+    expmode = compose.APN_RELEASE_EXPMODE_PATCH
+    # Since apn-auth-release-agnos20-nb-expmode.patch, worker trees are frozen at fe9cfa498 for the older APN forms;
+    # only the expmode form hashes the live composer, with either UI form.
+    for base, ui_patch, apn_patches, sensitive in ((upstream, compose.UI_PATCH, (old, nb), False), (snd, compose.UI_PATCH, (old, nb), False),
+                                                   (worker, compose.UI_WORKER_PATCH, (old, nb), False),
+                                                   (snd, compose.UI_PATCH, (expmode,), True), (worker, compose.UI_WORKER_PATCH, (expmode,), True)):
+      with self.subTest(base=base, ui=ui_patch.name, apn=[p.name for p in apn_patches]):
         launcher = compose.select_launcher_patch(self.repo, base)
         with compose.temporary_index(self.repo, base) as (env, _):
           self.assertEqual(compose.select_ui_patch(self.repo, env)[0], ui_patch)
-        before = [compose.inputs_hash(base, resolved, launcher, apn="auto", apn_patch=p, ui_patch=ui_patch) for p in (old, nb)]
+        before = [compose.inputs_hash(base, resolved, launcher, apn="auto", apn_patch=p, ui_patch=ui_patch) for p in apn_patches]
         with patch.object(compose, "__file__", str(compose.ROOT / "scripts/gates.py")):
-          after = [compose.inputs_hash(base, resolved, launcher, apn="auto", apn_patch=p, ui_patch=ui_patch) for p in (old, nb)]
-        self.assertEqual(before[0] != after[0], sensitive)
-        self.assertEqual(before[1] != after[1], sensitive)
+          after = [compose.inputs_hash(base, resolved, launcher, apn="auto", apn_patch=p, ui_patch=ui_patch) for p in apn_patches]
+        for previous, current in zip(before, after):
+          self.assertEqual(previous != current, sensitive)
     # The constant is the actual unmodified 4a387959c composer SHA, not a candidate-list hash.
     self.assertEqual(compose.PYRAY_COMPOSE_SHA256, "9c8211c33bdb984cfbc4c5bc5ba9cffe8b3c52e5a52e2948c4b66aada79ab41d")
     self.assertNotEqual(compose.PYRAY_COMPOSE_SHA256, hashlib.sha256(compose.ROOT.joinpath("scripts/compose.py").read_bytes()).hexdigest())
@@ -119,6 +152,102 @@ class TestApnRaylibNb(unittest.TestCase):
     # git show 5d8835bd7:scripts/compose.py | shasum -a 256
     self.assertEqual(compose.SND_COMPOSE_SHA256, "007dd6955da3037054ee86464a4b68554c0dc0ad7420b5b77004b2c325736161")
     self.assertNotEqual(compose.SND_COMPOSE_SHA256, hashlib.sha256(compose.ROOT.joinpath("scripts/compose.py").read_bytes()).hexdigest())
+    # git show fe9cfa498:scripts/compose.py | shasum -a 256 (unchanged through 873ca9682)
+    self.assertEqual(compose.WORKER_COMPOSE_SHA256, "e65e8bed2237556c44b5dc01c07f3575d6c992bd1ce82cec9f4c5277295bfecd")
+    self.assertNotEqual(compose.WORKER_COMPOSE_SHA256, hashlib.sha256(compose.ROOT.joinpath("scripts/compose.py").read_bytes()).hexdigest())
+
+  def test_worker_identity_is_unchanged_since_fe9cfa498(self):
+    # Captured by executing the unmodified 873ca9682 composer (compose.py e65e8bed, last changed in fe9cfa498),
+    # before apn-auth-release-agnos20-nb-expmode.patch.
+    nb_upstream, nb_resolved = self.modern_fixture(raylib_nb=True)
+    nb = (self.worker_variant(self.snd_variant(nb_upstream)), nb_resolved)
+    legacy = (self.worker_variant(), self.resolved)
+    for (upstream, resolved), family, tether, apn, commit, inputs, tree in (
+      (nb, "nightly", "apply", "auto", "ea8a1685ca28457827926966867e9b7ed10dba03", "f03d2188ce3f2f4d4d0e1722bbd0165bc809eb222c636d1534d1cd90160aaf53", "e791331e54c2874e456e30567d89aa55b0c8ef09"),
+      (nb, "nightly", "off", "auto", "8d664b38505bb495f657fd6cb20b994f2cc744ce", "78f103bab3afe6f2a949ceccef41eb9a189656583cc35b02e09517021be512ba", "6764b8eef854c5bdf8ebafbd645f04a236a09c45"),
+      (nb, "nightly", "apply", "off", "f19ab9fdfdbce1a5ed234860a66182740e294a7f", "416dcde8a34a2527fc17d2969b1a976fc5f0d11fabf4e8c5de605abbb879a54a", "20a061580e4fbb4ada618ebe461f6cfca548493a"),
+      (nb, "nightly", "off", "off", "842adf3df343e5c7f364a0eba43f1f42c5961b90", "74b13f4178eb01c17c35412fa3a95c0103f6d65c842b8f7f2ff0116dd751fd37", "5d191410ad0fa41990b6dc5b5fab89981dc371a1"),
+      (nb, "release", "apply", "auto", "189d68119e22a5ba2b75f54c057d4842e5e41197", "c6683f0e32f99ed98883bdbb829782e561b491ed8efd4f8b3ca2e8e5ab30e04f", "4bce95a656e2269e8df608330035f6429ae0e602"),
+      (nb, "release", "off", "auto", "05f92a7278ff5e0050741418ec0541bbd29c85f2", "deed01d0632f7e8374b0fd808e86ac66f27cc362d71e637ce185e662a3effe00", "e8920440e6d1087f6d654f5feafa160b9f394eb7"),
+      (nb, "release", "apply", "off", "ef7d8e3a2eb31036e6671740a14058f571ae5ec3", "cab05b6c4f502356f1e5889c1862f778478fdfa704c0bfbe89b59424a94f4219", "20a061580e4fbb4ada618ebe461f6cfca548493a"),
+      (nb, "release", "off", "off", "e0a4fef084a20ae937348e8e466808c9cd42c8fd", "a0f80681bf12c2da650a4f5c2ba4c0ea6a1a798f77651899e6d7dc31bf01eacc", "5d191410ad0fa41990b6dc5b5fab89981dc371a1"),
+      (legacy, "nightly", "apply", "off", "0f2e2f8a557839aab34bd7a67966662e039863b5", "0cb0317e8548664930532e193bf3d5ee2cf5e60243fce53e5f2614a2e795a3ed", "ddb6d74841fa6d4bf05cc552aaed250e5daadeeb"),
+      (legacy, "nightly", "off", "off", "f6f07537b112d85f21d3dd0ec261f27734eb6d98", "1efe17e5bab845bdd2b239ea8914380052fa67efc6ae31c12b175cd5d3f8172b", "d58084b82cfbe94298adbc3ddc845d0e0bc05472"),
+    ):
+      with self.subTest(upstream=upstream, family=family, tether=tether, apn=apn):
+        self.assertEqual(compose.compose(self.repo, upstream, resolved, tether, apn, family), (commit, inputs))
+        self.assertEqual(compose.compose_inputs(self.repo, upstream, resolved, tether, apn, family), inputs)
+        self.assertEqual(compose.git(self.repo, "rev-parse", commit + "^{tree}").decode().strip(), tree)
+
+  def test_expmode_patch_is_the_nb_patch_reanchored(self):
+    nb, expmode = (patch_file.read_bytes() for patch_file in (compose.APN_AGNOS20_PATCHES["release"][1], compose.APN_RELEASE_EXPMODE_PATCH))
+    self.assertEqual(compose.APN_AGNOS20_PATCHES["release"][2], compose.APN_RELEASE_EXPMODE_PATCH)
+    nb_sections, expmode_sections = (dict((s.split(b"\n", 1)[0], s) for s in text.split(b"diff --git ")[1:]) for text in (nb, expmode))
+    self.assertEqual(list(nb_sections), list(expmode_sections))
+    for header, section in nb_sections.items():
+      if not header.endswith(b" b/" + JA_PO.encode()):
+        self.assertEqual(expmode_sections[header], section, header)
+    # In app_ja.po only the blob index, the hunk header and the three context lines differ; the 51 added lines are the same.
+    self.assertEqual(plus_minus(expmode, JA_PO), plus_minus(nb, JA_PO))
+    self.assertEqual(len(plus_minus(expmode, JA_PO)), 51)
+    section = next(s for h, s in expmode_sections.items() if h.endswith(b" b/" + JA_PO.encode()))
+    self.assertEqual([line for line in section.splitlines() if line.startswith(b" ")],
+                     [b" " + line for line in EXPMODE_JA_TAIL.splitlines()[-3:]])
+    self.assertEqual(sum(line.startswith(b"@@ ") for line in section.splitlines()), 1)
+
+  def test_expmode_release_form_composes_the_same_changes(self):
+    nb, resolved = self.modern_fixture(raylib_nb=True)
+    old = self.worker_variant(self.snd_variant(nb))
+    upstream = self.expmode_variant(old)
+    expmode = compose.APN_RELEASE_EXPMODE_PATCH
+    pin_file = self.work / "expmode-pin.json"
+    pin_file.write_text(json.dumps(resolved))
+    # Exactly one release form fits each catalog end; no nightly form fits the new one.
+    self.assertEqual(compose.select_apn_patch(self.repo, self.stacked(old), "release"), compose.APN_AGNOS20_PATCHES["release"][1])
+    tree = self.stacked(upstream)
+    self.assertEqual(compose.select_apn_patch(self.repo, tree, "release"), expmode)
+    with self.assertRaisesRegex(ValueError, "no APN patch applies"):
+      compose.select_apn_patch(self.repo, tree, "nightly")
+    old_commit, _ = compose.compose(self.repo, old, resolved, "apply", "auto", "release")
+    commit, inputs = compose.compose(self.repo, upstream, resolved, "apply", "auto", "release")
+    self.assertEqual(inputs, compose.compose_inputs(self.repo, upstream, resolved, "apply", "auto", "release"))
+    compose.check_modem_bundle(self.repo, commit, resolved, required=True)
+    message = compose.git(self.repo, "show", "-s", "--format=%B", commit).decode()
+    self.assertIn(f"WPA3-Launcher-Patch: launcher-wpa3-snd.patch\nWPA3-Tethering-Patch: applied\nWPA3-APN-Patch: {expmode.name} applied\n", message)
+    # The same composed changes: every other path is byte-identical, and both catalogs get the same appended bytes.
+    changed = self.changed(upstream, commit)
+    self.assertEqual(changed, self.changed(old, old_commit))
+    self.assertIn(JA_PO, changed)
+    for path in sorted(changed - {JA_PO}):
+      if compose.git(self.repo, "ls-tree", commit, "--", path):
+        self.assertEqual(compose.blob(self.repo, commit, path), compose.blob(self.repo, old_commit, path), path)
+    appended = []
+    for base, composed in ((old, old_commit), (upstream, commit)):
+      before, after = compose.blob(self.repo, base, JA_PO), compose.blob(self.repo, composed, JA_PO)
+      self.assertTrue(after.startswith(before))
+      appended.append(after[len(before):])
+    self.assertEqual(appended[0], appended[1])
+    catalog = compose.blob(self.repo, commit, JA_PO).splitlines()
+    for line in plus_minus(expmode.read_bytes(), JA_PO):
+      if line.startswith(b"+msgid "):
+        self.assertEqual(catalog.count(line[1:]), 1, line)
+    # The new selection hashes the live composer.
+    with patch.object(compose, "__file__", str(compose.ROOT / "scripts/gates.py")):
+      self.assertNotEqual(compose.compose_inputs(self.repo, upstream, resolved, "apply", "auto", "release"), inputs)
+    result = self.cli("gates.py", upstream, "--skip-download", "--tether", "apply", "--apn", "auto", "--apn-family", "release", pin_file=pin_file)
+    self.assertIn(f"G5: OK: APN patch {expmode.name} applies cleanly\n", result.stdout)
+    self.assertIn("G9: OK: AGNOS-20 APN UI, stdlib modem override and pinned launcher bundle verified\n", result.stdout)
+    held = self.cli("gates.py", upstream, "--skip-download", "--tether", "apply", "--apn", "auto", "--apn-family", "nightly",
+                    pin_file=pin_file, check=False)
+    self.assertEqual(held.returncode, 1)
+    self.assertIn("G5: FAIL: no APN patch applies", held.stderr)
+    # Once applied, every registered form reports it as already upstream.
+    with compose.temporary_index(self.repo, tree) as (env, _):
+      compose.git(self.repo, "apply", "--cached", str(expmode), env=env)
+      applied = compose.git(self.repo, "write-tree", env=env).decode().strip()
+    for family in compose.APN_AGNOS20_PATCHES:
+      with self.assertRaisesRegex(ValueError, "APN patch already upstream"):
+        compose.select_apn_patch(self.repo, applied, family)
 
   def test_snd_nb_identity_is_unchanged_for_the_old_ui_form(self):
     # Captured by executing the unmodified 6853d5bab composer (compose.py 007dd695), before ui-wpa3-worker.patch.
@@ -161,8 +290,7 @@ class TestApnRaylibNb(unittest.TestCase):
         self.assertEqual(compose.compose(self.repo, bases[index], resolved, "apply", "auto", family), (commit, inputs))
 
   def test_nb_patch_static_api_lint(self):
-    for candidates in compose.APN_AGNOS20_PATCHES.values():
-      candidate = candidates[1]
+    for candidate in (c for candidates in compose.APN_AGNOS20_PATCHES.values() for c in candidates[1:]):
       text = candidate.read_text()
       with self.subTest(candidate=candidate.name):
         self.assertNotRegex(text, r"\b(?:import|from) pyray\b")

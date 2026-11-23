@@ -35,9 +35,12 @@ APN_PATCHES = (
   ROOT / "patches/apn-auth-release.patch", ROOT / "patches/apn-auth-nightly.patch",
   ROOT / "patches/apn-auth-nightly-v0113.patch",
 )
+# The same raylib_nb release change for catalogs that end with the Experimental mode strings (0.11.3 release, 2026-11-20).
+APN_RELEASE_EXPMODE_PATCH = ROOT / "patches/apn-auth-release-agnos20-nb-expmode.patch"
 APN_AGNOS20_PATCHES = {
   "nightly": (ROOT / "patches/apn-auth-nightly-agnos20.patch", ROOT / "patches/apn-auth-nightly-agnos20-nb.patch"),
-  "release": (ROOT / "patches/apn-auth-release-agnos20.patch", ROOT / "patches/apn-auth-release-agnos20-nb.patch"),
+  "release": (ROOT / "patches/apn-auth-release-agnos20.patch", ROOT / "patches/apn-auth-release-agnos20-nb.patch",
+              APN_RELEASE_EXPMODE_PATCH),
 }
 MODEM_LAUNCHER_PATCH = ROOT / "patches/launcher-modem-agnos20.patch"
 MODEM_PATH = "wpa3/modem.py"
@@ -54,6 +57,8 @@ PYRAY_COMPOSE_SHA256 = "9c8211c33bdb984cfbc4c5bc5ba9cffe8b3c52e5a52e2948c4b66aad
 RAYLIB_NB_COMPOSE_SHA256 = "1b96625831a00de86615c0200a95bf5c78acc96ea7c8041c18f1309f51ed2eff"
 # Preserve 5d8835bd7's snd + raylib_nb identity for trees predating #39339 (ui-wpa3.patch).
 SND_COMPOSE_SHA256 = "007dd6955da3037054ee86464a4b68554c0dc0ad7420b5b77004b2c325736161"
+# Preserve fe9cfa498's identity for the #39339 forms (ui-wpa3-worker.patch, tethering-nat-worker.patch).
+WORKER_COMPOSE_SHA256 = "e65e8bed2237556c44b5dc01c07f3575d6c992bd1ce82cec9f4c5277295bfecd"
 TETHER_ALLOWED = {"openpilot/system/ui/lib/tests/test_tethering_nat.py"}
 APN_ALLOWED = {
   "openpilot/common/hardware/comma/apn_auth_store.py",
@@ -415,6 +420,8 @@ def inputs_hash(upstream, resolved, launcher_patch, tether="off", apn="off", apn
       if launcher_patch.name == "launcher-wpa3-snd.patch":
         compose_sha256 = SND_COMPOSE_SHA256
   if ui_patch.name != "ui-wpa3.patch" or (tether == "apply" and tether_patch.name != "tethering-nat.patch"):
+    compose_sha256 = WORKER_COMPOSE_SHA256
+  if apn == "auto" and apn_patch is not None and apn_patch.name == APN_RELEASE_EXPMODE_PATCH.name:
     # Only selections that did not exist before this composer hash the live file.
     compose_sha256 = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
   inputs = {

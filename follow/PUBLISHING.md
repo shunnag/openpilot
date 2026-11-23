@@ -96,9 +96,10 @@ none or several hold at G5, and `--inputs-only` selects the form as well, also
 with tethering and APN off. WPA3-Inputs hashes the selected form's name and bytes.
 Trees that take `ui-wpa3.patch` keep their frozen composer digest (snd launcher
 with a raylib_nb APN form: 5d8835bd7's `007dd695…`), so their commits and
-WPA3-Inputs are unchanged; only the #39339 forms (this one and
-`tethering-nat-worker.patch`) hash the current `compose.py`. The worker form
-was run on one comma four on 2026-11-15: the Wi-Fi settings listed networks
+WPA3-Inputs are unchanged. The #39339 forms (this one and
+`tethering-nat-worker.patch`) are frozen at fe9cfa498's `e65e8bed…`; only
+`apn-auth-release-agnos20-nb-expmode.patch` hashes the current `compose.py`.
+The worker form was run on one comma four on 2026-11-15: the Wi-Fi settings listed networks
 and connected.
 
 ## Tethering patch forms
@@ -111,7 +112,7 @@ form that is already upstream holds for review, even when the other form would
 apply. WPA3-Inputs keeps `tether` and `tether_patch` (the SHA-256 of the chosen
 form). `tethering-nat.patch` trees keep exactly these two keys and their frozen
 composer digest, so their commits and WPA3-Inputs are unchanged. The worker form
-adds `tether_patch_name` and hashes the current `compose.py`. The commit trailer
+adds `tether_patch_name` and keeps fe9cfa498's composer digest (`e65e8bed…`). The commit trailer
 stays `WPA3-Tethering-Patch: applied`, and G5 prints the chosen form's name.
 
 #39339 runs `set_tethering_active` on WifiManager's one request thread. It also
@@ -161,7 +162,13 @@ AGNOS 20 selections are frozen at the composer that introduced them, and only
 the newest form hashes the current composer (see [UI patch forms](#ui-patch-forms)). With `--apn auto`, AGNOS >= 20 uses
 `apn-auth-nightly-agnos20.patch` or `apn-auth-release-agnos20.patch`. These retain
 the v0113 APN store, UI, diagnostics and translations, without the deleted
-openpilot modem path. `publish_branch.sh` explicitly passes `--apn-family nightly` for `nightly` and
+openpilot modem path. comma's 0.11.3 release (2026-11-20, `52b2b6265`) ends
+`app_ja.po` with four Experimental mode entries (toggles.py); its trees take
+`apn-auth-release-agnos20-nb-expmode.patch`, which is
+`apn-auth-release-agnos20-nb.patch` with only the `app_ja.po` blob index, hunk
+header and three context lines changed (the 51 added lines are the same). The
+fork's entries then follow upstream's last entry after one blank line, not two.
+`publish_branch.sh` explicitly passes `--apn-family nightly` for `nightly` and
 `nightly-chestnut`, and `--apn-family release` for `release-*-staging`, to gates,
 inputs-only and compose. Local master tests default to nightly. Exactly one
 patch in the chosen family must apply; zero or multiple matches hold at G5.

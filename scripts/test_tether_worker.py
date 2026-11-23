@@ -233,13 +233,14 @@ class TestTetherWorkerPatch(TetherHelpers, unittest.TestCase):
     self.assertEqual(set(worker_payload) - set(plain_payload), {"tether", "tether_patch", "tether_patch_name"})
     self.assertEqual(worker_payload["tether_patch"], sha(compose.TETHER_WORKER_PATCH))
     self.assertEqual(worker_payload["tether_patch_name"], compose.TETHER_WORKER_PATCH.name)
-    self.assertEqual(worker_payload["compose.py"], sha(compose.ROOT / "scripts/compose.py"))
+    self.assertEqual(worker_payload["compose.py"], compose.WORKER_COMPOSE_SHA256)
     self.assertEqual(worker_inputs, compose.inputs_hash(upstream, self.resolved, launcher, tether="apply", ui_patch=compose.UI_WORKER_PATCH,
                                                         tether_patch=compose.TETHER_WORKER_PATCH))
     self.assertNotEqual(worker_inputs, compose.inputs_hash(upstream, self.resolved, launcher, tether="apply", ui_patch=compose.UI_WORKER_PATCH))
     with patch.object(compose, "__file__", str(compose.ROOT / "scripts/gates.py")):
-      self.assertNotEqual(compose.inputs_hash(upstream, self.resolved, launcher, tether="apply", ui_patch=compose.UI_WORKER_PATCH,
-                                              tether_patch=compose.TETHER_WORKER_PATCH), worker_inputs)
+      # The worker forms keep fe9cfa498's composer digest when compose.py changes.
+      self.assertEqual(compose.inputs_hash(upstream, self.resolved, launcher, tether="apply", ui_patch=compose.UI_WORKER_PATCH,
+                                           tether_patch=compose.TETHER_WORKER_PATCH), worker_inputs)
     copied = self.work / "copied-tether" / compose.TETHER_WORKER_PATCH.name
     copied.parent.mkdir(exist_ok=True)
     copied.write_bytes(compose.TETHER_WORKER_PATCH.read_bytes())
@@ -248,10 +249,10 @@ class TestTetherWorkerPatch(TetherHelpers, unittest.TestCase):
     copied.write_bytes(copied.read_bytes() + b"\n")
     self.assertNotEqual(compose.inputs_hash(upstream, self.resolved, launcher, tether="apply", ui_patch=compose.UI_WORKER_PATCH,
                                             tether_patch=copied), worker_inputs)
-    # The worker tethering form alone already moves off the frozen composer digest.
+    # The worker tethering form alone already moves off the legacy digest, to the worker forms' frozen one.
     with patch.object(compose.json, "dumps", wraps=compose.json.dumps) as dumps:
       compose.inputs_hash(self.upstream, self.resolved, compose.LAUNCHER_PATCHES[0], tether="apply", tether_patch=compose.TETHER_WORKER_PATCH)
-    self.assertEqual(dumps.call_args.args[0]["compose.py"], sha(compose.ROOT / "scripts/compose.py"))
+    self.assertEqual(dumps.call_args.args[0]["compose.py"], compose.WORKER_COMPOSE_SHA256)
     # With tethering off, the selected form is not an input.
     self.assertEqual(compose.inputs_hash(upstream, self.resolved, launcher, ui_patch=compose.UI_WORKER_PATCH, tether_patch=copied),
                      compose.compose_inputs(self.repo, upstream, self.resolved))

@@ -187,7 +187,7 @@ class TestUiWorkerPatch(UiWorkerHelpers, unittest.TestCase):
           self.assertEqual(gates.run_gates(self.repo, upstream, self.pin_file, skip_download=True), 1)
         self.assertIn("G5: FAIL: more than one UI patch applies", stderr.getvalue())
 
-  def test_worker_inputs_hash_the_selected_form_and_live_composer(self):
+  def test_worker_inputs_hash_the_selected_form_and_frozen_composer(self):
     upstream = self.worker_variant()
     launcher = compose.select_launcher_patch(self.repo, upstream)
     inputs, payload = self.payload(upstream, self.resolved)
@@ -196,11 +196,12 @@ class TestUiWorkerPatch(UiWorkerHelpers, unittest.TestCase):
       return hashlib.sha256(path.read_bytes()).hexdigest()
 
     self.assertEqual(payload["patches"], {launcher.name: sha(launcher), compose.UI_WORKER_PATCH.name: sha(compose.UI_WORKER_PATCH)})
-    self.assertEqual(payload["compose.py"], sha(compose.ROOT / "scripts/compose.py"))
+    self.assertEqual(payload["compose.py"], compose.WORKER_COMPOSE_SHA256)
     self.assertEqual(inputs, compose.inputs_hash(upstream, self.resolved, launcher, ui_patch=compose.UI_WORKER_PATCH))
     self.assertNotEqual(inputs, compose.inputs_hash(upstream, self.resolved, launcher))
     with patch.object(compose, "__file__", str(compose.ROOT / "scripts/gates.py")):
-      self.assertNotEqual(compose.inputs_hash(upstream, self.resolved, launcher, ui_patch=compose.UI_WORKER_PATCH), inputs)
+      # The worker form keeps fe9cfa498's composer digest when compose.py changes.
+      self.assertEqual(compose.inputs_hash(upstream, self.resolved, launcher, ui_patch=compose.UI_WORKER_PATCH), inputs)
       # Trees that take ui-wpa3.patch keep the frozen composer digest.
       self.assertEqual(compose.inputs_hash(self.upstream, self.resolved, compose.LAUNCHER_PATCHES[0]), self.inputs)
       self.assertEqual(compose.compose_inputs(self.repo, self.upstream, self.resolved), self.inputs)
